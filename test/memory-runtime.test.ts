@@ -6,7 +6,7 @@ import { createEffects } from '../src/backend/effects.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { memoryCompute } from '../src/memory/contracts/memory-contract.ts'
 import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
-import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM, DREAM_PROFILE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { dreamModelStep } from './fixtures/dream-model.ts'
@@ -31,7 +31,7 @@ test('daily notes are recalled after five rounds and a new digest retains its ci
     store, now: () => now, timezone: () => 'UTC', dailyNotes: { timezone: 'UTC' },
     route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job, _signal, tools) {
-      stages.push(job.stage)
+      stages.push(job.system === DREAM_PROFILE_SYSTEM ? 'dream-profile' : job.stage)
       if (job.stage === 'note') {
         const input = JSON.parse(job.input) as { turns: Array<{ user: Array<{ text: string }>, assistant: string }> }
         assert.equal(input.turns.length, 5)
@@ -40,6 +40,7 @@ test('daily notes are recalled after five rounds and a new digest retains its ci
         return JSON.stringify({ status: 'write', title: '周报安排', markdown: '周五提交周报。草稿尚未完成。' })
       }
       assert.equal(job.stage, 'dream')
+      if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
       assert.equal(job.system, DREAM_CONSOLIDATE_SYSTEM)
       return dreamModelStep(job, { name: '周报安排', summary: '每周五提交周报' }, tools)
     },
@@ -59,7 +60,7 @@ test('daily notes are recalled after five rounds and a new digest retains its ci
   assert.match(recalled.notes[0].markdown, /草稿尚未完成/)
   now = Date.parse('2026-11-03T23:00:00Z')
   await memory.wake()
-  assert.deepEqual(stages, ['note', 'dream'])
+  assert.deepEqual(stages, ['note', 'dream', 'dream-profile'])
   assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memories'").get(), undefined)
   const document = store.db.prepare('SELECT sources FROM memory_documents').get()!
   assert.deepEqual(new Set(JSON.parse(String(document.sources)).map((ref: { id: string }) => ref.id)), new Set(ids))
@@ -83,6 +84,7 @@ test('Dream refines the current report recipient while the original chat keeps i
       if (job.stage === 'note') {
         return JSON.stringify({ status: 'write', title: 'Weekly report', markdown: canonical })
       }
+      if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
       if (job.system !== DREAM_CONSOLIDATE_SYSTEM) return JSON.stringify({ verdict: 'accept' })
       return dreamModelStep(job, { name: 'Weekly-report', summary: canonical, body: canonical }, tools)
     },
@@ -180,6 +182,7 @@ test('document consolidation waits for the draft before checkpointing and retrie
     async compute(job, _signal, tools) {
       if (job.stage === 'note') return JSON.stringify({ status: 'write', title: 'Report', markdown: fact })
       assert.equal(job.stage, 'dream')
+      if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
       assert.equal(job.system, DREAM_CONSOLIDATE_SYSTEM)
       const input = JSON.parse(job.input)
       assert.equal(input.maxOperations, 5)
@@ -223,6 +226,7 @@ test('consolidation groups the two-day window by byte budget, bisects explicit c
         return JSON.stringify({ status: 'write', title, markdown })
       }
       assert.equal(job.stage, 'dream')
+      if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
       const notes = input.notes as Array<{ title: string, markdown: string }>
       requests.push(notes.map(note => note.title))
       if (notes.length > 1) throw new MemoryComputeError('context-window-exceeded')

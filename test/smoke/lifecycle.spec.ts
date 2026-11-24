@@ -80,7 +80,7 @@ test('Stop reports a frozen runtime and preserves the editable draft through rec
   const paused = await pauseOwnedProcess(pid)
   try {
     // Memory management reads use the backend-to-owner path while the Agent is frozen.
-    await expect(page.evaluate(() => window.agent.getMemory().then(memory => !!memory.profile))).resolves.toBe(true)
+    await expect(page.evaluate(() => window.agent.getMemory().then(memory => typeof memory.revision === 'number'))).resolves.toBe(true)
     await page.locator('#send-btn[data-busy="true"]').click()
     await expect(page.locator('.msg-working')).toContainText('正在停止', { timeout: 2_000 })
     const draft = page.locator('#composer-input')

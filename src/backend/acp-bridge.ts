@@ -21,6 +21,7 @@ import { createRemoteMemoryChannel, MemoryOwnerUnavailable } from './remote-memo
 import type { DesktopMemoryOwner } from './desktop-memory-owner.ts'
 import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
 import { withRequestSource } from '../shared/request-routing/header.ts'
+import { withTaskRequestSource } from '../shared/request-routing/task-header.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
@@ -162,6 +163,7 @@ export function createAcpBridge({
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.turn(id) ? operations.context(id) : null : undefined
   const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer,
+    profileDeletionGen: () => memoryOwner?.profileDeletionGen(),
     allowGeneralQuestion: async (session, cards, waiting, phase) => {
       if (taskSessions.isUnattended(session)) return false
       if (!allowGeneralQuestion) return true
@@ -368,12 +370,28 @@ export function createAcpBridge({
     },
     foreground: () => ({ sessionId, cwd: sessionCwd, config: configNow }), canResume: () => canResume, prepareFresh,
     operations, permissions: broker, questions,
-    preparePrompt: async (id, text) => { recordSource?.({ session: id, text, wireText: text, task: true }); return text },
-    steer: async (id, text) => { recordSource?.({ session: id, text, wireText: text, task: true }); return steering.steer(text, id) },
+    preparePrompt: async (id, text) => {
+      const wrapped = withTaskRequestSource(text, randomUUID())
+      recordSource?.({ session: id, text, wireText: wrapped.text, wireSpans: wrapped.spans, task: true })
+      memoryOwner?.startPrefetch({ requestId: wrapped.requestId, sessionId: id, queryText: text, cwd: sessionCwd, context: { kind: 'task', id } })
+      return wrapped.text
+    },
+    steer: async (id, text) => {
+      const wrapped = withTaskRequestSource(text, randomUUID())
+      recordSource?.({ session: id, text, wireText: wrapped.text, wireSpans: wrapped.spans, task: true })
+      memoryOwner?.startPrefetch({ requestId: wrapped.requestId, sessionId: id, queryText: text, cwd: sessionCwd, context: { kind: 'task', id } })
+      const steered = await steering.steer(wrapped.text, id)
+      if (!steered.ok && steered.reason !== NO_PLUGIN) memoryOwner?.cancelPrefetch(id, wrapped.requestId)
+      return steered
+    },
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
-  const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
+  const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask: closeTaskSession, steerTask } = taskSessions
+  const closeTask = (taskId: string) => {
+    memoryOwner?.clearSessionPrefetches(taskId)
+    return closeTaskSession(taskId)
+  }
 
   async function openSession(beforeOpen?: () => Promise<unknown>) {
     const measure = sessionTiming(onTiming)
@@ -495,11 +513,15 @@ export function createAcpBridge({
     if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
     if (held && !held()) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
-    const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, sourceText) : null
+    const effectiveSourceText = sourceText !== undefined ? sourceText : text
+    const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, effectiveSourceText) : null
     const words = routed?.text ?? text
-    if (asked && request) recordSource?.({ session: asked, sourceId, text: sourceText ?? text, wireText: words, wireSpans: routed?.spans })
+    if (asked && request) recordSource?.({ session: asked, sourceId, text: effectiveSourceText, wireText: words, wireSpans: routed?.spans })
     if (held && !held()) throw new ForegroundRequestRetired()
     if (asked !== sessionId || isSwitching() || disposed || recoveryRequired) throw new Error(switchingMessage())
+    if (asked && routed) {
+      memoryOwner?.startPrefetch({ requestId: routed.requestId, sessionId: asked, queryText: effectiveSourceText, cwd: sessionCwd })
+    }
     routed?.register()
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
@@ -508,13 +530,21 @@ export function createAcpBridge({
     await operations.run({
       sessionId: asked, prompt: blocks, context, userTurn, held, onStart,
       prepare: asked ? () => routingDesk.bind(asked) : undefined,
+      onCancelled: () => {
+        if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
+      },
       onEnd: (response, finalReply) => {
+        if (asked && routed) {
+          if (response.stopReason === 'cancelled') memoryOwner?.cancelPrefetch(asked, routed.requestId)
+          else memoryOwner?.finishPrefetch?.(asked, routed.requestId)
+        }
         if (asked === sessionId) toolWatchdog.clear()
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
         else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason,
           ...(response.stopReason === 'end_turn' && finalReply !== undefined ? { finalReply } : {}), ...scoped(context) })
       },
       onError: error => {
+        if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
         if (asked === sessionId) toolWatchdog.clear()
         const message = describeError(error, stderrTail)
         if (isTask(asked)) { if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message }) }
@@ -567,6 +597,7 @@ export function createAcpBridge({
         catch (err) { console.error('[acp-bridge] cancel failed; still closing session:', describeError(err)) }
       }
       await measure('session.close', () => live().closeSession({ sessionId: id }))
+      memoryOwner?.clearSessionPrefetches(id)
     })()
     closing.set(id, cleanup)
     void cleanup.then(() => {
@@ -684,11 +715,15 @@ export function createAcpBridge({
     recordSource?.({ session: asked, sourceId, text, wireText: wrapped, wireSpans: spans })
     if (!held()) return retired()
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
+    memoryOwner?.startPrefetch({ requestId: request.requestId, sessionId: asked, queryText: text, cwd: sessionCwd })
     request.register()
     onDispatch?.()
     const result = await steering.steer(wrapped, asked, { fast: true })
     // A lost transport receipt leaves the request routable if the native inbox took it.
-    if (!result.ok && result.reason !== NO_PLUGIN) undelivered()
+    if (!result.ok && result.reason !== NO_PLUGIN) {
+      undelivered()
+      memoryOwner?.cancelPrefetch(asked, request.requestId)
+    }
     return result
   }
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */

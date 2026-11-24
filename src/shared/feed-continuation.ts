@@ -6,9 +6,15 @@ export function continueText(item: { title: string, body: string }, locale?: Loc
   return `${translate('feed.continue.from', { title: item.title }, locale)}\n\n${item.body}`
 }
 
-export function matchesFeedContinuation(item: { title: string, body: string }, text: string) {
-  return LOCALES.some(locale => {
+export function extractFeedContinuationSupplement(item: { title: string, body: string }, text: string): string | null {
+  for (const locale of LOCALES) {
     const original = continueText(item, locale).trim()
-    return text === original || text.startsWith(`${original}\n\n`)
-  })
+    if (text === original) return ''
+    if (text.startsWith(`${original}\n\n`)) return text.slice(original.length + 2)
+  }
+  return null
+}
+
+export function matchesFeedContinuation(item: { title: string, body: string }, text: string) {
+  return extractFeedContinuationSupplement(item, text) !== null
 }

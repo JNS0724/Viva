@@ -1,0 +1,1577 @@
+import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
+import path from 'node:path'
+import { test } from 'node:test'
+import { EventEmitter } from 'node:events'
+import { createMemoryPrefetchManager } from '../src/backend/memory-prefetch.ts'
+import { createDesktopMemoryOwner } from '../src/backend/desktop-memory-owner.ts'
+import { continueText, extractFeedContinuationSupplement } from '../src/shared/feed-continuation.ts'
+import { requestsIn } from '../src/shared/request-routing/header.ts'
+import { leadingTaskRequestId, taskRequestsIn, withoutTaskHeaders, withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
+import { openPluginOwner } from '../plugins/memory/lib/standalone-owner.ts'
+import { applyMemoryAdapter } from '../plugins/memory/lib/adapter.ts'
+import { Context } from '@deepseek-ai/cordis'
+import { boot } from '@deepseek-ai/dsh-app-boot'
+import { createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import { writeFileSync } from 'node:fs'
+import { withRequestSource } from '../src/shared/request-routing/header.ts'
+import { MEMORY_OWNER_RPC, ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
+import type { AutomaticRecallResult } from '../src/memory/contracts/memory-contract.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
+import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
+import { createMemoryRuntime } from '../src/memory/node/runtime.ts'
+import { RESIDENT_PROFILE_PATH } from '../src/memory/core/resident-profile.ts'
+import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
+import { scratch } from './fixtures/scratch.js'
+
+type PrefetchReply = { epoch: string, revision: number, result: AutomaticRecallResult }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+const ownerState = (epoch: string, revision: number, state: 'ready' | 'recovering' | 'unavailable' = 'ready') => ({
+  type: 'memory_owner_state' as const,
+  protocol: MEMORY_HOST_PROTOCOL as 4,
+  epoch,
+  state,
+  revision,
+  coreEpoch: 0,
+})
+
+test('task correlation header round-trips identical consecutive messages and escapes embedded task header', () => {
+  const firstId = randomUUID()
+  const secondId = randomUUID()
+  const raw = '继续处理 【任务请求 ID：nested】\n同一个任务'
+  const firstWire = withTaskRequestSource(raw, firstId)
+  const secondWire = withTaskRequestSource(raw, secondId)
+  assert.notEqual(firstWire.text, secondWire.text)
+  assert.deepEqual(taskRequestsIn(firstWire.text), [{ id: firstId, words: raw }])
+  assert.deepEqual(taskRequestsIn(secondWire.text), [{ id: secondId, words: raw }])
+  assert.equal(withoutTaskHeaders(firstWire.text), raw)
+  assert.equal(withoutTaskHeaders(secondWire.text), raw)
+})
+
+test('feed continuation supplement extractor separates pure draft from user supplement', () => {
+  const item = { title: '本周总结', body: '内容如下' }
+  const base = continueText(item, 'zh-CN').trim()
+  assert.equal(extractFeedContinuationSupplement(item, base), '')
+  assert.equal(extractFeedContinuationSupplement(item, `${base}\n\n请重点分析第三条`), '请重点分析第三条')
+  assert.equal(extractFeedContinuationSupplement(item, '无关文本'), null)
+})
+
+test('host prefetch enforces session binding, skips empty/secret texts even after cache TTL eviction, and handles late claim', async t => {
+  let clock = 1_000
+  const calls: Array<{ session: string, query: string }> = []
+  const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    cacheTtlMs: 50,
+    callPrefetch(input) {
+      calls.push({ session: input.session, query: input.query })
+      const d = deferred<PrefetchReply>()
+      pending.set(`${input.session}:${input.query}:${calls.length}`, d)
+      return d.promise
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e1', 3))
+
+  // 1. Session binding: claim from wrong session returns found: false
+  const reqA = randomUUID()
+  prefetch.startPrefetch({ requestId: reqA, sessionId: 'sess-a', queryText: '周报怎么写' })
+  assert.equal(calls.length, 1)
+  pending.get('sess-a:周报怎么写:1')!.resolve({
+    epoch: 'e1',
+    revision: 3,
+    result: {
+      status: 'hit',
+      text: '[digest] 周报每周五提交',
+      partial: false,
+      hits: [{ text: '周报每周五提交', names: ['周报'] }],
+    },
+  })
+  await Promise.resolve()
+  assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqA, sessionId: 'sess-b' }), { found: false })
+  const hitA = await prefetch.claimPrefetch({ requestId: reqA, sessionId: 'sess-a' })
+  assert.equal(hitA.found, true)
+  if (hitA.found) assert.equal(hitA.result.status, 'hit')
+
+  // 2. Pure Feed draft (empty text) and secret text skip worker RPC AND stay skipped even after cache TTL eviction
+  const reqFeedPure = randomUUID()
+  const reqSecret = randomUUID()
+  prefetch.startPrefetch({ requestId: reqFeedPure, sessionId: 'sess-feed', queryText: '' })
+  prefetch.startPrefetch({ requestId: reqSecret, sessionId: 'sess-feed', queryText: 'my api_key: sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234' })
+  assert.equal(calls.length, 1, 'skipped texts must not invoke worker RPC')
+  clock += 100 // Exceeds cacheTtlMs (50ms) so normal cache entries are evicted
+  assert.deepEqual(
+    await prefetch.claimPrefetch({ requestId: reqFeedPure, sessionId: 'sess-feed' }),
+    { found: true, result: { status: 'skipped' } },
+  )
+  assert.deepEqual(
+    await prefetch.claimPrefetch({ requestId: reqSecret, sessionId: 'sess-feed' }),
+    { found: true, result: { status: 'skipped' } },
+  )
+  assert.equal(calls.length, 1)
+
+  // 3. Late claim: if terminal hit arrived before deadline/claim, deliver it; if still pending past budget, return timeout
+  const reqLateHit = randomUUID()
+  prefetch.startPrefetch({ requestId: reqLateHit, sessionId: 'sess-late', queryText: '延迟领取命中', budgetMs: 30 })
+  pending.get('sess-late:延迟领取命中:2')!.resolve({
+    epoch: 'e1',
+    revision: 3,
+    result: {
+      status: 'hit',
+      text: '[digest] 延迟命中结果',
+      partial: false,
+      hits: [{ text: '延迟命中结果', names: ['延迟'] }],
+    },
+  })
+  await Promise.resolve()
+  clock += 40 // Past original 30ms budget, but terminal hit is already settled!
+  const lateHit = await prefetch.claimPrefetch({ requestId: reqLateHit, sessionId: 'sess-late' })
+  assert.equal(lateHit.found, true)
+  if (lateHit.found) assert.equal(lateHit.result.status, 'hit')
+
+  const reqLatePending = randomUUID()
+  prefetch.startPrefetch({ requestId: reqLatePending, sessionId: 'sess-late', queryText: '永远不返回', budgetMs: 25 })
+  clock += 30 // Remaining budget is 0 while still pending
+  const lateTimeout = await prefetch.claimPrefetch({ requestId: reqLatePending, sessionId: 'sess-late' })
+  assert.deepEqual(lateTimeout, { found: true, result: { status: 'timeout' } })
+})
+
+test('host prefetch enforces double-point invalidation (write-side and claim-side) with at-most-once re-query', async t => {
+  let clock = 5_000
+  const calls: Array<{ query: string, attempt: number }> = []
+  const resolvers: Array<ReturnType<typeof deferred<PrefetchReply>>> = []
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    callPrefetch(input) {
+      const attempt = calls.length + 1
+      calls.push({ query: input.query, attempt })
+      const d = deferred<PrefetchReply>()
+      resolvers.push(d)
+      return d.promise
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e1', 10))
+
+  // Claim-side invalidation: reply arrived at rev 10, THEN memory_owner_change(rev 11) arrives before claim
+  const reqClaimSide = randomUUID()
+  prefetch.startPrefetch({ requestId: reqClaimSide, sessionId: 's1', queryText: '领取侧失效', budgetMs: 120 })
+  resolvers[0]!.resolve({
+    epoch: 'e1',
+    revision: 10,
+    result: { status: 'hit', text: '旧版本', partial: false, hits: [{ text: '旧版本', names: ['old'] }] },
+  })
+  await Promise.resolve()
+  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 11 })
+  clock += 20
+  const claimForward = prefetch.claimPrefetch({ requestId: reqClaimSide, sessionId: 's1' })
+  assert.equal(calls.length, 2, 'must re-query once on claim-side revision advance')
+  resolvers[1]!.resolve({
+    epoch: 'e1',
+    revision: 11,
+    result: { status: 'hit', text: '新版本', partial: false, hits: [{ text: '新版本', names: ['new'] }] },
+  })
+  const forwardRes = await claimForward
+  assert.equal(forwardRes.found, true)
+  if (forwardRes.found && forwardRes.result.status === 'hit') assert.equal(forwardRes.result.text, '新版本')
+
+  // Write-side invalidation (reverse order): memory_owner_change(rev 12) arrives WHILE rev-11 reply is still in-flight
+  const reqWriteSide = randomUUID()
+  prefetch.startPrefetch({ requestId: reqWriteSide, sessionId: 's1', queryText: '写入侧失效', budgetMs: 120 })
+  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 12 })
+  resolvers[2]!.resolve({
+    epoch: 'e1',
+    revision: 11,
+    result: { status: 'hit', text: 'rev11过期值', partial: false, hits: [{ text: 'rev11过期值', names: ['old'] }] },
+  })
+  await Promise.resolve()
+  clock += 10
+  const claimReverse = prefetch.claimPrefetch({ requestId: reqWriteSide, sessionId: 's1' })
+  assert.equal(calls.length, 4, 'write-side revision skew must discard stale hit and trigger one re-query')
+  resolvers[3]!.resolve({
+    epoch: 'e1',
+    revision: 12,
+    result: { status: 'hit', text: 'rev12新值', partial: false, hits: [{ text: 'rev12新值', names: ['new'] }] },
+  })
+  const reverseRes = await claimReverse
+  assert.equal(reverseRes.found, true)
+  if (reverseRes.found && reverseRes.result.status === 'hit') assert.equal(reverseRes.result.text, 'rev12新值')
+})
+
+test('host L2 profile snapshot cache is strictly monotonic per epoch and accepts empty-text clear over late old revision', t => {
+  const prefetch = createMemoryPrefetchManager({
+    callPrefetch: async () => ({ epoch: 'epoch-1', revision: 1, result: { status: 'empty' } }),
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('epoch-1', 1))
+  assert.equal(prefetch.onProfile({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, epoch: 'epoch-1', revision: 5, text: '## 自动整理\n- 偏好中文' }), true)
+  assert.equal(prefetch.profile()?.text, '## 自动整理\n- 偏好中文')
+
+  // Revision 6 clears profile to empty string (disable/delete)
+  assert.equal(prefetch.onProfile({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, epoch: 'epoch-1', revision: 6, text: '' }), true)
+  assert.deepEqual(prefetch.profile(), { epoch: 'epoch-1', revision: 6, text: '' })
+
+  // Late revision 5 arrives out-of-order: MUST be ignored
+  assert.equal(prefetch.onProfile({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, epoch: 'epoch-1', revision: 5, text: '## 自动整理\n- 偏好中文' }), false)
+  assert.deepEqual(prefetch.profile(), { epoch: 'epoch-1', revision: 6, text: '' })
+
+  // New epoch resets monotonicity and accepts revision 0
+  prefetch.onState(ownerState('epoch-2', 0))
+  assert.equal(prefetch.onProfile({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, epoch: 'epoch-2', revision: 0, text: '## 自动整理\n- 新纪元' }), true)
+  assert.deepEqual(prefetch.profile(), { epoch: 'epoch-2', revision: 0, text: '## 自动整理\n- 新纪元' })
+})
+
+test('automaticRecall enforces 55ms vector fast/slow cap and excludes resident profile from L3 slots while keeping active read', async t => {
+  const { dir, defer } = scratch(t, 'phase1-recall-')
+  const store = openMemoryStore(path.join(dir, 'memory.db'))
+  let slowEmbed = false
+  let embedCalls = 0
+  const runtime = createMemoryRuntime({
+    store,
+    dailyNotes: true,
+    compute: () => null,
+    route: () => null,
+    changed: () => {},
+    canCommit: () => true,
+    embedder: {
+      fingerprint: 'fixture-embed-v1',
+      dimensions: 4,
+      async embedBatch(inputs) {
+        embedCalls++
+        if (inputs.some(item => item.kind === 'query') && slowEmbed) {
+          await new Promise(resolve => setTimeout(resolve, 250))
+        }
+        return inputs.map(() => new Float32Array([0.5, 0.5, 0.5, 0.5]))
+      },
+      close() {},
+    },
+  })
+  defer(async () => { await runtime.wake(); runtime.close() })
+  const documents = openMemoryDocuments({
+    db: store.db,
+    root: store.fileRoot,
+    source(id) {
+      const current = store.readSource(id)
+      return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
+    },
+  })
+
+  const session = randomUUID()
+  const origin = { conversation: session, session, scope: { kind: 'user' as const }, context: { kind: 'user' as const } }
+  const srcProfile = randomUUID()
+  runtime.accept('咖啡偏好：只喝拿铁，常驻画像测试标记', origin, srcProfile)
+  const srcA = randomUUID()
+  runtime.accept('咖啡馆推荐一：拿铁店A', origin, srcA)
+  const srcB = randomUUID()
+  runtime.accept('咖啡馆推荐二：拿铁店B', origin, srcB)
+  const srcC = randomUUID()
+  runtime.accept('咖啡馆推荐三：拿铁店C', origin, srcC)
+
+  const commitDoc = (filePath: string, sourceId: string, markdown: string) => {
+    const src = store.readSource(sourceId)!
+    const userWs = memorySourceWorkspace(src)
+    return documents.commit({
+      operationId: randomUUID(),
+      workspace: userWs,
+      path: filePath,
+      expectedRevision: null,
+      action: 'CREATE',
+      markdown,
+      sources: [{ id: src.id, token: memorySourceToken(src) }],
+      reads: [],
+    })
+  }
+
+  const profileReceipt = commitDoc(
+    RESIDENT_PROFILE_PATH,
+    srcProfile,
+    '---\nname: Personal Profile\ndescription: Resident\n---\n\n## 自动整理\n- 咖啡偏好：只喝拿铁，常驻画像测试标记',
+  )
+  commitDoc('digest/personal/coffee-a.md', srcA, '---\nname: 拿铁店A\ndescription: 咖啡馆\n---\n\n咖啡馆推荐一：拿铁店A')
+  commitDoc('digest/personal/coffee-b.md', srcB, '---\nname: 拿铁店B\ndescription: 咖啡馆\n---\n\n咖啡馆推荐二：拿铁店B')
+  commitDoc('digest/personal/coffee-c.md', srcC, '---\nname: 拿铁店C\ndescription: 咖啡馆\n---\n\n咖啡馆推荐三：拿铁店C')
+  runtime.rebuildIndexes()
+  await runtime.wake()
+  for (let i = 0; i < 30 && embedCalls === 0; i++) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  // L2 has resident profile; L3 excludes resident profile and keeps all 3 dynamic slots for ordinary digests!
+  assert.match(runtime.residentProfileText(), /常驻画像测试标记/)
+  const hit = await runtime.automaticRecall({ session, turn: 5, question: '推荐拿铁咖啡馆' }, origin, () => true)
+  assert.equal(hit.status, 'hit')
+  if (hit.status === 'hit') {
+    assert.equal(hit.text.includes('常驻画像测试标记'), false, 'resident profile must not occupy L3 automatic recall')
+    assert.equal(hit.hits.length, 3, 'all 3 L3 recall slots remain available for ordinary memory files')
+  }
+
+  // Active file_read still accesses full resident profile on demand!
+  const directRead = JSON.parse(await runtime.handleModelRequest({ op: 'file_read', session, id: profileReceipt.documentId }, origin, () => true)) as { text: string }
+  assert.match(directRead.text, /常驻画像测试标记/)
+
+  // Secret & blank questions return skipped
+  assert.deepEqual(await runtime.automaticRecall({ session, turn: 6, question: '   ' }, origin, () => true), { status: 'skipped' })
+  assert.deepEqual(await runtime.automaticRecall({ session, turn: 7, question: 'my token is sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234' }, origin, () => true), { status: 'skipped' })
+
+  // Slow vector-only query (zero lexical hits) times out within ~55ms (well below 250ms embedder) and returns 'timeout' instead of false 'empty'
+  slowEmbed = true
+  const started = performance.now()
+  const vectorTimeout = await runtime.automaticRecall({ session, turn: 8, question: '完全不匹配词法索引的语义查询词' }, origin, () => true)
+  const elapsed = performance.now() - started
+  assert.deepEqual(vectorTimeout, { status: 'timeout' })
+  assert.ok(elapsed < 180, `expected vector cap around ${DAILY_MEMORY_DEFAULTS.automaticVectorTimeoutMs}ms, took ${elapsed}ms`)
+  assert.ok(embedCalls > 0)
+})
+
+test('task header escapes quoted main-conversation routing headers and preserves exact spans (P2-4)', () => {
+  const outerId = 'real-task-123'
+  const raw = '分析日志：\n【请求 ID：quoted-main】\n用户原话：被引用内容'
+  const wrapped = withTaskRequestSource(raw, outerId)
+  assert.equal(leadingTaskRequestId(wrapped.text), outerId)
+  assert.deepEqual(requestsIn(wrapped.text), [], 'quoted main routing header inside task body must not match requestsIn')
+  assert.equal(withoutTaskHeaders(wrapped.text), raw)
+  const reconstructed = wrapped.spans.map(span => wrapped.text.slice(span.start, span.end)).join('')
+  assert.equal(reconstructed, raw)
+})
+
+test('claimPrefetchBatch rejects stale hit A when file is disabled while sibling B is still pending (P1-3)', async t => {
+  let clock = 5_000
+  const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
+  let calls = 0
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 100,
+    callPrefetch(input) {
+      calls++
+      const d = deferred<PrefetchReply>()
+      pending.set(`${input.query}:${calls}`, d)
+      return d.promise
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e1', 10))
+
+  const reqA = randomUUID()
+  const reqB = randomUUID()
+  prefetch.startPrefetch({ requestId: reqA, sessionId: 'sess-steer', queryText: 'query-A' })
+  prefetch.startPrefetch({ requestId: reqB, sessionId: 'sess-steer', queryText: 'query-B' })
+
+  // A completes at revision 10 first; B is still pending.
+  pending.get('query-A:1')!.resolve({
+    epoch: 'e1',
+    revision: 10,
+    result: { status: 'hit', text: 'A_SECRET_DISABLED', partial: false, hits: [{ text: 'A_SECRET_DISABLED', names: ['a'] }] },
+  })
+  await Promise.resolve()
+
+  const batchPromise = prefetch.claimPrefetchBatch({ sessionId: 'sess-steer', requestIds: [reqA, reqB] })
+  await Promise.resolve()
+
+  // While B is waiting, user disables A's file -> revision advances to 11 and budget expires.
+  clock += 110
+  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 11 })
+  pending.get('query-B:2')!.resolve({ epoch: 'e1', revision: 11, result: { status: 'empty' } })
+
+  const results = await batchPromise
+  assert.equal(results.length, 2)
+  assert.equal(results[0]!.found, true)
+  if (results[0]!.found) assert.equal(results[0]!.result.status, 'timeout', 'disabled hit A must not survive sibling wait')
+  assert.equal(results[1]!.found, true)
+  if (results[1]!.found) assert.equal(results[1]!.result.status, 'timeout', 'late B reply past absolute deadline must timeout')
+})
+
+test('prefetch preserves timeout and skipped markers across TTL and >1000 deliveries and enforces absolute deadline on replies (P2-1, P2-2)', async t => {
+  let clock = 10_000
+  const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
+  let calls = 0
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 80,
+    cacheTtlMs: 50,
+    callPrefetch(input) {
+      calls++
+      const d = deferred<PrefetchReply>()
+      pending.set(`${input.query}:${calls}`, d)
+      return d.promise
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e1', 1))
+
+  // 1. Reply arriving after absolute deadlineAt (even before setTimeout callback) MUST become timeout.
+  const reqLateReply = randomUUID()
+  prefetch.startPrefetch({ requestId: reqLateReply, sessionId: 's1', queryText: 'late-reply' })
+  clock += 85 // past deadlineAt (10_080) without waiting for real setTimeout
+  pending.get('late-reply:1')!.resolve({
+    epoch: 'e1', revision: 1,
+    result: { status: 'hit', text: 'SHOULD_NOT_HIT', partial: false, hits: [{ text: 'SHOULD_NOT_HIT', names: ['x'] }] },
+  })
+  await Promise.resolve()
+  // Also advance past cacheTtlMs (50ms) and trigger cleanupExpired via another prefetch.
+  clock += 200
+  const reqFirstSkipped = randomUUID()
+  prefetch.startPrefetch({ requestId: reqFirstSkipped, sessionId: 's1', queryText: '' })
+  // Push >1005 skipped entries to prove earlier skipped delivery is NOT evicted by an arbitrary 1000 cap.
+  for (let i = 0; i < 1005; i++) {
+    prefetch.startPrefetch({ requestId: `skip-${i}`, sessionId: 's-other', queryText: 'my token is sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234' })
+  }
+  assert.equal(calls, 1, 'skipped entries must not call worker')
+
+  const lateClaim = await prefetch.claimPrefetch({ requestId: reqLateReply, sessionId: 's1' })
+  assert.equal(lateClaim.found, true)
+  if (lateClaim.found) assert.equal(lateClaim.result.status, 'timeout', 'settled timeout must survive TTL eviction')
+
+  const skippedClaim = await prefetch.claimPrefetch({ requestId: reqFirstSkipped, sessionId: 's1' })
+  assert.equal(skippedClaim.found, true)
+  if (skippedClaim.found) assert.equal(skippedClaim.result.status, 'skipped', 'skipped delivery must survive TTL and >1000 sibling deliveries')
+
+  // 2. Re-query reply arriving after absolute deadlineAt MUST also become timeout.
+  const reqRequery = randomUUID()
+  prefetch.startPrefetch({ requestId: reqRequery, sessionId: 's2', queryText: 'requery-late' })
+  pending.get('requery-late:2')!.resolve({
+    epoch: 'e1', revision: 1,
+    result: { status: 'hit', text: 'OLD', partial: false, hits: [{ text: 'OLD', names: ['old'] }] },
+  })
+  await Promise.resolve()
+  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 2 })
+  clock += 40 // 40ms remaining -> triggers requery
+  const requeryClaimPromise = prefetch.claimPrefetch({ requestId: reqRequery, sessionId: 's2' })
+  await Promise.resolve()
+  clock += 50 // now past deadlineAt before requery resolves
+  pending.get('requery-late:3')!.resolve({
+    epoch: 'e1', revision: 2,
+    result: { status: 'hit', text: 'LATE_REQUERY', partial: false, hits: [{ text: 'LATE_REQUERY', names: ['late'] }] },
+  })
+  const requeryClaim = await requeryClaimPromise
+  assert.equal(requeryClaim.found, true)
+  if (requeryClaim.found) assert.equal(requeryClaim.result.status, 'timeout')
+})
+
+test('late old-epoch attach response does not overwrite newer epoch L2 profile snapshot (P2-3)', async t => {
+  const port = Object.assign(new EventEmitter(), {
+    connected: true,
+    sent: [] as Array<Record<string, unknown>>,
+    send(frame: Record<string, unknown>, cb?: () => void) {
+      this.sent.push(frame)
+      cb?.()
+      return true
+    },
+  })
+  const conn = openPluginOwner({ root: '/tmp/viva-p2-3-test', hostNamespace: 'viva' }, port as unknown as typeof process)
+  t.after(() => conn.close())
+
+  const seenProfiles: Array<{ epoch: string, revision: number, text: string }> = []
+  conn.subscribe(raw => {
+    if (raw && typeof raw === 'object' && (raw as { type?: unknown }).type === 'memory_owner_profile') {
+      const p = raw as { epoch: string, revision: number, text: string }
+      seenProfiles.push({ epoch: p.epoch, revision: p.revision, text: p.text })
+    }
+  })
+
+  const startPromise = conn.start()
+  await new Promise(resolve => setImmediate(resolve))
+  const attachReq = port.sent.find(frame => frame.kind === 'request' && frame.method === 'attach')
+  assert.ok(attachReq && typeof attachReq.id === 'string')
+
+  // Newer epoch-2 state + profile arrive BEFORE the delayed attach response from epoch-1.
+  port.emit('message', { type: 'memory_owner_rpc', kind: 'event', event: ownerState('epoch-2', 4) })
+  port.emit('message', {
+    type: 'memory_owner_rpc', kind: 'event',
+    event: { type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, epoch: 'epoch-2', revision: 4, text: '## 自动整理\n- 新纪元画像' },
+  })
+  // Delayed attach response carrying stale epoch-1 state & profile arrives now.
+  port.emit('message', {
+    type: 'memory_owner_rpc', kind: 'result', id: attachReq.id, ok: true,
+    result: {
+      state: ownerState('epoch-1', 1),
+      profile: { epoch: 'epoch-1', revision: 1, text: '## 自动整理\n- 过期旧纪元画像' },
+    },
+  })
+  await startPromise
+
+  assert.deepEqual(seenProfiles, [{ epoch: 'epoch-2', revision: 4, text: '## 自动整理\n- 新纪元画像' }])
+  // Late subscriber must still receive the epoch-2 profile, not epoch-1!
+  const lateSubscriberProfiles: Array<{ epoch: string, text: string }> = []
+  conn.subscribe(raw => {
+    if (raw && typeof raw === 'object' && (raw as { type?: unknown }).type === 'memory_owner_profile') {
+      const p = raw as { epoch: string, text: string }
+      lateSubscriberProfiles.push({ epoch: p.epoch, text: p.text })
+    }
+  })
+  assert.deepEqual(lateSubscriberProfiles, [{ epoch: 'epoch-2', text: '## 自动整理\n- 新纪元画像' }])
+})
+
+test('TTL eviction retains empty and stale-hit delivery terminals and cancelPrefetch/clearSession release them (R2 P2-2, P2-3)', async t => {
+  let clock = 20_000
+  const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
+  let calls = 0
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 80,
+    cacheTtlMs: 50,
+    callPrefetch(input) {
+      calls++
+      const d = deferred<PrefetchReply>()
+      pending.set(`${input.query}:${calls}`, d)
+      return d.promise
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e1', 5))
+
+  // 1. Settled empty survives TTL without falling back to found:false
+  const reqEmpty = randomUUID()
+  prefetch.startPrefetch({ requestId: reqEmpty, sessionId: 's-ttl', queryText: 'no-match' })
+  pending.get('no-match:1')!.resolve({ epoch: 'e1', revision: 5, result: { status: 'empty' } })
+  await Promise.resolve()
+
+  // 2. Settled hit invalidated by R+1 survives TTL as timeout without falling back to found:false
+  const reqStaleHit = randomUUID()
+  prefetch.startPrefetch({ requestId: reqStaleHit, sessionId: 's-ttl', queryText: 'will-stale' })
+  pending.get('will-stale:2')!.resolve({
+    epoch: 'e1', revision: 5,
+    result: { status: 'hit', text: 'STALE', partial: false, hits: [{ text: 'STALE', names: ['s'] }] },
+  })
+  await Promise.resolve()
+  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 6 })
+
+  // 3. Undelivered skipped delivery can be cancelled cleanly; closed session releases its terminals
+  const reqCancelled = randomUUID()
+  const reqOtherSession = randomUUID()
+  prefetch.startPrefetch({ requestId: reqCancelled, sessionId: 's-ttl', queryText: '' })
+  prefetch.startPrefetch({ requestId: reqOtherSession, sessionId: 's-keep', queryText: '' })
+
+  clock += 200
+  prefetch.cleanupExpired()
+
+  prefetch.cancelPrefetch('s-ttl', reqCancelled)
+  assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqCancelled, sessionId: 's-ttl' }), { found: true, result: { status: 'skipped' } })
+
+  const emptyClaim = await prefetch.claimPrefetch({ requestId: reqEmpty, sessionId: 's-ttl' })
+  assert.deepEqual(emptyClaim, { found: true, result: { status: 'empty' } })
+
+  const staleClaim = await prefetch.claimPrefetch({ requestId: reqStaleHit, sessionId: 's-ttl' })
+  assert.deepEqual(staleClaim, { found: true, result: { status: 'timeout' } })
+  assert.equal(calls, 2, 'no second retrieval may run after TTL eviction of empty or stale hit')
+
+  // clearSession cleans target session only
+  const reqCloseMe = randomUUID()
+  prefetch.startPrefetch({ requestId: reqCloseMe, sessionId: 's-ttl', queryText: '' })
+  prefetch.clearSession('s-ttl')
+  assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqCloseMe, sessionId: 's-ttl' }), { found: false })
+  assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqOtherSession, sessionId: 's-keep' }), { found: true, result: { status: 'skipped' } })
+})
+
+test('valid on-time hit survives >60s TTL cleanup when owner epoch and revision are unchanged (R3 P2-2)', async t => {
+  let clock = 50_000
+  const reply = deferred<PrefetchReply>()
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 80,
+    cacheTtlMs: 60_000,
+    callPrefetch: () => reply.promise,
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e-valid', 9))
+
+  const reqValid = randomUUID()
+  prefetch.startPrefetch({ requestId: reqValid, sessionId: 's-late-hit', queryText: 'valid query' })
+  reply.resolve({
+    epoch: 'e-valid', revision: 9,
+    result: { status: 'hit', text: 'VALID_LATE_EVIDENCE', partial: false, hits: [{ text: 'VALID_LATE_EVIDENCE', names: ['note'] }] },
+  })
+  await Promise.resolve()
+
+  // Advance clock past 60s TTL (61s) with epoch and revision unchanged, then run cleanupExpired
+  clock += 61_000
+  prefetch.cleanupExpired()
+
+  const claim = await prefetch.claimPrefetch({ requestId: reqValid, sessionId: 's-late-hit' })
+  assert.equal(claim.found, true)
+  assert.equal(claim.result.status, 'hit', 'valid hit with unchanged epoch and revision must survive >60s TTL until delivered')
+  if (claim.result.status === 'hit') assert.equal(claim.result.text, 'VALID_LATE_EVIDENCE')
+})
+
+test('multi-steer starts live fallback immediately for missing-ID sibling while slow sibling claim is pending, and pre-commit cancel/prepareRequest failure emit zero receipts (R3 P2-4, P2-7)', async t => {
+  const { dir } = scratch(t, 'memory-r3-adapter-concurrency-')
+  const root = path.join(dir, 'memory')
+  const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
+  port.connected = true
+
+  const slowClaimA = deferred<{ found: boolean, result?: AutomaticRecallResult, epoch?: string, revision?: number }>()
+  const fallbackEvents: string[] = []
+  const contextUsedReports: unknown[] = []
+  let slowAStarted = false
+  let fallbackBStartedBeforeASettled = false
+
+  port.send = (raw, cb) => {
+    cb?.()
+    const frame = ownerRpcFrame(raw)
+    if (!frame || frame.kind !== 'request') return true
+    if (frame.method === 'attach') {
+      queueMicrotask(() => {
+        port.emit('message', {
+          type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+          result: { state: ownerState('e-conc', 1) },
+        })
+      })
+      return true
+    }
+    if (frame.method === 'claimPrefetch') {
+      const input = frame.input as { requestId: string, sessionId: string }
+      if (input.requestId === reqA) {
+        slowAStarted = true
+        void slowClaimA.promise.then(res => {
+          port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: res })
+        })
+      } else {
+        // Message B HAS an ID, but host has no prefetch entry -> immediate { found: false }
+        queueMicrotask(() => {
+          port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { found: false } })
+        })
+      }
+      return true
+    }
+    if (frame.method === 'adapter') {
+      const { method, args } = frame.input as { method: string, args: unknown[] }
+      if (method === 'automaticRecall') {
+        fallbackEvents.push('automaticRecall')
+        if (slowAStarted && !aSettled) fallbackBStartedBeforeASettled = true
+        queueMicrotask(() => {
+          port.emit('message', {
+            type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+            result: { status: 'hit', text: 'EVIDENCE_B', partial: false, hits: [{ text: 'EVIDENCE_B', names: ['b'] }] },
+          })
+        })
+        return true
+      }
+      if (method === 'reportContextUsed') {
+        contextUsedReports.push(args[0])
+        queueMicrotask(() => {
+          port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: undefined })
+        })
+        return true
+      }
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { nextSeq: 0, createdAt: 0 } })
+      })
+    }
+    return true
+  }
+
+  const reqA = randomUUID()
+  const reqB = randomUUID()
+  let aSettled = false
+
+  const ctx = new Context()
+  const preStepHandlers: Array<(payload: any, next: () => Promise<any>) => Promise<any>> = []
+  const sessionEventHandlers: Array<(session: any, event: any) => void> = []
+  const fakeCtx = Object.assign(ctx, {
+    agents: { list: () => [] },
+    sessions: { list: () => [], flush: async () => true, get: () => undefined },
+    tools: { register: () => () => {} },
+    llm: { stream: async function* () {} },
+    on(event: string, listener: (...args: any[]) => any) {
+      if (event === 'agent/pre-step') preStepHandlers.push(listener)
+      if (event === 'session/event') sessionEventHandlers.push(listener)
+      return () => {}
+    },
+    inject() { return () => {} },
+    effect() { return () => {} },
+  })
+
+  const owner = applyMemoryAdapter(fakeCtx as unknown as Context, { host: true, dataRoot: root }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(owner.ready(), true)
+
+  const msgA = createUserMessage({ content: [{ type: 'text', text: withRequestSource('问题 A', reqA, '问题 A').text }], source: { kind: 'user' } })
+  const msgB = createUserMessage({ content: [{ type: 'text', text: withRequestSource('问题 B', reqB, '问题 B').text }], source: { kind: 'user' } })
+  const fakeSession = { id: 'sess-conc', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const preStep = preStepHandlers[0]!
+
+  const decisionPromise = preStep({
+    agent: { session: fakeSession },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgA, msgB] }))
+
+  // Wait briefly for B's immediate { found: false } -> automaticRecall BEFORE resolving slow A!
+  await new Promise(resolve => setTimeout(resolve, 25))
+  assert.equal(fallbackBStartedBeforeASettled, true, 'message B with missing host claim must start fallback BEFORE slow sibling A settles')
+
+  aSettled = true
+  slowClaimA.resolve({
+    found: true, epoch: 'e-conc', revision: 1,
+    result: { status: 'hit', text: 'EVIDENCE_A', partial: false, hits: [{ text: 'EVIDENCE_A', names: ['a'] }] },
+  })
+  const decision = await decisionPromise
+  const appendedRecall = decision.messages.slice(2)
+  assert.equal(appendedRecall.length, 2)
+  assert.match(appendedRecall[0].content[0].text, new RegExp(`ref="${reqA}"`))
+  assert.match(appendedRecall[0].content[0].text, /EVIDENCE_A/)
+  assert.match(appendedRecall[1].content[0].text, new RegExp(`ref="${reqB}"`))
+  assert.match(appendedRecall[1].content[0].text, /EVIDENCE_B/)
+
+  // Post-pre-step, pre-commit boundary: ZERO reportContextUsed before user/message is committed!
+  assert.equal(contextUsedReports.length, 0, 'pre-step alone must NOT emit reportContextUsed before user/message commit')
+  // Simulate post-pre-step cancellation / prepareRequest failure -> turn/end fires without user/message commit!
+  for (const fn of sessionEventHandlers) fn(fakeSession, { type: 'turn/end', seq: 1, time: Date.now(), data: { turn: 1, reason: { kind: 'aborted' } } })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(contextUsedReports.length, 0, 'post-pre-step cancellation before commit must emit 0 reportContextUsed')
+  // Even a late stray event for the cleared recall message must not fire after turn/end cleanup
+  for (const fn of sessionEventHandlers) fn(fakeSession, { type: 'user/message', seq: 2, time: Date.now(), data: appendedRecall[0] })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(contextUsedReports.length, 0, 'cleared pending confirmation must not fire after turn/end')
+
+  // Simulate prepareRequest failure on turn 2: pre-step succeeds, turn/end(error) fires without commit -> 0 reports
+  const decision2 = await preStep({
+    agent: { session: fakeSession },
+    turn: 2,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgB] }))
+  assert.equal(decision2.messages.length, 2)
+  for (const fn of sessionEventHandlers) fn(fakeSession, { type: 'turn/end', seq: 3, time: Date.now(), data: { turn: 2, reason: { kind: 'error' } } })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(contextUsedReports.length, 0, 'prepareRequest failure before commit must emit 0 reportContextUsed')
+
+  // Committed turn 3: emitting user/message confirms reportContextUsed exactly once (and continuation step has no human message -> still 1!)
+  const decision3 = await preStep({
+    agent: { session: fakeSession },
+    turn: 3,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgB] }))
+  for (const fn of sessionEventHandlers) fn(fakeSession, { type: 'user/message', seq: 4, time: Date.now(), data: decision3.messages[1] })
+  // Continuation step with empty human messages
+  await preStep({
+    agent: { session: fakeSession },
+    turn: 3,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [] }))
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(contextUsedReports.length, 1, 'committed turn with continuation step must emit reportContextUsed exactly once')
+})
+
+test('multi-steer refreshes hit A once on the host via refreshPrefetch preserving verified query/scope/deadline when revision changes while sibling B is pending (R4 P2-4, R5 P2-4)', async t => {
+  const { dir } = scratch(t, 'memory-r4-adapter-refresh-')
+  const root = path.join(dir, 'memory')
+  const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
+  port.connected = true
+
+  const reqA = randomUUID()
+  const reqB = randomUUID()
+  const slowPrefetchB = deferred<PrefetchReply>()
+  const hostQueries: Array<{ query: string, session: string }> = []
+  let refreshRpcCalls = 0
+  let fallbackAdapterCalls = 0
+
+  const hostPrefetch = createMemoryPrefetchManager({
+    defaultBudgetMs: 180,
+    async callPrefetch(input) {
+      hostQueries.push({ query: input.query, session: input.session })
+      if (input.query === '任务 A 的原始已验证查询') {
+        if (hostQueries.filter(q => q.query === input.query).length === 1) {
+          return { epoch: 'e-ref', revision: 1, result: { status: 'hit', text: 'OLD_REV1_A', partial: false, hits: [{ text: 'OLD_REV1_A', names: ['a'] }] } }
+        }
+        return { epoch: 'e-ref', revision: 2, result: { status: 'hit', text: 'FRESH_REV2_A', partial: false, hits: [{ text: 'FRESH_REV2_A', names: ['a2'] }] } }
+      }
+      return slowPrefetchB.promise
+    },
+  })
+  t.after(() => hostPrefetch.close())
+  hostPrefetch.onState(ownerState('e-ref', 1))
+  hostPrefetch.startPrefetch({ requestId: reqA, sessionId: 'sess-ref', queryText: '任务 A 的原始已验证查询' })
+  hostPrefetch.startPrefetch({ requestId: reqB, sessionId: 'sess-ref', queryText: '任务 B 查询' })
+
+  port.send = (raw, cb) => {
+    cb?.()
+    const frame = ownerRpcFrame(raw)
+    if (!frame || frame.kind !== 'request') return true
+    if (frame.method === 'attach') {
+      queueMicrotask(() => {
+        port.emit('message', {
+          type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+          result: { state: ownerState('e-ref', 1) },
+        })
+      })
+      return true
+    }
+    if (frame.method === 'claimPrefetch') {
+      const input = frame.input as { requestId: string, sessionId: string }
+      void hostPrefetch.claimPrefetch(input).then(res => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: res })
+      })
+      return true
+    }
+    if (frame.method === 'refreshPrefetch') {
+      refreshRpcCalls++
+      const input = frame.input as { requestId: string, sessionId: string }
+      void hostPrefetch.refreshPrefetch(input).then(res => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: res })
+      })
+      return true
+    }
+    if (frame.method === 'adapter') {
+      const { method } = frame.input as { method: string }
+      if (method === 'automaticRecall') {
+        // Simulate task message with no native sourceAlias -> adapter automaticRecall would return skipped!
+        fallbackAdapterCalls++
+        queueMicrotask(() => {
+          port.emit('message', {
+            type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+            result: { status: 'skipped' },
+          })
+        })
+        return true
+      }
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { nextSeq: 0, createdAt: 0 } })
+      })
+    }
+    return true
+  }
+
+  const ctx = new Context()
+  const preStepHandlers: Array<(payload: any, next: () => Promise<any>) => Promise<any>> = []
+  const fakeCtx = Object.assign(ctx, {
+    agents: { list: () => [] },
+    sessions: { list: () => [], flush: async () => true, get: () => undefined },
+    tools: { register: () => () => {} },
+    llm: { stream: async function* () {} },
+    on(event: string, listener: (...args: any[]) => any) {
+      if (event === 'agent/pre-step') preStepHandlers.push(listener)
+      return () => {}
+    },
+    inject() { return () => {} },
+    effect() { return () => {} },
+  })
+
+  const owner = applyMemoryAdapter(fakeCtx as unknown as Context, { host: true, dataRoot: root }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(owner.ready(), true)
+
+  const msgA = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('任务 A 的原始已验证查询', reqA).text }], source: { kind: 'user' } })
+  const msgB = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('任务 B 查询', reqB).text }], source: { kind: 'user' } })
+  const fakeSession = { id: 'sess-ref', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const preStep = preStepHandlers[0]!
+
+  const decisionPromise = preStep({
+    agent: { session: fakeSession },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgA, msgB] }))
+
+  // Let A settle at rev 1 while B is still pending, then bump revision to 2 on BOTH host & adapter before B resolves!
+  await new Promise(resolve => setTimeout(resolve, 15))
+  const changeEv = { type: 'memory_owner_change' as const, protocol: MEMORY_HOST_PROTOCOL as 4, epoch: 'e-ref', revision: 2 }
+  hostPrefetch.onChange(changeEv)
+  port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'event', event: changeEv })
+  slowPrefetchB.resolve({
+    epoch: 'e-ref', revision: 2,
+    result: { status: 'hit', text: 'REV2_B', partial: false, hits: [{ text: 'REV2_B', names: ['b'] }] },
+  })
+
+  const decision = await decisionPromise
+  assert.equal(refreshRpcCalls, 1, 'stale host-claimed hit A must refresh via host refreshPrefetch')
+  assert.equal(fallbackAdapterCalls, 0, 'host refresh must NOT fall back to alias-dependent adapter automaticRecall')
+  assert.deepEqual(
+    hostQueries.filter(q => q.query === '任务 A 的原始已验证查询').length,
+    2,
+    'host refreshPrefetch must reuse original verified queryText on the host',
+  )
+  const appendedRecall = decision.messages.slice(2)
+  assert.equal(appendedRecall.length, 2)
+  assert.match(appendedRecall[0].content[0].text, /FRESH_REV2_A/, 'refreshed hit A must carry rev 2 evidence (never skipped)')
+  assert.match(appendedRecall[1].content[0].text, /REV2_B/)
+})
+
+test('real DSH agent-loop emits 0 memory_context receipts on prepareRequest failure and post-pre-step cancel before commit, and 1 on committed turn (R4 P2-7)', async t => {
+  const { dir } = scratch(t, 'memory-r4-dsh-prepare-receipt-')
+  const config = path.join(dir, 'cordis.yml')
+  const root = path.join(dir, 'memory')
+  writeFileSync(config, JSON.stringify([
+    'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions',
+  ].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
+
+  const ctx = await boot('memory-r4-receipt-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
+  t.after(async () => { await ctx.fiber.dispose() })
+
+  const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
+  port.connected = true
+  const contextUsedReports: unknown[] = []
+  port.send = (raw, cb) => {
+    cb?.()
+    const frame = ownerRpcFrame(raw)
+    if (!frame || frame.kind !== 'request') return true
+    if (frame.method === 'attach') {
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { state: ownerState('e-dsh', 1) } })
+      })
+      return true
+    }
+    if (frame.method === 'claimPrefetch') {
+      queueMicrotask(() => {
+        port.emit('message', {
+          type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+          result: {
+            found: true, epoch: 'e-dsh', revision: 1,
+            result: { status: 'hit', text: 'DSH_EVIDENCE', partial: false, hits: [{ text: 'DSH_EVIDENCE', names: ['e'] }] },
+          },
+        })
+      })
+      return true
+    }
+    if (frame.method === 'adapter') {
+      const { method, args } = frame.input as { method: string, args: unknown[] }
+      if (method === 'reportContextUsed') {
+        contextUsedReports.push(args[0])
+        queueMicrotask(() => { port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: undefined }) })
+        return true
+      }
+      if (method === 'automaticRecall') {
+        queueMicrotask(() => {
+          port.emit('message', {
+            type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+            result: { status: 'hit', text: 'DSH_EVIDENCE', partial: false, hits: [{ text: 'DSH_EVIDENCE', names: ['e'] }] },
+          })
+        })
+        return true
+      }
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { nextSeq: 0, createdAt: 0 } })
+      })
+    }
+    return true
+  }
+
+  let prepareMode: 'fail' | 'cancel' | 'ok' = 'fail'
+  let prepareCalls = 0
+  let cancelCurrentAgent: (() => void) | undefined
+  class TestPrepareAdapter extends LlmAdapter {
+    override async prepareCall(provider: string, model: string, signal?: AbortSignal) {
+      prepareCalls++
+      if (prepareMode === 'fail') throw new Error('simulated prepareRequest failure after pre-step')
+      if (prepareMode === 'cancel') {
+        cancelCurrentAgent?.()
+        await new Promise(resolve => setTimeout(resolve, 10))
+        signal?.throwIfAborted()
+      }
+      return super.prepareCall(provider, model, signal)
+    }
+    override async *stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: 'committed reply' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: 'committed reply' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  ctx.llm.registerAdapter(['mock'], new TestPrepareAdapter())
+
+  const owner = applyMemoryAdapter(ctx, { host: true, dataRoot: root }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(owner.ready(), true)
+
+  const handle = await ctx.agents.create({
+    sessionId: SessionId(randomUUID()),
+    agentOptions: { provider: 'mock', model: 'test-model' },
+  })
+  t.after(async () => { await handle.dispose() })
+  cancelCurrentAgent = () => { void handle.agent.cancel({ kind: 'user' }) }
+
+  const runTurn = async (text: string) => {
+    const done = deferred<void>()
+    const off = ctx.on('session/event', (session, event) => {
+      if (session.id === handle.agent.session.id && event.type === 'turn/end') {
+        off()
+        done.resolve()
+      }
+    })
+    handle.agent.send(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), 'next-turn', true)
+    await done.promise
+  }
+
+  // Turn 1: real pre-step injects <memory-recall>, then real prepareRequest throws BEFORE user/message commit -> 0 receipts!
+  prepareMode = 'fail'
+  await runTurn('第一次查询触发 prepareRequest 失败')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(prepareCalls, 1, 'real dsh-agent-loop must reach prepareCall right after pre-step')
+  assert.equal(contextUsedReports.length, 0, 'real prepareRequest failure after pre-step must emit 0 memory_context receipts')
+
+  // Turn 2: real pre-step injects <memory-recall>, then real agent.cancel() fires during prepareCall BEFORE commit -> 0 receipts!
+  prepareMode = 'cancel'
+  await runTurn('第二次查询在 pre-step 后取消')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(prepareCalls, 2)
+  assert.equal(contextUsedReports.length, 0, 'real post-pre-step cancellation before commit must emit 0 memory_context receipts')
+
+  // Turn 3: real committed turn -> EXACTLY 1 receipt!
+  prepareMode = 'ok'
+  await runTurn('第三次查询正常提交')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(prepareCalls, 3)
+  assert.equal(contextUsedReports.length, 1, 'real committed turn must emit exactly 1 memory_context receipt')
+})
+
+test('cancelPrefetch, clearSession, and close during an in-flight claim prevent hit restoration and refreshPrefetch re-query (R6 P2-3)', async t => {
+  for (const mode of ['cancel', 'clearSession', 'close'] as const) {
+    let calls = 0
+    const held = deferred<PrefetchReply>()
+    const prefetch = createMemoryPrefetchManager({
+      defaultBudgetMs: 180,
+      callPrefetch() {
+        calls++
+        return held.promise
+      },
+    })
+    t.after(() => prefetch.close())
+    prefetch.onState(ownerState('e-cancel', 1))
+
+    const reqId = randomUUID()
+    prefetch.startPrefetch({ requestId: reqId, sessionId: 'sess-inflight', queryText: 'held query' })
+    const claimPromise = prefetch.claimPrefetch({ requestId: reqId, sessionId: 'sess-inflight' })
+    await Promise.resolve()
+
+    if (mode === 'cancel') prefetch.cancelPrefetch('sess-inflight', reqId)
+    else if (mode === 'clearSession') prefetch.clearSession('sess-inflight')
+    else prefetch.close()
+
+    held.resolve({
+      epoch: 'e-cancel', revision: 1,
+      result: { status: 'hit', text: 'SHOULD_NOT_RESTORE', partial: false, hits: [{ text: 'SHOULD_NOT_RESTORE', names: ['x'] }] },
+    })
+    const claimed = await claimPromise
+    assert.deepEqual(claimed, { found: true, result: { status: 'skipped' } }, `${mode}: cancelled in-flight claim must return terminal skipped (suppressing fallback)`)
+
+    const refreshed = await prefetch.refreshPrefetch({ requestId: reqId, sessionId: 'sess-inflight' })
+    assert.deepEqual(
+      refreshed,
+      { found: true, result: { status: mode === 'cancel' ? 'skipped' : 'timeout' } },
+      `${mode}: refreshPrefetch must return terminal non-hit without re-querying after ${mode}`,
+    )
+    assert.equal(calls, 1, `${mode}: cancelled in-flight claim must NOT trigger a second worker lookup on refreshPrefetch`)
+  }
+})
+
+test('cancelling pending multi-steer claim suppresses adapter automaticRecall fallback, and settled handoff/batch/retry cancellation is gap-free (R7 P2-2, R7 P2-3)', async t => {
+  // Part A (R7 P2-2): In a multi-steer step, cancelling pending claim A must return terminal skipped so the adapter
+  // does NOT issue an automaticRecall fallback RPC for A while sibling B still delivers its hit.
+  const { dir } = scratch(t, 'memory-r7-p2-2-cancel-fallback-')
+  const root = path.join(dir, 'memory')
+  const reqA = randomUUID()
+  const reqB = randomUUID()
+  const heldA = deferred<PrefetchReply>()
+  const heldB = deferred<PrefetchReply>()
+  let fallbackCalls = 0
+  const hostPrefetch = createMemoryPrefetchManager({
+    defaultBudgetMs: 400,
+    callPrefetch(input) {
+      if (input.query.includes('取消的追问 A')) return heldA.promise
+      return heldB.promise
+    },
+  })
+  t.after(() => hostPrefetch.close())
+  hostPrefetch.onState(ownerState('e-r7', 1))
+  hostPrefetch.startPrefetch({ requestId: reqA, sessionId: 'sess-r7', queryText: '取消的追问 A' })
+  hostPrefetch.startPrefetch({ requestId: reqB, sessionId: 'sess-r7', queryText: '保留的追问 B' })
+
+  const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
+  port.connected = true
+  port.send = (raw, cb) => {
+    cb?.()
+    const frame = ownerRpcFrame(raw)
+    if (!frame || frame.kind !== 'request') return true
+    if (frame.method === 'attach') {
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { state: ownerState('e-r7', 1) } })
+      })
+      return true
+    }
+    if (frame.method === 'claimPrefetch') {
+      const input = frame.input as { requestId: string, sessionId: string }
+      void hostPrefetch.claimPrefetch(input).then(result => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result })
+      })
+      return true
+    }
+    if (frame.method === 'adapter') {
+      const { method } = frame.input as { method: string }
+      if (method === 'automaticRecall') fallbackCalls++
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { status: 'empty' } })
+      })
+    }
+    return true
+  }
+
+  const preStepHandlers: Array<(...args: any[]) => any> = []
+  const fakeCtx = Object.assign(new Context(), {
+    agents: { list: () => [] },
+    sessions: { list: () => [], flush: async () => true, get: () => undefined },
+    tools: { register: () => () => {} },
+    llm: { stream: async function* () {} },
+    on(event: string, listener: (...args: any[]) => any) {
+      if (event === 'agent/pre-step') preStepHandlers.push(listener)
+      return () => {}
+    },
+    inject() { return () => {} },
+    effect() { return () => {} },
+  })
+  const owner = applyMemoryAdapter(fakeCtx as unknown as Context, { host: true, dataRoot: root }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  await new Promise(resolve => setTimeout(resolve, 25))
+
+  const msgA = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('取消的追问 A', reqA).text }], source: { kind: 'user' } })
+  const msgB = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('保留的追问 B', reqB).text }], source: { kind: 'user' } })
+  const fakeSession = { id: 'sess-r7', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const decisionPromise = preStepHandlers[0]!({
+    agent: { session: fakeSession },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgA, msgB] }))
+
+  await new Promise(resolve => setTimeout(resolve, 15))
+  hostPrefetch.cancelPrefetch('sess-r7', reqA)
+  heldB.resolve({ epoch: 'e-r7', revision: 1, result: { status: 'hit', text: 'HIT_B', partial: false, hits: [{ text: 'HIT_B', names: ['b'] }] } })
+  const decision = await decisionPromise
+  assert.equal(fallbackCalls, 0, 'cancelled pending multi-steer claim must NOT trigger adapter automaticRecall fallback (R7 P2-2)')
+  assert.equal(decision.messages.length, 3, 'only sibling B should inject recall')
+  assert.match(decision.messages[2].content[0].text, /HIT_B/)
+
+  // Part B (R7 P2-3a): Settled hit cancelled synchronously right after claimPrefetch call (microtask handoff gap)
+  // must return skipped AND must NOT allow refreshPrefetch to run a 2nd lookup.
+  let callsB = 0
+  const prefetchB = createMemoryPrefetchManager({
+    defaultBudgetMs: 250,
+    async callPrefetch() {
+      callsB++
+      return { epoch: 'e-b', revision: 1, result: { status: 'hit', text: 'HIT_SETTLED', partial: false, hits: [{ text: 'HIT_SETTLED', names: ['s'] }] } }
+    },
+  })
+  t.after(() => prefetchB.close())
+  prefetchB.onState(ownerState('e-b', 1))
+  const reqS = randomUUID()
+  prefetchB.startPrefetch({ requestId: reqS, sessionId: 'sess-b', queryText: 'settled hit' })
+  await new Promise(resolve => setTimeout(resolve, 15))
+  const claimSettledPromise = prefetchB.claimPrefetch({ requestId: reqS, sessionId: 'sess-b' })
+  prefetchB.cancelPrefetch('sess-b', reqS)
+  assert.deepEqual(await claimSettledPromise, { found: true, result: { status: 'skipped' } }, 'cancel during settled claim handoff must return skipped (R7 P2-3)')
+  assert.deepEqual(await prefetchB.refreshPrefetch({ requestId: reqS, sessionId: 'sess-b' }), { found: true, result: { status: 'skipped' } })
+  assert.equal(callsB, 1, 'cancelled settled hit must NOT permit a 2nd worker lookup on refreshPrefetch')
+
+  // Part C (R7 P2-3b): Batch [A (settled), B (pending)] — cancel A while waiting on B must return skipped for A.
+  const heldBatchB = deferred<PrefetchReply>()
+  const prefetchC = createMemoryPrefetchManager({
+    defaultBudgetMs: 250,
+    callPrefetch(input) {
+      if (input.query === 'batch-a') {
+        return Promise.resolve({ epoch: 'e-c', revision: 1, result: { status: 'hit', text: 'BATCH_A', partial: false, hits: [{ text: 'BATCH_A', names: ['a'] }] } })
+      }
+      return heldBatchB.promise
+    },
+  })
+  t.after(() => prefetchC.close())
+  prefetchC.onState(ownerState('e-c', 1))
+  const reqBA = randomUUID()
+  const reqBB = randomUUID()
+  prefetchC.startPrefetch({ requestId: reqBA, sessionId: 'sess-c', queryText: 'batch-a' })
+  prefetchC.startPrefetch({ requestId: reqBB, sessionId: 'sess-c', queryText: 'batch-b' })
+  await new Promise(resolve => setTimeout(resolve, 15))
+  const batchPromise = prefetchC.claimPrefetchBatch({ requestIds: [reqBA, reqBB], sessionId: 'sess-c' })
+  await Promise.resolve()
+  prefetchC.cancelPrefetch('sess-c', reqBA)
+  heldBatchB.resolve({ epoch: 'e-c', revision: 1, result: { status: 'hit', text: 'BATCH_B', partial: false, hits: [{ text: 'BATCH_B', names: ['b'] }] } })
+  const batchRes = await batchPromise
+  assert.deepEqual(batchRes[0], { found: true, result: { status: 'skipped' } }, 'cancelled settled batch item A while waiting on B must return skipped (R7 P2-3)')
+  assert.equal(batchRes[1]?.found, true)
+  assert.equal(batchRes[1]?.result.status, 'hit')
+
+  // Part D (R7 P2-3c): Active retry in runRequeryOnce (via refreshPrefetch) must abort immediately on cancelPrefetch.
+  let retryAborted = false
+  let retryCalls = 0
+  const heldRetry = deferred<PrefetchReply>()
+  const prefetchD = createMemoryPrefetchManager({
+    defaultBudgetMs: 300,
+    callPrefetch(_input, opts) {
+      retryCalls++
+      if (retryCalls === 1) {
+        return Promise.resolve({ epoch: 'e-d', revision: 1, result: { status: 'hit', text: 'INITIAL', partial: false, hits: [{ text: 'INITIAL', names: ['i'] }] } })
+      }
+      opts.signal?.addEventListener('abort', () => { retryAborted = true }, { once: true })
+      return heldRetry.promise
+    },
+  })
+  t.after(() => prefetchD.close())
+  prefetchD.onState(ownerState('e-d', 1))
+  const reqD = randomUUID()
+  prefetchD.startPrefetch({ requestId: reqD, sessionId: 'sess-d', queryText: 'retry-abort' })
+  await new Promise(resolve => setTimeout(resolve, 15))
+  const firstClaim = await prefetchD.claimPrefetch({ requestId: reqD, sessionId: 'sess-d' })
+  assert.equal(firstClaim.found && firstClaim.result.status, 'hit')
+  prefetchD.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e-d', revision: 2 })
+  const refreshPromise = prefetchD.refreshPrefetch({ requestId: reqD, sessionId: 'sess-d' })
+  await Promise.resolve()
+  prefetchD.cancelPrefetch('sess-d', reqD)
+  assert.equal(retryAborted, true, 'cancelPrefetch during active runRequeryOnce must abort the retry controller immediately (R7 P2-3)')
+  heldRetry.resolve({ epoch: 'e-d', revision: 2, result: { status: 'hit', text: 'STALE_RETRY', partial: false, hits: [{ text: 'STALE_RETRY', names: ['r'] }] } })
+  assert.deepEqual(await refreshPromise, { found: true, result: { status: 'skipped' } }, 'cancelled refreshPrefetch must return skipped')
+})
+
+test('cancel before claim, settled-sibling cancel before adoption, late valid-hit handoff cancel, and expired refresh timeout (R8 P2-1, P2-2, P2-3)', async t => {
+  // Part A (R8 P2-1): Cancelling A BEFORE its claim reaches the host (with turn & sibling B active)
+  // retains a bounded cancellation record so delayed claim consumes skipped and adapter issues 0 automaticRecall RPCs.
+  const { dir } = scratch(t, 'memory-r8-cancel-adoption-')
+  const root = path.join(dir, 'memory')
+  const reqBeforeA = randomUUID()
+  const reqBeforeB = randomUUID()
+  const reqSettledA = randomUUID()
+  const reqSettledB = randomUUID()
+  const heldSettledB = deferred<PrefetchReply>()
+  let fallbackCalls = 0
+  const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
+  port.connected = true
+
+  const hostPrefetch = createMemoryPrefetchManager({
+    defaultBudgetMs: 400,
+    callPrefetch(input) {
+      if (input.query.includes('settled-B')) return heldSettledB.promise
+      return Promise.resolve({
+        epoch: 'e-r8', revision: 1,
+        result: { status: 'hit', text: `HIT_${input.query}`, partial: false, hits: [{ text: `HIT_${input.query}`, names: ['n'] }] },
+      })
+    },
+    onCancelled({ sessionId, requestId }) {
+      port.emit('message', {
+        type: MEMORY_OWNER_RPC,
+        kind: 'event',
+        event: {
+          type: 'memory_owner_prefetch_cancelled',
+          protocol: MEMORY_HOST_PROTOCOL,
+          sessionId,
+          ...(requestId ? { requestId } : {}),
+        },
+      })
+    },
+  })
+  t.after(() => hostPrefetch.close())
+  hostPrefetch.onState(ownerState('e-r8', 1))
+
+  port.send = (raw, cb) => {
+    cb?.()
+    const frame = ownerRpcFrame(raw)
+    if (!frame || frame.kind !== 'request') return true
+    if (frame.method === 'attach') {
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { state: ownerState('e-r8', 1) } })
+      })
+      return true
+    }
+    if (frame.method === 'claimPrefetch') {
+      const input = frame.input as { requestId: string, sessionId: string }
+      void hostPrefetch.claimPrefetch(input).then(result => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result })
+      })
+      return true
+    }
+    if (frame.method === 'adapter') {
+      const { method } = frame.input as { method: string }
+      if (method === 'automaticRecall') fallbackCalls++
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { status: 'empty' } })
+      })
+    }
+    return true
+  }
+
+  const preStepHandlers: Array<(...args: any[]) => any> = []
+  const fakeCtx = Object.assign(new Context(), {
+    agents: { list: () => [] },
+    sessions: { list: () => [], flush: async () => true, get: () => undefined },
+    tools: { register: () => () => {} },
+    llm: { stream: async function* () {} },
+    on(event: string, listener: (...args: any[]) => any) {
+      if (event === 'agent/pre-step') preStepHandlers.push(listener)
+      return () => {}
+    },
+    inject() { return () => {} },
+    effect() { return () => {} },
+  })
+  const owner = applyMemoryAdapter(fakeCtx as unknown as Context, { host: true, dataRoot: root }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  await new Promise(resolve => setTimeout(resolve, 25))
+
+  // Part A: Start A & B, cancel A BEFORE claim reaches host (and WITHOUT pushing event yet to verify host record alone suppresses fallback).
+  const hostOnlyPrefetch = createMemoryPrefetchManager({
+    defaultBudgetMs: 400,
+    callPrefetch(input) {
+      return Promise.resolve({
+        epoch: 'e-r8', revision: 1,
+        result: { status: 'hit', text: `HIT_${input.query}`, partial: false, hits: [{ text: `HIT_${input.query}`, names: ['n'] }] },
+      })
+    },
+  })
+  t.after(() => hostOnlyPrefetch.close())
+  hostOnlyPrefetch.onState(ownerState('e-r8', 1))
+  hostOnlyPrefetch.startPrefetch({ requestId: reqBeforeA, sessionId: 'sess-r8-pre', queryText: 'before-A' })
+  hostOnlyPrefetch.startPrefetch({ requestId: reqBeforeB, sessionId: 'sess-r8-pre', queryText: 'before-B' })
+  hostOnlyPrefetch.cancelPrefetch('sess-r8-pre', reqBeforeA)
+  assert.deepEqual(
+    await hostOnlyPrefetch.claimPrefetch({ requestId: reqBeforeA, sessionId: 'sess-r8-pre' }),
+    { found: true, result: { status: 'skipped' } },
+    'cancel before claim must return terminal skipped on host (R8 P2-1)',
+  )
+
+  hostPrefetch.startPrefetch({ requestId: reqBeforeA, sessionId: 'sess-r8-a', queryText: 'before-A' })
+  hostPrefetch.startPrefetch({ requestId: reqBeforeB, sessionId: 'sess-r8-a', queryText: 'before-B' })
+  hostPrefetch.cancelPrefetch('sess-r8-a', reqBeforeA)
+  const msgPreA = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('before-A', reqBeforeA).text }], source: { kind: 'user' } })
+  const msgPreB = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('before-B', reqBeforeB).text }], source: { kind: 'user' } })
+  const fakeSessA = { id: 'sess-r8-a', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const resA = await preStepHandlers[0]!({
+    agent: { session: fakeSessA },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgPreA, msgPreB] }))
+  assert.equal(fallbackCalls, 0, 'cancel before claim must trigger 0 automaticRecall fallback RPCs (R8 P2-1)')
+  assert.equal(resA.messages.length, 3, 'only uncancelled sibling B should inject recall')
+  assert.match(resA.messages[2].content[0].text, /HIT_before-B/)
+
+  // Part B (R8 P2-2): Adapter receives settled hit A, then A is cancelled while B is still pending,
+  // then B settles WITHOUT changing owner revision -> decision must contain ONLY B's hit!
+  hostPrefetch.startPrefetch({ requestId: reqSettledA, sessionId: 'sess-r8-b', queryText: 'settled-A' })
+  hostPrefetch.startPrefetch({ requestId: reqSettledB, sessionId: 'sess-r8-b', queryText: 'settled-B' })
+  await new Promise(resolve => setTimeout(resolve, 15))
+  const msgSettledA = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('settled-A', reqSettledA).text }], source: { kind: 'user' } })
+  const msgSettledB = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('settled-B', reqSettledB).text }], source: { kind: 'user' } })
+  const fakeSessB = { id: 'sess-r8-b', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const settledDecisionPromise = preStepHandlers[0]!({
+    agent: { session: fakeSessB },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgSettledA, msgSettledB] }))
+  // Wait for A's claim to have settled in the adapter while B is still pending.
+  await new Promise(resolve => setTimeout(resolve, 20))
+  hostPrefetch.cancelPrefetch('sess-r8-b', reqSettledA)
+  heldSettledB.resolve({
+    epoch: 'e-r8', revision: 1,
+    result: { status: 'hit', text: 'HIT_settled-B', partial: false, hits: [{ text: 'HIT_settled-B', names: ['b'] }] },
+  })
+  const settledDecision = await settledDecisionPromise
+  assert.equal(fallbackCalls, 0)
+  assert.equal(settledDecision.messages.length, 3, 'cancelled settled sibling A must be dropped before adoption even when owner revision did not change (R8 P2-2)')
+  assert.match(settledDecision.messages[2].content[0].text, /HIT_settled-B/)
+
+  // Part C (R8 P2-2 late valid hit handoff): Late valid hit past refresh deadline cancelled during single-claim handoff returns skipped.
+  let clock = 10_000
+  const prefetchLate = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 100,
+    async callPrefetch() {
+      return { epoch: 'e-late', revision: 1, result: { status: 'hit', text: 'LATE_HIT', partial: false, hits: [{ text: 'LATE_HIT', names: ['l'] }] } }
+    },
+  })
+  t.after(() => prefetchLate.close())
+  prefetchLate.onState(ownerState('e-late', 1))
+  const reqLate = randomUUID()
+  prefetchLate.startPrefetch({ requestId: reqLate, sessionId: 'sess-late', queryText: 'late valid hit' })
+  await Promise.resolve()
+  clock += 500 // Past refresh deadline (deadlineAt = 10_100), hit is still valid!
+  const lateClaimPromise = prefetchLate.claimPrefetch({ requestId: reqLate, sessionId: 'sess-late' })
+  prefetchLate.cancelPrefetch('sess-late', reqLate)
+  assert.deepEqual(await lateClaimPromise, { found: true, result: { status: 'skipped' } }, 'late valid hit cancelled during handoff after refresh deadline must return skipped (R8 P2-2)')
+
+  // Part D (R8 P2-3): Uncancelled expired refresh consistently returns timeout whether cleanupExpired ran first or not.
+  for (const runCleanupFirst of [false, true]) {
+    let c = 20_000
+    const prefetchExp = createMemoryPrefetchManager({
+      now: () => c,
+      defaultBudgetMs: 100,
+      async callPrefetch() {
+        return { epoch: 'e-exp', revision: 1, result: { status: 'hit', text: 'EXP_HIT', partial: false, hits: [{ text: 'EXP_HIT', names: ['e'] }] } }
+      },
+    })
+    t.after(() => prefetchExp.close())
+    prefetchExp.onState(ownerState('e-exp', 1))
+    const reqExp = randomUUID()
+    prefetchExp.startPrefetch({ requestId: reqExp, sessionId: 'sess-exp', queryText: 'expiring refresh' })
+    await Promise.resolve()
+    const first = await prefetchExp.claimPrefetch({ requestId: reqExp, sessionId: 'sess-exp' })
+    assert.equal(first.found && first.result.status, 'hit')
+    c += 250 // Past refresh deadline!
+    if (runCleanupFirst) prefetchExp.cleanupExpired()
+    const refreshed = await prefetchExp.refreshPrefetch({ requestId: reqExp, sessionId: 'sess-exp' })
+    assert.deepEqual(
+      refreshed,
+      { found: true, result: { status: 'timeout' } },
+      `expired uncancelled refresh must consistently return timeout (cleanupFirst=${runCleanupFirst}) (R8 P2-3)`,
+    )
+  }
+
+  // Part E (R9 P2-1): Cancelled request stays idempotent across replayed claims AND past 60s retention window.
+  let cIdem = 50_000
+  const prefetchIdem = createMemoryPrefetchManager({
+    now: () => cIdem,
+    defaultBudgetMs: 100,
+    cacheTtlMs: 60_000,
+    async callPrefetch() {
+      return { epoch: 'e-idem', revision: 1, result: { status: 'hit', text: 'SHOULD_SKIP', partial: false, hits: [{ text: 'SHOULD_SKIP', names: ['i'] }] } }
+    },
+  })
+  t.after(() => prefetchIdem.close())
+  prefetchIdem.onState(ownerState('e-idem', 1))
+  const reqIdem = randomUUID()
+  prefetchIdem.startPrefetch({ requestId: reqIdem, sessionId: 'sess-idem', queryText: 'cancelled long ago' })
+  prefetchIdem.cancelPrefetch('sess-idem', reqIdem)
+  cIdem += 60_001
+  prefetchIdem.cleanupExpired()
+  assert.deepEqual(
+    await prefetchIdem.claimPrefetch({ requestId: reqIdem, sessionId: 'sess-idem' }),
+    { found: true, result: { status: 'skipped' } },
+    'delayed claim after 60_001ms must still return skipped (R9 P2-1)',
+  )
+  assert.deepEqual(
+    await prefetchIdem.claimPrefetch({ requestId: reqIdem, sessionId: 'sess-idem' }),
+    { found: true, result: { status: 'skipped' } },
+    'replayed claim for cancelled ID must remain idempotent skipped (R9 P2-1)',
+  )
+
+  // Part F (R9 P2-2): Clearing a session while pre-step is awaiting next() must cancel the step with 0 fallback RPCs.
+  const holdNext = deferred<{ kind: 'enter', messages: any[] }>()
+  const reqClear = randomUUID()
+  const msgClear = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('clear during next', reqClear).text }], source: { kind: 'user' } })
+  const fakeSessClear = { id: 'sess-r9-clear', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const preStepClearPromise = preStepHandlers[0]!({
+    agent: { session: fakeSessClear },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, () => holdNext.promise)
+  // Clear session BEFORE next() resolves!
+  hostPrefetch.clearSession('sess-r9-clear')
+  holdNext.resolve({ kind: 'enter', messages: [msgClear] })
+  const clearDecision = await preStepClearPromise
+  assert.equal(fallbackCalls, 0, 'session clear during await next() must issue 0 automaticRecall fallback RPCs (R9 P2-2)')
+  assert.equal(clearDecision.messages.length, 1, 'cleared pre-step must not inject recall')
+
+  // Part G (R9 P2-3, R10): Disconnected DSH IPC before exit must reach the throwing sender and NOT throw on cancel/clear.
+  const ownerR9 = createDesktopMemoryOwner({ root: path.join(dir, 'owner-r9'), dailyNotes: true }, {})
+  const dshExit = deferred<void>()
+  const attachedAck = deferred<void>()
+  const attachId = randomUUID()
+  let sendDisconnected = false
+  let attemptedDisconnectSends = 0
+  const linkR9 = ownerR9.bindDsh(frame => {
+    if (sendDisconnected) {
+      attemptedDisconnectSends++
+      throw new Error('IPC channel closed')
+    }
+    const parsed = ownerRpcFrame(frame)
+    if (parsed?.kind === 'result' && parsed.id === attachId && parsed.ok) {
+      attachedAck.resolve()
+    }
+  }, dshExit.promise, () => undefined)
+  linkR9.receive({
+    type: MEMORY_OWNER_RPC,
+    kind: 'request',
+    id: attachId,
+    method: 'attach',
+    budgetMs: 5000,
+    input: { protocol: MEMORY_HOST_PROTOCOL, root: path.join(dir, 'owner-r9'), hostNamespace: 'viva' },
+  })
+  await attachedAck.promise
+  sendDisconnected = true
+  assert.doesNotThrow(() => ownerR9.cancelPrefetch('sess-dc', randomUUID()), 'cancelPrefetch must not throw on disconnected DSH IPC (R9 P2-3)')
+  assert.doesNotThrow(() => ownerR9.clearSessionPrefetches('sess-dc'), 'clearSessionPrefetches must not throw on disconnected DSH IPC (R9 P2-3)')
+  assert.equal(attemptedDisconnectSends, 2, 'both cleanup calls must reach the throwing sender after valid attach (R10)')
+  dshExit.resolve()
+  await ownerR9.close()
+
+  // Part H (R10 P2-1 + Additional P2):
+  //   (a) At the 4,096-record LRU cap, replaying a cancelled ID refreshes recency so adding another cancellation does NOT evict it;
+  //   (b) After 1,024 claimed hits + cancelPrefetch in one session, subsequent claim sends ZERO historical cancelledRequestIds.
+  const prefetchCap = createMemoryPrefetchManager({
+    defaultBudgetMs: 100,
+    async callPrefetch() {
+      return { epoch: 'e-cap', revision: 1, result: { status: 'hit', text: 'CAP_HIT', partial: false, hits: [{ text: 'CAP_HIT', names: ['c'] }] } }
+    },
+  })
+  t.after(() => prefetchCap.close())
+  prefetchCap.onState(ownerState('e-cap', 1))
+  const hotCancelledId = randomUUID()
+  prefetchCap.cancelPrefetch('sess-cap', hotCancelledId)
+  for (let i = 0; i < 4095; i++) {
+    prefetchCap.cancelPrefetch('sess-cap', `filler-${i}`)
+  }
+  assert.deepEqual(
+    await prefetchCap.claimPrefetch({ requestId: hotCancelledId, sessionId: 'sess-cap' }),
+    { found: true, result: { status: 'skipped' } },
+    'replaying cancelled ID at 4,096 cap must hit and refresh LRU recency (R10 P2-1)',
+  )
+  prefetchCap.cancelPrefetch('sess-cap', 'overflow-4096')
+  assert.deepEqual(
+    await prefetchCap.claimPrefetch({ requestId: hotCancelledId, sessionId: 'sess-cap' }),
+    { found: true, result: { status: 'skipped' } },
+    'recently replayed cancelled ID must NOT be evicted by the next cancellation (R10 P2-1)',
+  )
+
+  const prefetchHist = createMemoryPrefetchManager({
+    defaultBudgetMs: 100,
+    async callPrefetch(input) {
+      return { epoch: 'e-hist', revision: 1, result: { status: 'hit', text: `H_${input.query}`, partial: false, hits: [{ text: `H_${input.query}`, names: ['h'] }] } }
+    },
+  })
+  t.after(() => prefetchHist.close())
+  prefetchHist.onState(ownerState('e-hist', 1))
+  for (let i = 0; i < 1024; i++) {
+    const id = `turn-${i}`
+    prefetchHist.startPrefetch({ requestId: id, sessionId: 'sess-hist', queryText: `q-${i}` })
+    await prefetchHist.claimPrefetch({ requestId: id, sessionId: 'sess-hist' })
+    prefetchHist.cancelPrefetch('sess-hist', id)
+  }
+  prefetchHist.startPrefetch({ requestId: 'turn-1024', sessionId: 'sess-hist', queryText: 'q-1024' })
+  const nextClaim = await prefetchHist.claimPrefetch({ requestId: 'turn-1024', sessionId: 'sess-hist' })
+  assert.equal(nextClaim.found && nextClaim.result.status, 'hit')
+  assert.equal(nextClaim.cancelledRequestIds, undefined, 'subsequent turn claim must NOT resend 1,024 historical cancellations (R10 Additional P2)')
+
+  // Part I (R11 P2-2): An older valid hit left unclaimed across 4,100 later claimed+cancelled turns must accumulate ZERO historical IDs.
+  const prefetchOldQueue = createMemoryPrefetchManager({
+    defaultBudgetMs: 100,
+    async callPrefetch(input) {
+      return { epoch: 'e-old', revision: 1, result: { status: 'hit', text: `OLD_${input.query}`, partial: false, hits: [{ text: `OLD_${input.query}`, names: ['o'] }] } }
+    },
+  })
+  t.after(() => prefetchOldQueue.close())
+  prefetchOldQueue.onState(ownerState('e-old', 1))
+  const reqOld = randomUUID()
+  prefetchOldQueue.startPrefetch({ requestId: reqOld, sessionId: 'sess-old-q', queryText: 'older-queued' })
+  await Promise.resolve()
+  for (let i = 0; i < 4100; i++) {
+    const id = `later-${i}`
+    prefetchOldQueue.startPrefetch({ requestId: id, sessionId: 'sess-old-q', queryText: `q-${i}` })
+    await prefetchOldQueue.claimPrefetch({ requestId: id, sessionId: 'sess-old-q' })
+    prefetchOldQueue.cancelPrefetch('sess-old-q', id)
+  }
+  const oldClaim = await prefetchOldQueue.claimPrefetch({ requestId: reqOld, sessionId: 'sess-old-q' })
+  assert.equal(oldClaim.found && oldClaim.result.status, 'hit')
+  assert.equal(oldClaim.cancelledRequestIds, undefined, 'older queued hit must NOT accumulate 4,100 later cancelled IDs (R11 P2-2)')
+})

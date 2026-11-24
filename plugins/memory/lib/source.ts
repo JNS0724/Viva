@@ -1,7 +1,7 @@
 import type {} from '@deepseek-ai/dsh-llm'
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    'viva-memory': { kind: 'viva-memory' }
+    'viva-memory': { kind: 'viva-memory', form?: 'recall' }
     'viva-memory-recovery': { kind: 'viva-memory-recovery', ticketId: string, originalMessageIds: string[] }
   }
 }

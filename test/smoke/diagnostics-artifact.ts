@@ -49,5 +49,5 @@ export async function installedDiagnostics(app: SmokeApplication, output: string
   assert.deepEqual(await readFile(destination), archive, 'clearing local logs cannot rewrite the already exported ZIP')
   assert.equal(await app.hooks.backendPid(), backend)
   assert.equal(await app.hooks.agentPid(), owner)
-  assert.ok((await app.page.evaluate(() => window.agent.getMemory())).profile)
+  assert.equal(typeof (await app.page.evaluate(() => window.agent.getMemory())).revision, 'number')
 }

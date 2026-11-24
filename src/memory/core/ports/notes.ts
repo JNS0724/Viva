@@ -29,9 +29,20 @@ export interface DailyAllocation {
     updatedAt: number;
 }
 export type DailyFileRegistration = DailyAllocation & { fileRevision: string, enabled: boolean }
+export type NoteDbRegistration = {
+    key: string;
+    workspace: string;
+    path: string;
+    revision: number;
+    processed: number;
+    fileRevision: string | null;
+    enabled: boolean;
+    deleted: boolean;
+}
 export interface MemoryNotes {
     allocations(): DailyAllocation[];
     fileRegistry(): DailyFileRegistration[];
+    noteRegistration(key: string): NoteDbRegistration | null;
     deleteFile(workspace: string, key: string, expectedUsageVersion: number): number;
     setEnabled(key: string, revision: number, enabled: boolean): boolean;
     registeredAt(workspace: string, path: string): { key: string, file_revision: string } | undefined;
@@ -43,7 +54,7 @@ export interface MemoryNotes {
     pendingCleanup(): number;
     needsRecovery(): boolean;
     recover: () => void;
-    read: (key: string, physical?: MemoryPhysicalFile | null) => Note | undefined;
+    read: (key: string, physical?: MemoryPhysicalFile | null, options?: { throwOnPhysicalError?: boolean }) => Note | undefined;
     snapshot: (ids: readonly string[]) => SourceRef[];
     jobState: (key: string, generation: number) => string | undefined;
     blocked: (key: string) => boolean;

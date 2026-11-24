@@ -1,9 +1,9 @@
 import { MAX_MESSAGE_CHARS } from '../../shared/text-limits.ts'
 import { getLocale } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
-import type { MemoryFileSummary } from '../../memory/contracts/file-management.ts'
+import type { MemoryFileSummary, MemoryManagedFileIdentity } from '../../memory/contracts/file-management.ts'
 import type { MemoryFileDetailView, MemoryFileSourceView } from '../../shared/ipc-results.ts'
-import { canEditMemoryFile, canForgetMemoryFile } from '../memory-file-state.ts'
+import { canEditMemoryFile, canForgetMemoryFile, sameMemoryFile } from '../memory-file-state.ts'
 import type { MemoryFileEditor } from '../action-types.ts'
 import { timelinePlace } from '../timeline-search.ts'
 import { composedInput, h } from './dom.ts'
@@ -11,19 +11,36 @@ import { renderMarkdown } from './markdown.ts'
 
 const titleOf = (item: MemoryFileSummary) => item.title || t(item.identity.kind === 'daily' ? 'memory-files.daily' : 'memory-files.untitled')
 
-function fileMeta(item: MemoryFileSummary) {
-  const kind = t(item.identity.kind === 'daily' ? 'memory-files.daily' : 'memory-files.digest')
+function fileMeta(item: MemoryFileSummary, resident = false) {
+  const kind = resident
+    ? t('memory-files.resident.profile')
+    : t(item.identity.kind === 'daily' ? 'memory-files.daily' : 'memory-files.digest')
   const status = item.enabled ? '' : t('memory-files.stopped')
   return h('p', { class: 'memory-meta memory-file-meta', text: [kind, item.day, status].filter(Boolean).join(' · ') })
 }
 
-function fileCard(item: MemoryFileSummary, handlers: Handlers) {
+function fileCard(item: MemoryFileSummary, handlers: Handlers, resident = false) {
   const title = titleOf(item)
-  return h('li', { class: 'memory-item', 'data-memory-file': item.identity.id },
-    h('div', { class: 'memory-copy' }, h('strong', { class: 'memory-text', text: title }), fileMeta(item)),
+  return h('li', {
+    class: 'memory-item',
+    'data-memory-file': item.identity.id,
+    ...(resident ? { 'data-resident-profile': 'true' } : {}),
+  },
+  h('div', { class: 'memory-copy' }, h('strong', { class: 'memory-text', text: title }), fileMeta(item, resident)),
+  h('div', { class: 'memory-actions' },
+    h('button', { class: 'link-btn', type: 'button', text: t('memory-files.open'),
+      'aria-label': t('memory-files.open.named', { title }), onClick: () => handlers.showMemoryFile({ identity: item.identity }) })))
+}
+
+function pinnedResidentCard(identity: MemoryManagedFileIdentity, handlers: Handlers) {
+  const title = t('memory-files.resident.profile.title')
+  return h('li', { class: 'memory-item', 'data-memory-file': identity.id, 'data-resident-profile': 'true' },
+    h('div', { class: 'memory-copy' },
+      h('strong', { class: 'memory-text', text: title }),
+      h('p', { class: 'memory-meta memory-file-meta', text: t('memory-files.resident.profile') })),
     h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', text: t('memory-files.open'),
-        'aria-label': t('memory-files.open.named', { title }), onClick: () => handlers.showMemoryFile({ identity: item.identity }) })))
+        'aria-label': t('memory-files.open.named', { title }), onClick: () => handlers.showMemoryFile({ identity }) })))
 }
 
 function sourcesOf(sources: readonly MemoryFileSourceView[], handlers: Handlers) {
@@ -79,14 +96,22 @@ function detailView(files: State['memory']['files'], handlers: Handlers) {
           onClick: handlers.reloadMemoryFile }))) : h('p', { class: 'help', role: 'status', text: t('memory-files.loading') }))
 }
 
-function listView(files: State['memory']['files'], handlers: Handlers) {
+function listView(memory: State['memory'], handlers: Handlers) {
+  const { files, residentProfile } = memory
   const search = h('input', { class: 'field', name: 'memory-files-search', type: 'search', value: files.query, maxlength: 500,
     'aria-label': t('memory-files.search'), placeholder: t('memory-files.search'), ...composedInput((value) => handlers.searchMemoryFiles(value)) })
+  const residentItem = residentProfile ? files.items.find(item => sameMemoryFile(item.identity, residentProfile)) : undefined
+  const otherItems = residentItem ? files.items.filter(item => item !== residentItem) : files.items
+  const showPinnedFallback = Boolean(residentProfile && !residentItem && !files.query.trim())
+  const cards = [
+    ...(residentItem ? [fileCard(residentItem, handlers, true)] : showPinnedFallback && residentProfile ? [pinnedResidentCard(residentProfile, handlers)] : []),
+    ...otherItems.map(item => fileCard(item, handlers)),
+  ]
   return h('div', { class: 'profile-section', 'data-memory-files-view': 'list' },
     h('div', { class: 'memory-file-tools' }, search,
       h('button', { class: 'btn btn-outline btn-small', type: 'button', name: 'memory-file-create', disabled: files.writing,
         text: t('memory-files.editor.add'), onClick: () => handlers.startMemoryFileEditor() })),
-    files.items.length ? h('ul', { class: 'memory-list', 'aria-label': t('memory-files.title') }, files.items.map(item => fileCard(item, handlers))) : null,
+    cards.length ? h('ul', { class: 'memory-list', 'aria-label': t('memory-files.title') }, cards) : null,
     files.listError ? h('div', { class: 'profile-section' },
       h('p', { class: 'form-error', role: 'alert', text: files.listError }),
       h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button', text: t('memory-files.retry'),
@@ -96,7 +121,7 @@ function listView(files: State['memory']['files'], handlers: Handlers) {
       h('p', { class: 'help', role: 'status', text: t('memory-files.list.partial') }),
       h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button', text: t('memory-files.retry'),
         onClick: handlers.reloadMemoryFileList }))) : null,
-    files.loaded && !files.loading && !files.partial && !files.items.length && !files.nextCursor && !files.listError ? h('p', { class: 'empty',
+    files.loaded && !files.loading && !files.partial && !cards.length && !files.nextCursor && !files.listError ? h('p', { class: 'empty',
       text: files.query.trim() ? t('profile-panel.no.memories.contain', { value1: files.query.trim() }) : t('memory-files.empty') }) : null,
     files.nextCursor && !files.listError ? h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', disabled: files.loading, text: t('memory-files.more'), onClick: handlers.loadMoreMemoryFiles })) : null)
@@ -218,7 +243,7 @@ export function memoryFilesSection(memory: State['memory'], handlers: Handlers) 
     h('h3', { class: 'profile-heading', id: 'memory-files-title', text: t('memory-files.title') }),
     !files.editor && !files.selection ? dreamRow(memory, handlers) : null,
     files.editor ? editorView(files, files.editor, handlers)
-      : files.selection ? detailView(files, handlers) : listView(files, handlers),
+      : files.selection ? detailView(files, handlers) : listView(memory, handlers),
     forgetView(files, handlers),
     memory.cleanupPending > 0 ? h('p', { class: 'help', role: 'status',
       text: t('memory-files.storage.cleanup.pending', { count: memory.cleanupPending }) }) : null,

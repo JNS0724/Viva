@@ -29,6 +29,7 @@ import { z } from 'zod'
 import { objectOf } from '../../src/shared/unknown-value.ts'
 import { currentTurnTextParts } from './model-user-text.ts'
 import { requestsIn, withoutHeaders } from '../../src/shared/request-routing/header.ts'
+import { taskRequestsIn, withoutTaskHeaders } from '../../src/shared/request-routing/task-header.ts'
 import { APP_OPERATIONS } from '../../src/shared/request-routing/protocol.ts'
 
 type Message = { role?: string, content?: unknown }
@@ -73,6 +74,8 @@ export const CITY_QUESTION = Object.freeze({
   id: 'city', question: '你想看哪个城市的天气？', header: '城市', options: [{ label: '上海' }, { label: '北京' }],
 })
 const CONTEXT_OPEN = '<about-user>'
+const RECALL_OPEN = '<memory-recall'
+const isMemoryBlock = (text: string) => text.startsWith(CONTEXT_OPEN) || text.startsWith(RECALL_OPEN)
 const CARRY_CLOSE = '</以前的记录>\n\n用户现在说：'
 /** 「发邮件…」 / 「存草稿…」 call the MCP tool whose name ends so; dsh prefixes it with the hashed server name. */
 const MAIL = [[/^发邮件/, '__send_email'], [/^存草稿/, '__create_draft']] as const
@@ -81,16 +84,17 @@ const partsOf = (message: Message | undefined): Part[] => (Array.isArray(message
   .flatMap((part: unknown) => { const parsed = partSchema.safeParse(part); return parsed.success ? [parsed.data] : [] })
 const rawTexts = (message: Message) => partsOf(message).flatMap(part => part.type === 'text' && part.text !== undefined ? [part.text] : [])
 /** The texts of a message, the app's request headers left out: the rules read the user's words. */
-const textParts = (message: Message) => rawTexts(message).map(withoutHeaders)
+const textParts = (message: Message) => rawTexts(message).map(text => withoutTaskHeaders(withoutHeaders(text)))
 
 /** Says what background came with the question: the fixed layer, and how many pushed memories. */
 function backgroundOf(texts: readonly string[]) {
   const block = texts.find(text => text.includes(CONTEXT_OPEN))
-  if (!block) return ''
-  const fixed = block.includes('【记忆规则】') ? '画像' : ''
-  const pushed = block.split('\n').filter((line) => line.startsWith('- ') && line.endsWith('〕')).length
+  const recall = texts.find(text => text.includes(RECALL_OPEN))
+  if (!block && !recall) return ''
+  const fixed = block?.includes('常驻用户画像') || block?.includes('【记忆规则】') ? '画像' : ''
+  const pushed = (recall ?? block ?? '').split('\n').filter((line) => line.startsWith('- ') && line.endsWith('〕')).length
   const parts = [fixed, pushed ? `${pushed} 条相关记忆` : ''].filter(Boolean)
-  return `我已经了解你的背景（${parts.join('、')}）。`
+  return parts.length ? `我已经了解你的背景（${parts.join('、')}）。` : ''
 }
 
 /** The text of the user's messages at the end of the request (this turn's), oldest first. */
@@ -107,8 +111,8 @@ function trailingToolResult(messages: readonly Message[]): Part | undefined {
   const parts = messages.slice(start).flatMap(partsOf)
   const hasNewInput = parts.some(part => {
     if (part.type === 'tool_result') return false
-    if (part.type !== 'text' || typeof part.text !== 'string' || requestsIn(part.text).length > 0) return true
-    return currentTurnTextParts([part.text]).some(text => !text.startsWith(CONTEXT_OPEN) && !TASK_REPORT.test(text))
+    if (part.type !== 'text' || typeof part.text !== 'string' || requestsIn(part.text).length > 0 || taskRequestsIn(part.text).length > 0) return true
+    return currentTurnTextParts([withoutTaskHeaders(withoutHeaders(part.text))]).some(text => !isMemoryBlock(text) && !TASK_REPORT.test(text))
   })
   return hasNewInput ? undefined : parts.findLast(part => part.type === 'tool_result')
 }
@@ -123,13 +127,13 @@ function currentWords(text: string) {
  * The user's words: the first text of the turn's user messages that is not the memory block. What dsh and the
  * plugins add (the block, notices) comes after them, in the same message or, in a forked session, in others.
  */
-export const questionOf = (messages: readonly Message[]) => currentWords(currentTurnTextParts(trailingUserTexts(messages)).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
+export const questionOf = (messages: readonly Message[]) => currentWords(currentTurnTextParts(trailingUserTexts(messages)).find((text) => !isMemoryBlock(text)) ?? '')
 
 /** After a tool result the turn's last user message is that result: the words the user said come before it. */
 export const lastWords = (messages: readonly Message[]) => currentWords(messages
   .filter((message) => message.role === 'user')
   .flatMap(textParts)
-  .filter((text) => !text.startsWith(CONTEXT_OPEN))
+  .filter((text) => !isMemoryBlock(text))
   .at(-1) ?? '')
 
 /**
@@ -137,7 +141,7 @@ export const lastWords = (messages: readonly Message[]) => currentWords(messages
  * messages with text. dsh may add messages of its own after the user's words (a fresh session's runtime context).
  */
 const askedWords = (messages: readonly Message[]) => {
-  const userWords = (texts: readonly string[]) => currentTurnTextParts(texts).filter(text => !text.startsWith(CONTEXT_OPEN))
+  const userWords = (texts: readonly string[]) => currentTurnTextParts(texts).filter(text => !isMemoryBlock(text))
   const hasText = (message: Message) => message.role === 'user' && userWords(textParts(message)).length > 0
   let end = messages.length - 1
   while (end >= 0 && !hasText(messages[end])) end -= 1

@@ -8,6 +8,8 @@ import { EventEmitter } from 'node:events'
 import { PassThrough, Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream, type Agent, type PromptRequest, type PromptResponse, type SessionConfigOption, type Implementation } from '@agentclientprotocol/sdk'
 import { createAcpBridge as createBridge } from '../src/backend/acp-bridge.ts'
+import { createMemoryPrefetchManager } from '../src/backend/memory-prefetch.ts'
+import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 import pkg from '../package.json' with { type: 'json' }
 import { testRequests, withPluginSide } from './fixtures/request-routing.ts'
 import { requestsIn, withoutHeaders } from '../src/shared/request-routing/header.ts'
@@ -472,4 +474,110 @@ test('MCP servers go to viva-mcp, not to sessions: sent when it starts and on ea
     { active: ['mail'], connecting: [{ name: 'docs', reason: 'timed out' }], dropped: [{ name: 'old', reason: 'gave up' }] },
   ], 'a malformed status is not taken')
   bridge.dispose()
+})
+
+test('cancelling a foreground turn while routingDesk.bind() is pending releases its started host prefetch (R3 P2-3)', { timeout: 5000 }, async t => {
+  const startedPrefetches: Array<{ sessionId: string, requestId: string }> = []
+  const cancelledPrefetches: Array<{ sessionId: string, requestId: string }> = []
+  let bindSent = false
+  let releaseBind!: () => void
+  const bindSeen = new Promise<void>(resolve => { releaseBind = resolve })
+  const fakeOwner = {
+    channel: { call: async () => { throw new Error('unused') }, readBatch: async () => { throw new Error('unused') }, ready: () => false },
+    bindDsh: () => ({ receive: () => false, ready: () => false, waitReady: async () => {} }),
+    startPrefetch(input: { sessionId: string, requestId: string }) {
+      startedPrefetches.push({ sessionId: input.sessionId, requestId: input.requestId })
+    },
+    cancelPrefetch(sessionId: string, requestId: string) {
+      cancelledPrefetches.push({ sessionId, requestId })
+    },
+    clearSessionPrefetches() {},
+    profileDeletionGen: () => 0,
+  }
+  const bridge = createAcpBridge({
+    routing: testRequests(),
+    dshBin: '/fake/dsh',
+    cwd: '/work',
+    emit: () => {},
+    memoryOwner: fakeOwner as unknown as Options['memoryOwner'],
+    spawnFn: () => {
+      const child = fakeDsh(scriptedAgent([]))
+      // Hold routing_bind without acknowledging so operations.run stays inside prepare()!
+      const origSend = child.send.bind(child)
+      child.send = (message, callback) => {
+        if (message && typeof message === 'object' && message.type === 'routing_bind') {
+          bindSent = true
+          releaseBind()
+          callback?.(null)
+          return true
+        }
+        return origSend(message, callback)
+      }
+      return child
+    },
+  })
+  t.after(() => { bridge.dispose() })
+  const { sessionId } = await bridge.start()
+  assert.ok(sessionId)
+  const promptPromise = bridge.prompt('在 bind 挂起期间被取消的请求', [], { userTurn: true })
+  await bindSeen
+  assert.equal(bindSent, true)
+  assert.equal(startedPrefetches.length, 1, 'prefetch must have started before routingDesk.bind()')
+
+  assert.equal(await bridge.cancel(), true)
+  await promptPromise
+  assert.deepEqual(cancelledPrefetches, startedPrefetches, 'pre-dispatch cancel during pending routingDesk.bind() must release the started prefetch')
+})
+
+test('ACP prompt returning stopReason cancelled calls cancelPrefetch so delayed claim returns skipped (R11 P2-1)', { timeout: 5000 }, async t => {
+  const events: BridgeEvent[] = []
+  let startedReqId = ''
+  const prefetch = createMemoryPrefetchManager({
+    defaultBudgetMs: 100,
+    async callPrefetch() {
+      return { epoch: 'e-acp', revision: 1, result: { status: 'hit', text: 'ACP_HIT', partial: false, hits: [{ text: 'ACP_HIT', names: ['a'] }] } }
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState({ type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e-acp', state: 'ready', revision: 1, coreEpoch: 1 })
+
+  const fakeOwner = {
+    channel: { call: async () => { throw new Error('unused') }, readBatch: async () => { throw new Error('unused') }, ready: () => false },
+    profileDeletionGen: () => 0,
+    startPrefetch(input: Parameters<typeof prefetch.startPrefetch>[0]) {
+      startedReqId = input.requestId
+      prefetch.startPrefetch(input)
+    },
+    cancelPrefetch: (s: string, r: string) => prefetch.cancelPrefetch(s, r),
+    finishPrefetch: (s: string, r: string) => prefetch.finishPrefetch(s, r),
+    clearSessionPrefetches: (s: string) => prefetch.clearSession(s),
+    bindDsh() { return { receive: () => false, ready: () => true, waitReady: async () => {} } },
+  }
+  const bridge = createAcpBridge({
+    routing: testRequests(),
+    dshBin: '/fake/dsh',
+    cwd: '/work',
+    emit: e => events.push(e),
+    memoryOwner: fakeOwner as unknown as Options['memoryOwner'],
+    spawnFn: () => fakeDsh(conn => ({
+      ...scriptedAgent([])(conn),
+      async prompt() {
+        return { stopReason: 'cancelled' }
+      },
+    })),
+  })
+  t.after(() => { bridge.dispose() })
+  const { sessionId } = await bridge.start()
+  assert.ok(sessionId)
+
+  await bridge.prompt('post-dispatch cancelled prompt', [], { userTurn: true })
+  assert.ok(startedReqId, 'prefetch must have been started')
+  assert.ok(events.some(e => e.type === 'turn_end' && e.stopReason === 'cancelled'), 'turn_end must report stopReason cancelled')
+
+  const delayedClaim = await prefetch.claimPrefetch({ requestId: startedReqId, sessionId })
+  assert.deepEqual(
+    delayedClaim,
+    { found: true, result: { status: 'skipped' } },
+    'delayed claim after ACP stopReason=cancelled must return terminal skipped (not { found: false }) (R11 P2-1)',
+  )
 })

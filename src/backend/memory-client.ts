@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod } from '../memory/contracts/host.ts'
 import type { MemoryProject } from '../memory/contracts/host.ts'
 export type MemoryReadBatch = <T>(work: (call: HostMemoryCaller) => Promise<T>, options?: { budgetMs?: number, signal?: AbortSignal }) => Promise<T>
@@ -18,10 +17,8 @@ export function createVivaMemoryClient(call: HostMemoryCaller, readBatch: Memory
     createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),
     fileOperation: (operationId: string) => call('getOperation', { operationId }),
-    profile: method('profile'), fileProfile: method('fileProfile'),
     revision: method('revision'), cleanupPending: method('cleanupPending'),
-    onboarding: method('onboarding'), setOnboarding: method('setOnboarding'), rebuildIndexes: method('rebuildIndexes'),
-    setProfile: (fields: Record<string, unknown>, operation: string = randomUUID()) => call('setProfile', { args: [fields, operation] }),
+    rebuildIndexes: method('rebuildIndexes'),
   }
 }
 export type VivaMemoryClient = ReturnType<typeof createVivaMemoryClient>

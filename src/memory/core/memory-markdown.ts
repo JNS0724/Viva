@@ -260,3 +260,121 @@ export function parseMemoryMarkdown(markdown: string, { maxBytes = DAILY_MEMORY_
   flush()
   return { metadata: document.metadata, chunks, links }
 }
+
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(?:#x([0-9a-fA-F]+)|#([0-9]+)|([a-zA-Z]+));/gu, (full, hex?: string, dec?: string, named?: string) => {
+    if (hex) {
+      const cp = Number.parseInt(hex, 16)
+      return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full
+    }
+    if (dec) {
+      const cp = Number.parseInt(dec, 10)
+      return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full
+    }
+    switch (named?.toLowerCase()) {
+      case 'amp': return '&'
+      case 'lt': return '<'
+      case 'gt': return '>'
+      case 'quot': return '"'
+      case 'apos': return '\''
+      case 'nbsp': return ' '
+      default: return full
+    }
+  })
+}
+
+/** Extract visible rendered text from marked inline tokens (matches renderer/view/markdown.ts). */
+function extractInlineVisibleText(tokens: readonly Token[] | undefined): string {
+  if (!tokens?.length) return ''
+  let out = ''
+  for (const tok of tokens) {
+    if (tok.type === 'html') {
+      out += decodeHtmlEntities(tok.raw.replace(/<[^>]*>/gu, ''))
+    } else if (tok.type === 'br') {
+      out += ' '
+    } else if (tok.type === 'memory_wikilink') {
+      out += tok.raw
+    } else if ('tokens' in tok && Array.isArray(tok.tokens) && tok.tokens.length > 0) {
+      out += extractInlineVisibleText(tok.tokens)
+    } else if ('text' in tok && typeof tok.text === 'string') {
+      out += decodeHtmlEntities(tok.text)
+    }
+  }
+  return out
+}
+
+function headingVisibleText(token: Tokens.Heading): string {
+  return extractInlineVisibleText(token.tokens) || decodeHtmlEntities(token.text)
+}
+
+function collectNestedHeadingTexts(tokens: readonly Token[] | undefined, out: string[]): void {
+  if (!tokens?.length) return
+  for (const tok of tokens) {
+    if (tok.type === 'code' || tok.type === 'codespan') continue
+    if (tok.type === 'heading') {
+      out.push(headingVisibleText(tok as Tokens.Heading))
+    } else if (tok.type === 'list') {
+      for (const item of (tok as Tokens.List).items) collectNestedHeadingTexts(item.tokens, out)
+    } else if ('tokens' in tok && Array.isArray(tok.tokens)) {
+      collectNestedHeadingTexts(tok.tokens, out)
+    }
+  }
+}
+
+export interface MarkdownBlockSummary {
+  type: string
+  raw: string
+  startOffset: number
+  endOffset: number
+  headingText?: string
+  nestedHeadingTexts?: string[]
+}
+
+/** Lex normalized LF Markdown body into top-level block summaries with exact offsets and visible heading text. */
+export function inspectMarkdownBlocks(body: string): MarkdownBlockSummary[] {
+  const tokens = lexMemoryMarkdownBody(body)
+  const out: MarkdownBlockSummary[] = []
+  let position = 0
+  for (const token of tokens) {
+    const startOffset = position
+    const endOffset = position + token.raw.length
+    position = endOffset
+    if (token.type === 'heading') {
+      out.push({ type: token.type, raw: token.raw, startOffset, endOffset, headingText: headingVisibleText(token as Tokens.Heading) })
+    } else if (token.type === 'blockquote' || token.type === 'list') {
+      const nested: string[] = []
+      collectNestedHeadingTexts([token], nested)
+      out.push({ type: token.type, raw: token.raw, startOffset, endOffset, ...(nested.length ? { nestedHeadingTexts: nested } : {}) })
+    } else {
+      out.push({ type: token.type, raw: token.raw, startOffset, endOffset })
+    }
+  }
+  return out
+}
+
+/** Extract raw wikilink targets using the exact same Markdown wikilink AST traversal as parseMemoryMarkdown (case-preserved). */
+export function rawMarkdownWikilinkTargets(markdown: string): string[] {
+  try {
+    return [...new Set(parseMemoryMarkdown(markdown).links.map(link => link.path))]
+  } catch {
+    const targets: string[] = []
+    const collectTokens = (sequence: readonly Token[] | undefined): void => {
+      if (!sequence?.length) return
+      for (const token of sequence) {
+        if (token.type === 'memory_wikilink') {
+          const link = memoryWikiLink(token.raw.slice(2, -2))
+          if (link.path) targets.push(link.path)
+        } else if (token.type === 'list') {
+          collectTokens((token as Tokens.List).items)
+        } else if (token.type === 'table') {
+          const table = token as Tokens.Table
+          for (const cell of [table.header, ...table.rows].flat()) collectTokens(cell.tokens)
+        } else if ('tokens' in token && token.tokens && token.type !== 'code' && token.type !== 'codespan' && token.type !== 'html') {
+          collectTokens(token.tokens)
+        }
+      }
+    }
+    collectTokens(lexMemoryMarkdownBody(markdown.replace(/\r\n?/gu, '\n')))
+    return [...new Set(targets)]
+  }
+}

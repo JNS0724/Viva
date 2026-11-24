@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { decompressZstdFrames } from '../../src/backend/zstd-frames.ts'
+import { withoutTaskHeaders } from '../../src/shared/request-routing/task-header.ts'
 
 const recoveryOpening = 'The previous generated context has been retired. The following are authorized earlier user messages, retained as historical context.'
 const recoveryClosing = '\n[End of earlier user messages]\n'
@@ -23,9 +24,11 @@ function textParts(content: unknown): string[] | null {
   return parts
 }
 
+const normalizeBrief = (text: string) => withoutTaskHeaders(text.replace(deliverySuffix, ''))
+
 function isBrief(message: Record<string, unknown>, brief: string): boolean {
   const parts = textParts(message.content)
-  return message.role === 'user' && parts?.length === 1 && parts[0]!.replace(deliverySuffix, '') === brief
+  return message.role === 'user' && parts?.length === 1 && normalizeBrief(parts[0]!) === brief
 }
 
 /** Raw provider evidence only; never discard recovery history or system-reminder text. */
@@ -34,7 +37,7 @@ export function providerReceivedTaskBrief(requests: readonly unknown[], brief: s
     const messages = object(value)?.messages
     return Array.isArray(messages) && messages.some(value => {
       const message = object(value)
-      return message?.role === 'user' && textParts(message.content)?.some(text => text.replace(deliverySuffix, '') === brief)
+      return message?.role === 'user' && textParts(message.content)?.some(text => normalizeBrief(text) === brief)
     })
   })
 }

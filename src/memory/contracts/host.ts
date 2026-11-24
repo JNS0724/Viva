@@ -1,19 +1,19 @@
 import type { MemoryDreamStatus } from './dream-status.ts'
 import { z } from 'zod'
-import type { MemoryScope } from './memory-contract.ts'
+import type { AutomaticRecallResult, MemoryScope } from './memory-contract.ts'
 import type { TextSpan } from './text-spans.ts'
 import type { MemoryOperationOutcome } from './service.ts'
 import { memoryFileListRequest, memoryFileIdentity, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
-import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail, MemoryFileProfile,
+import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail,
   MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from './file-management.ts'
 
 /** Trusted parent-process adapter protocol. This is not available to model tools. */
-export const MEMORY_HOST_PROTOCOL = 3
+export const MEMORY_HOST_PROTOCOL = 4
 /** Business lifetime metadata, never part of the optional diagnostic envelope. */
 export const memoryHostRead = z.strictObject({ readBatchId: z.uuid(), budgetMs: z.number().positive().max(10_000) })
-export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profilePage', 'profile', 'onboarding', 'cleanupPending', 'revision', 'fileProfile', 'listFiles', 'readFile'])
+export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profilePage', 'cleanupPending', 'revision', 'listFiles', 'readFile'])
 export type MemoryProject = { kind: 'project', id: string }
-export type MemoryProfile = Record<string, { value: string, updatedAt: number, revision: number, source: string }>
+export type MemoryProfileSnapshot = { epoch: string, revision: number, text: string }
 type HostQuestionCard = { id: string, question: string, header: string, multiSelect: boolean, options: Array<{ label: string, description?: string }> }
 export type MemorySourceAlias = {
   operationId: string, sourceId: string, session: string, conversation: string,
@@ -32,17 +32,13 @@ export interface HostMemoryApi {
   editFile: Args<[request: MemoryFileEditRequest], MemoryFileMutationResult>
   forgetFile: Args<[request: MemoryFileForgetRequest], MemoryFileMutationResult>
   undoFile: Args<[request: MemoryFileUndoRequest], MemoryFileMutationResult>
-  profilePage: Args<[project?: MemoryProject], { profile: MemoryProfile, onboarding: string, cleanupPending: number, revision: number, fileProfile: MemoryFileProfile }>
-  profile: Args<[], MemoryProfile>
-  fileProfile: Args<[project?: MemoryProject], MemoryFileProfile>
+  profilePage: Args<[project?: MemoryProject], { cleanupPending: number, revision: number, residentProfile: MemoryManagedFileIdentity | null }>
   revision: Args<[], number>
   epoch: Args<[], number>
   cleanupPending: Args<[], number>
-  onboarding: Args<[], string>
-  setOnboarding: Args<[status: string], string>
   rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
-  setProfile: Args<[fields: Record<string, unknown>, operation?: string], MemoryProfile>
-  acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, turn: number, cards: readonly HostQuestionCard[], requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject }, output: { sourceId: string } }
+  prefetchRecall: { input: { session: string, query: string, cwd?: string | null, context?: MemoryScope, project?: MemoryProject }, output: { epoch: string, revision: number, result: AutomaticRecallResult } }
+  acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, turn: number, cards: readonly HostQuestionCard[], requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject, questionAt?: number, questionProfileGen?: number }, output: { sourceId: string } }
   sourceAlias: { input: MemorySourceAlias, output: { sourceId: string } }
   getOperation: { input: { operationId: string }, output: MemoryOperationOutcome | null }
 }
@@ -63,17 +59,16 @@ const args = <T extends z.ZodTuple>(schema: T) => z.strictObject({ args: z.prepr
   : value, schema) })
 const empty = args(z.tuple([]))
 export const hostMemoryInputSchemas = {
-  profile: empty, dreamStatus: args(z.tuple([z.uuid().optional()])), requestDream: args(z.tuple([z.uuid().optional()])),
+  dreamStatus: args(z.tuple([z.uuid().optional()])), requestDream: args(z.tuple([z.uuid().optional()])),
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
-  profilePage: args(z.tuple([project.optional()])), fileProfile: args(z.tuple([project.optional()])),
-  revision: empty, epoch: empty, cleanupPending: empty, onboarding: empty, rebuildIndexes: empty,
-  setOnboarding: args(z.tuple([z.enum(['pending', 'done', 'skipped'])])),
-  setProfile: args(z.tuple([z.record(z.string(), z.unknown()), key.optional()])),
+  profilePage: args(z.tuple([project.optional()])),
+  revision: empty, epoch: empty, cleanupPending: empty, rebuildIndexes: empty,
+  prefetchRecall: z.strictObject({ session: key, query: text, cwd: z.string().nullish(), context: scope.optional(), project: project.optional() }),
   acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, turn: z.number().int().positive(),
     cards: z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })),
-    requestId: key, questionId: key, context: scope, project: project.optional() }),
+    requestId: key, questionId: key, context: scope, project: project.optional(), questionAt: integer.optional(), questionProfileGen: integer.optional() }),
   sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text, wireSpans, cwd: z.string().nullish(), context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional() }),
   getOperation: z.strictObject({ operationId: z.uuid() }),
 } satisfies Record<HostMemoryMethod, z.ZodType>
@@ -83,8 +78,13 @@ export function parseHostMemoryCommand(method: unknown, input: unknown): HostMem
   return { method: name, input: hostMemoryInputSchemas[name].parse(input) } as HostMemoryCommand
 }
 export const memoryOwnerState = z.strictObject({ type: z.literal('memory_owner_state'), protocol: z.literal(MEMORY_HOST_PROTOCOL),
-  epoch: key, state: z.enum(['ready', 'recovering', 'unavailable']), revision: integer, coreEpoch: integer, effectsRevision: integer.optional() })
+  epoch: key, state: z.enum(['ready', 'recovering', 'unavailable']), revision: integer, coreEpoch: integer, effectsRevision: integer.optional(), profileDeletionGen: integer.optional() })
 export type MemoryOwnerState = z.infer<typeof memoryOwnerState>
+
+/** Schema-agnostic L2 resident profile snapshot pushed by memory worker on ready and change. */
+export const memoryOwnerProfile = z.strictObject({ type: z.literal('memory_owner_profile'), protocol: z.literal(MEMORY_HOST_PROTOCOL),
+  epoch: key, revision: integer, text, profileDeletionGen: integer.optional() })
+export type MemoryOwnerProfile = z.infer<typeof memoryOwnerProfile>
 
 /** Transient committed-change receipt; never stored in the metadata snapshot. */
 export const memoryOwnerChange = z.strictObject({ type: z.literal('memory_owner_change'), protocol: z.literal(MEMORY_HOST_PROTOCOL),
@@ -95,3 +95,12 @@ export const memoryOwnerContextUsed = z.strictObject({ type: z.literal('memory_o
   epoch: key, revision: integer, session: key, conversation: key.nullable(), turn: integer, at: integer,
   pushed: z.array(z.strictObject({ text, names: z.array(text) })) })
 export type MemoryOwnerContextUsed = z.infer<typeof memoryOwnerContextUsed>
+
+/** Transient prefetch cancellation event pushed from host to attached adapter so settled siblings are dropped before adoption. */
+export const memoryOwnerPrefetchCancelled = z.strictObject({
+  type: z.literal('memory_owner_prefetch_cancelled'),
+  protocol: z.literal(MEMORY_HOST_PROTOCOL),
+  sessionId: key,
+  requestId: key.optional(),
+})
+export type MemoryOwnerPrefetchCancelled = z.infer<typeof memoryOwnerPrefetchCancelled>

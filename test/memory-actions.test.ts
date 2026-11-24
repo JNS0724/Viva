@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
-import { createMemoryActions, introChanges, introPrompt } from '../src/renderer/memory-actions.ts'
+import { createMemoryActions } from '../src/renderer/memory-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { renderProfilePanel } from '../src/renderer/view/profile-panel.ts'
 import type { MemoryFileDetailView } from '../src/shared/ipc-results.ts'
@@ -57,7 +57,7 @@ function profileDom(t: TestContext) {
 
 test('a failed reopen of About You offers an operable retry after a previous load', async t => {
   const { draw } = profileDom(t)
-  const data = { profile: {}, items: [], total: 0, onboarding: 'done', habits: { text: '', samples: 0 } }
+  const data = { cleanupPending: 0, revision: 0, residentProfile: null, habits: { text: '', samples: 0 } }
   let rejectLoad = false, fileLists = 0, state: State = initialState
   const dispatch = (action: Action) => { state = reduce(state, action) }
   const api: Pick<AgentApi, 'getMemory' | 'listMemoryFiles'> = {
@@ -89,26 +89,35 @@ test('a failed reopen of About You offers an operable retry after a previous loa
 })
 
 
-test('file-backed profile opens the matching evidence by identity and clears obsolete project summaries', t => {
-  const { draw, flatten } = profileDom(t)
-  const identity = { kind: 'digest' as const, workspace: 'personal', id: 'file-a' }
-  const project = { kind: 'digest' as const, workspace: 'project', id: 'file-b' }
+test('resident profile is pinned at the top of the managed memory file list', t => {
+  const { draw } = profileDom(t)
+  const resident = { kind: 'digest' as const, workspace: 'personal', id: 'profile-id' }
+  const other = { kind: 'digest' as const, workspace: 'personal', id: 'file-b' }
   let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
-    profile: {}, onboarding: 'done', habits: { text: '', samples: 0 }, fileProfile: {
-      user: [{ identity, text: '长期工作方式' }], project: [{ identity: project, text: '项目范围内的记忆' }],
-    },
+    cleanupPending: 0, residentProfile: resident, habits: { text: '', samples: 0 },
   } })
+  state = reduce(state, {
+    type: 'memory_files_listed',
+    query: '',
+    more: false,
+    page: {
+      status: 'ok',
+      snapshot: 'snap',
+      nextCursor: null,
+      items: [
+        { identity: other, title: 'Other Note', path: 'digest/personal/other.md', enabled: true, version: { contentRevision: 'r1', usageVersion: 1, policyToken: 'p1' }, actions: { edit: true, setEnabled: true, forget: true, undo: null } },
+        { identity: resident, title: 'Personal Profile', path: 'digest/personal/profile.md', enabled: true, version: { contentRevision: 'r2', usageVersion: 1, policyToken: 'p2' }, actions: { edit: true, setEnabled: true, forget: true, undo: null } },
+      ],
+    },
+  })
   const selected: unknown[] = []
   const handlers = { showMemoryFile: (item: unknown) => { selected.push(item) } } as Handlers
-  const sections = draw(state.memory, handlers).filter(node => node.attrs['data-profile-summary'])
-  assert.deepEqual(sections.map(node => node.attrs['data-profile-summary']), ['user', 'project'])
-  const projectNodes = flatten(sections[1])
-  const button = projectNodes.find(node => node.tag === 'button' && node.textContent === '查看依据')!
-  assert.ok(projectNodes.some(node => node.attrs.id === button.attrs['aria-describedby'] && node.textContent === '项目范围内的记忆'))
-  button.listeners.click()
-  assert.deepEqual(selected, [{ identity: project }])
-  state = reduce(state, { type: 'memory_summaries_stale' })
-  assert.ok(!draw(state.memory, handlers).some(node => node.attrs['data-profile-summary']))
+  const items = draw(state.memory, handlers).filter(node => node.attrs['data-memory-file'])
+  assert.deepEqual(items.map(node => node.attrs['data-memory-file']), ['profile-id', 'file-b'])
+  assert.equal(items[0]!.attrs['data-resident-profile'], 'true')
+  const openBtn = items[0]!.children.flatMap(child => child.children).find(node => node.tag === 'button')!
+  openBtn.listeners.click()
+  assert.deepEqual(selected, [{ identity: resident }])
 })
 
 test('file permanent forget buttons map through explicit confirmation and keep IME Enter and Escape inert', async t => {
@@ -118,8 +127,7 @@ test('file permanent forget buttons map through explicit confirmation and keep I
     path: 'digest/wiki/private.md', enabled: true, markdown: 'Private body', sources: [],
     actions: { edit: false, setEnabled: false, forget: true, undo: null } }
   let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
-    profile: {}, onboarding: 'done', habits: { text: '', samples: 0 },
-    fileProfile: { user: [{ identity: detail.identity, text: 'Derived private profile' }], project: null },
+    cleanupPending: 0, residentProfile: null, habits: { text: '', samples: 0 },
   } })
   const requests: Parameters<AgentApi['forgetMemoryFile']>[0][] = []
   const api: Pick<AgentApi, 'readMemoryFile' | 'listMemoryFiles' | 'forgetMemoryFile'> = { readMemoryFile: async () => detail,
@@ -156,7 +164,6 @@ test('file permanent forget buttons map through explicit confirmation and keep I
   assert.equal(requests[0]!.identity, detail.identity)
   assert.equal(requests[0]!.version, detail.version)
   assert.equal(state.memory.files.forget?.phase, 'pending')
-  assert.equal(state.memory.fileProfile, null)
   nodes = draw(state.memory, handlers)
   assert.ok(nodes.some(node => node.attrs.role === 'status' && node.textContent.includes('清理仍在进行中')))
   assert.ok(!nodes.some(node => node.textContent.includes('Private body') || node.textContent.includes('无法撤销。') && node.attrs.role === 'status'))
@@ -166,7 +173,7 @@ test('file permanent forget buttons map through explicit confirmation and keep I
 test('the file editor keeps multiline submission and Escape separate from IME composition', t => {
   const { draw } = profileDom(t)
   let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded',
-    data: { profile: {}, onboarding: 'done', habits: { text: '', samples: 0 } } })
+    data: { cleanupPending: 0, residentProfile: null, habits: { text: '', samples: 0 } } })
   state = reduce(state, { type: 'memory_file_editor', editor: { id: 3, kind: 'create', draft: { title: '', text: '' } } })
   state = reduce(state, { type: 'memory_load_failed', message: 'Owner still syncing' })
   const effects: unknown[] = []
@@ -197,7 +204,7 @@ test('profile refresh waits for the active file editor IME composition and disca
   const panel = root()
   const handlers = {} as Handlers
   let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded',
-    data: { profile: {}, onboarding: 'done', habits: { text: '', samples: 0 } } })
+    data: { cleanupPending: 0, residentProfile: null, habits: { text: '', samples: 0 } } })
   state = reduce(state, { type: 'memory_file_editor', editor: { id: 1, kind: 'create', draft: { title: '', text: '' } } })
   const form = draw(state.memory, handlers, panel).find(node => node.tag === 'form')!
   form.listeners.compositionstart()
@@ -218,12 +225,6 @@ test('profile refresh waits for the active file editor IME composition and disca
   draw(state.memory, handlers, panel)
   flushFrames()
   assert.equal(panel.children.length, 0)
-})
-
-test('the intro saves only the profile fields and lists sites and documents in the reading prompt', () => {
-  assert.deepEqual(introChanges({ role: ' 后端负责人 ', projects: '', preferences: '先给结论', sources: 'https://wiki.example', email: 'x' }),
-    { role: '后端负责人', preferences: '先给结论' })
-  assert.match(introPrompt({ sources: ['https://wiki.example'], docs: [{ path: '/w/我的资料/周报.md' }] }), /- https:\/\/wiki\.example\n- \/w\/我的资料\/周报\.md$/)
 })
 
 test('index rebuild runs once at a time and reports scheduled work and incomplete resets', async () => {
@@ -258,7 +259,7 @@ test('Dream ignores a stale status read after a manual request and coalesces rap
   const { draw } = profileDom(t)
   let state = reduce(initialState, { type: 'memory_open' })
   const dispatch = (action: Action) => { state = reduce(state, action) }
-  dispatch({ type: 'memory_loaded', data: { profile: {}, habits: { text: '', samples: 0 }, onboarding: 'done' } })
+  dispatch({ type: 'memory_loaded', data: { cleanupPending: 0, residentProfile: null, habits: { text: '', samples: 0 } } })
   const idle = { state: 'idle' as const, lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null }
   dispatch({ type: 'memory_dream_status', status: idle })
   let resolveRead!: (value: typeof idle) => void, resolveStart!: () => void, starts = 0

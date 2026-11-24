@@ -3,7 +3,7 @@ import type { MemoryFileDependency } from '../contracts/records.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryNotes } from './ports/notes.ts'
 import type { MemorySource } from './ports/store.ts'
-import { inspectMemoryDocumentText } from './memory-dream-material.ts'
+import { inspectMemoryDocumentText, stripTrustedMemoryLinks } from './memory-dream-material.ts'
 import type { DocumentSnapshot, DocumentSourceRef, MemoryDocuments, MemoryPhysicalFile, ReadMemoryPhysicalFile } from './ports/documents.ts'
 import { documentSourceProofCurrent } from './memory-source-proof.ts'
 import { traceLineHistory, type MemoryLineChange, type MemoryLineRevision } from './memory-line-history.ts'
@@ -19,6 +19,7 @@ export const MEMORY_DOCUMENT_READ_CONCURRENCY = 3
 export interface MemoryDocumentReadBatch {
   load(files: readonly FileLocation[], phaseSignal?: AbortSignal): Promise<void>
   read(workspace: string, path: string): MemoryDocumentView | null
+  readStrict?(workspace: string, path: string): MemoryDocumentView | null
   physical(workspace: string, path: string): MemoryPhysicalFile | null
   readObservation(workspace: string, path: string): MemoryDocumentView | null | undefined
   managementRead(workspace: string, path: string): MemoryDocumentManagementView | null
@@ -99,7 +100,9 @@ export function createMemoryDocumentEvidence({ notes, documents, hash, source, r
       return original?.session ? [{ key: 'session_id', value: original.session }] : [] }))
     return refs.every(ref => {
       const original = source(ref.id)
-      return original?.text && allowsText(original.text, original) && allowsText(prose, original)
+      if (!original?.text) return false
+      const inspectedOriginal = original.author === 'manual' ? stripTrustedMemoryLinks(original.text, paths) : original.text
+      return allowsText(inspectedOriginal, original) && allowsText(prose, original)
     })
   }
   return { refsCurrent, materialAllowed }
@@ -117,6 +120,9 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
 }) {
   function read(workspace: string, path: string, snapshot?: PhysicalSnapshot): MemoryDocumentView | null {
     try { return readAccepted(workspace, path, false, undefined, snapshot) ?? null } catch { return null }
+  }
+  function readStrict(workspace: string, path: string, snapshot?: PhysicalSnapshot): MemoryDocumentView | null {
+    return readAccepted(workspace, path, false, undefined, snapshot) ?? null
   }
   function readAccepted(workspace: string, path: string, includeDisabled = false, acceptedDigest?: DocumentSnapshot, snapshot?: PhysicalSnapshot): MemoryDocumentManagementView | null {
     const registered = path.startsWith('daily/') ? notes.registeredAt(workspace, path) : undefined
@@ -192,11 +198,14 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     }
     const readObservation = (workspace: string, path: string) =>
       observe(workspace, path, verified => read(workspace, path, verified))
+    const readStrictObservation = (workspace: string, path: string) =>
+      observe(workspace, path, verified => readStrict(workspace, path, verified))
     const managementObservation = (workspace: string, path: string) =>
       observe(workspace, path, verified => managementRead(workspace, path, verified))
     return {
       load, managementObservation, readObservation, physical: snapshot,
       read: (workspace, path) => readObservation(workspace, path) ?? null,
+      readStrict: (workspace, path) => readStrictObservation(workspace, path) ?? null,
       managementRead: (workspace, path) => managementObservation(workspace, path) ?? null,
       observedRevision: (workspace, path) => {
         const physical = loaded.get(locationKey(workspace, path))
@@ -259,5 +268,5 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       return verified.length ? traceLineHistory(verified, startLine, endLine) : null
     } catch { return null }
   }
-  return { read, readBatch, paths, list, managementRead, managementList, managementCurrent, lineHistory }
+  return { read, readStrict, readBatch, paths, list, managementRead, managementList, managementCurrent, lineHistory }
 }

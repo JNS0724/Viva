@@ -4,8 +4,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseDiagnosticContext, safeDiagnosticEvent, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
 import { diagnosticContext, emitDiagnostic } from '../../diagnostics/node/context.ts'
-import { memoryOwnerState, type HostMemoryApi, type HostMemoryMethod,
-  type MemoryOwnerChange, type MemoryOwnerContextUsed, type MemoryOwnerState } from '../contracts/host.ts'
+import { memoryOwnerProfile, memoryOwnerState, type HostMemoryApi, type HostMemoryMethod,
+  type MemoryOwnerChange, type MemoryOwnerContextUsed, type MemoryOwnerProfile, type MemoryOwnerState } from '../contracts/host.ts'
 import { OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
 import type { MemoryComputeTools } from '../contracts/compute.ts'
@@ -13,7 +13,7 @@ import type { MemoryCompute } from '../contracts/memory-contract.ts'
 import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from './owner-adapter.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 
-export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerChange | MemoryOwnerContextUsed
+export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerProfile | MemoryOwnerChange | MemoryOwnerContextUsed
 export type MemoryOwnerCallbacks = {
   compute?(input: { job: MemoryCompute, tools?: MemoryComputeTools['tools'] }, signal: AbortSignal): Promise<string>
 }
@@ -60,6 +60,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
   const listeners = new Set<(event: MemoryOwnerEvent) => void>()
   let current: Instance | undefined
   let snapshot: MemoryOwnerState | undefined
+  let profileSnapshot: MemoryOwnerProfile | undefined
   let closing = false
   let started = false
   let restartTimer: ReturnType<typeof setTimeout> | undefined
@@ -69,10 +70,18 @@ export function createMemoryOwnerSupervisor(options: Options) {
   let previousEpoch: string | undefined
   let preserveActiveTurns = false
 
+  function acceptProfile(next: MemoryOwnerProfile): boolean {
+    if (profileSnapshot && profileSnapshot.epoch === next.epoch && next.revision < profileSnapshot.revision) return false
+    profileSnapshot = next
+    return true
+  }
+
   function publish(event: MemoryOwnerEvent) {
     if (event.type === 'memory_owner_state') {
       snapshot = event
       try { options.onStatus?.(event) } catch { /* Observers must not interrupt supervision. */ }
+    } else if (event.type === 'memory_owner_profile') {
+      if (!acceptProfile(event)) return
     }
     try { options.onEvent?.(event) } catch { /* Observers must not interrupt supervision. */ }
     for (const listener of listeners) {
@@ -160,6 +169,10 @@ export function createMemoryOwnerSupervisor(options: Options) {
           if (!state.success || instance.epoch && instance.epoch !== state.data.epoch) return
           instance.epoch = state.data.epoch
           publish(state.data)
+        } else if (raw.type === 'memory_owner_profile') {
+          const profile = memoryOwnerProfile.safeParse(raw)
+          if (!profile.success || !instance.epoch || instance.epoch !== profile.data.epoch) return
+          publish(profile.data)
         } else if ((raw.type === 'memory_owner_context_used' || raw.type === 'memory_owner_change')
           && 'epoch' in raw && instance.epoch && instance.epoch === raw.epoch) publish(raw as MemoryOwnerEvent)
       },
@@ -276,12 +289,14 @@ export function createMemoryOwnerSupervisor(options: Options) {
     subscribe(listener: (event: MemoryOwnerEvent) => void) {
       listeners.add(listener)
       if (snapshot) listener(snapshot)
+      if (profileSnapshot && (!snapshot || profileSnapshot.epoch === snapshot.epoch)) listener(profileSnapshot)
       return () => { listeners.delete(listener) }
     },
     status: () => terminalFailure ? 'unavailable' as const : snapshot?.state ?? 'recovering',
     epoch: () => snapshot?.epoch,
     pid: () => current?.child.pid,
     state: () => snapshot,
+    profile: () => profileSnapshot,
   }
 }
 

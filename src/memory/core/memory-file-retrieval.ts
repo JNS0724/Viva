@@ -478,7 +478,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
             reasons.push('semantic-index-incomplete')
           } else if (!run.controller.signal.aborted && index.vectorState().active) {
             const queryBudget = request.automatic
-              ? defaults.automaticSearchBudgetMs - defaults.automaticResultReserveMs - (performance.now() - startedAt)
+              ? Math.min(defaults.automaticVectorTimeoutMs, defaults.automaticSearchBudgetMs - defaults.automaticResultReserveMs - (performance.now() - startedAt))
               : defaults.automaticQueryTimeoutMs
             const output = queryBudget > 0 ? await boundedQuery(request.query, queryBudget, request.signal, request.automatic) : null
             if (output?.[0] && !run.controller.signal.aborted) {

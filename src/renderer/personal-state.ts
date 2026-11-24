@@ -1,32 +1,25 @@
 import type { MemoryDreamStatus } from '../memory/contracts/dream-status.ts'
-import type { MemoryFileProfile } from '../memory/contracts/file-management.ts'
+import type { MemoryManagedFileIdentity } from '../memory/contracts/file-management.ts'
 import type { ActionHandlers } from './action-types.ts'
 import { initialMemoryFiles } from './memory-file-state.ts'
 /**
- * The "关于你" page (profile, memories, intro) and the 扩展 section of settings (MCP servers, skills).
+ * The "关于你" page (resident profile, memories) and the 扩展 section of settings (MCP servers, skills).
  * Pure and immutable like the rest of `state.ts`, which merges these handlers into its reducer.
  */
 export const initialMemory = Object.freeze({
   open: false,
-  /** 'profile' shows what the agent knows; 'intro' is the short get-to-know-you form. */
   view: 'profile',
   loaded: false,
   loadError: null as string | null,
   files: initialMemoryFiles,
-  profile: {},
+  residentProfile: null as MemoryManagedFileIdentity | null,
   /** Pending jobs in owner storage. Host and native receipts are tracked separately. */
   cleanupPending: 0,
   rebuildingIndexes: false,
   dream: null as MemoryDreamStatus | null,
   dreamUnavailable: false,
   requestingDream: false,
-  fileProfile: null as MemoryFileProfile | null,
-  onboarding: 'pending',
   habits: { text: '', samples: 0 },
-  /** Profile field being edited in place, or null. */
-  editing: null,
-  /** Documents picked in the intro, already copied into the workspace. */
-  docs: [],
   busy: false,
   error: null,
 })
@@ -65,49 +58,37 @@ function draftOf(server: { name: string, type: string, envNames: string[], heade
 const withMemory = (state: State, changes: Partial<State['memory']>): State => ({ ...state, memory: { ...state.memory, ...changes } })
 const withExtensions = (state: State, changes: Partial<State['extensions']>): State => ({ ...state, extensions: { ...state.extensions, ...changes } })
 
-/** @param {{ profile: object }} memory */
-export const isProfileEmpty = (memory: { profile: object }) => Object.keys(memory.profile).length === 0
-
-export const PERSONAL_ACTIONS= {
+export const PERSONAL_ACTIONS = {
   memory_loaded: (state, { data }) => withMemory(state, {
     loaded: true,
     loadError: null,
-    profile: data.profile,
     cleanupPending: data.cleanupPending ?? 0,
-    fileProfile: data.fileProfile ?? null,
-    onboarding: data.onboarding,
+    residentProfile: data.residentProfile ?? null,
     habits: data.habits,
     busy: false,
   }),
   memory_load_failed: (state, { message }) => withMemory(state, { loadError: message }),
   memory_open: (state, { view = 'profile' }) => withMemory(
     { ...state, island: false, picker: false, history: { ...state.history, open: false } },
-    { open: true, view, fileProfile: null, editing: null, error: null, loadError: null,
-      files: { ...initialMemoryFiles, writing: state.memory.files.writing }, docs: view === 'intro' ? [] : state.memory.docs },
+    { open: true, view, error: null, loadError: null,
+      files: { ...initialMemoryFiles, writing: state.memory.files.writing } },
   ),
   memory_close: (state) => withMemory(state, {
-    open: false, fileProfile: null, editing: null, error: null, loadError: null, busy: false,
+    open: false, error: null, loadError: null, busy: false,
     files: { ...initialMemoryFiles, writing: state.memory.files.writing },
   }),
-  memory_edit: (state, { key }) => withMemory(state, { editing: key, error: null }),
   memory_busy: (state) => withMemory(state, { busy: true, error: null }),
   memory_failed: (state, { message }) => withMemory(state, { busy: false, error: message }),
-  memory_profile_saved: (state, { profile }) => withMemory(state, { profile, editing: null, busy: false, error: null }),
-  memory_summaries_stale: (state) => state.memory.fileProfile ? withMemory(state, { fileProfile: null }) : state,
   memory_dream_status: (state, { status }) => {
     const previous = state.memory.dream
     if (!status) return state.memory.dreamUnavailable ? state : withMemory(state, { dreamUnavailable: true })
-    if (!state.memory.dreamUnavailable && previous?.state === status.state && previous.lastCheckResult === status.lastCheckResult && previous.lastCheckedAt === status.lastCheckedAt
-      && previous.lastProcessedAt === status.lastProcessedAt) return state
+    if (!state.memory.dreamUnavailable && previous?.state === status.state && previous.lastCheckResult === status.lastCheckResult
+      && previous.lastCheckedAt === status.lastCheckedAt && previous.lastProcessedAt === status.lastProcessedAt
+      && previous.jobId === status.jobId && previous.completedAt === status.completedAt) return state
     return withMemory(state, { dream: status, dreamUnavailable: false })
   },
   memory_dream_requesting: (state, { busy }) => withMemory(state, { requestingDream: busy }),
   memory_index_rebuild: (state, { busy }) => withMemory(state, { rebuildingIndexes: busy }),
-  memory_onboarding: (state, { status }) => withMemory(state, { onboarding: status }),
-  memory_docs_added: (state, { docs }) => withMemory(state, {
-    docs: [...state.memory.docs, ...docs.filter((doc: { path: string }) => !state.memory.docs.some((known) => known.path === doc.path))],
-    busy: false,
-  }),
 
   extensions_loaded: (state, { view }) => withExtensions(state, { ...view, loaded: true, busy: false }),
   extensions_busy: (state) => withExtensions(state, { busy: true, error: null, notice: null, importNote: null }),

@@ -1,11 +1,19 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { HostMemoryCaller, MemoryOwnerState } from '../../../src/memory/contracts/host.ts'
+import type { AutomaticRecallResult } from '../../../src/memory/contracts/memory-contract.ts'
 import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from '../../../src/memory/node/owner-adapter.ts'
+
+export type PrefetchClaimResponse =
+  | { found: false, cancelledRequestIds?: readonly string[] }
+  | { found: true, result: AutomaticRecallResult, epoch?: string, revision?: number, deadlineAt?: number, retried?: boolean, cancelledRequestIds?: readonly string[] }
 
 export type MemoryOwnerConnection = OwnerAdapterCaller & {
   start(): Promise<void>
   close(): Promise<void>
   reconciled?(epoch: string, ready: boolean): void
+  claimPrefetch?(input: { requestId: string, sessionId: string }, options?: OwnerCallOptions): Promise<PrefetchClaimResponse>
+  refreshPrefetch?(input: { requestId: string, sessionId: string }, options?: OwnerCallOptions): Promise<PrefetchClaimResponse>
+  claimPrefetchBatch?(input: { requestIds: readonly string[], sessionId: string }, options?: OwnerCallOptions): Promise<PrefetchClaimResponse[]>
   callHost: HostMemoryCaller
   subscribe(listener: (event: unknown) => void): () => void
   status(): MemoryOwnerState['state']

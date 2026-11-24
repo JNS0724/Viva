@@ -16,7 +16,7 @@ const detailOf = (id: string, kind: 'daily' | 'digest' = 'digest'): MemoryFileDe
 const pageOf = (items: MemoryFileListResult['items'], nextCursor: MemoryFileListResult['nextCursor'] = null): MemoryFileListResult => ({
   status: 'ok', snapshot: 'snapshot', items, nextCursor,
 })
-const getMemory = { profile: {}, items: [], total: 0, onboarding: 'done', habits: { text: '', samples: 0 } }
+const getMemory = { cleanupPending: 0, revision: 0, residentProfile: null, habits: { text: '', samples: 0 } }
 
 function harness(api: Partial<AgentApi>) {
   const initial = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: getMemory })

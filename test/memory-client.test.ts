@@ -35,23 +35,15 @@ test('Viva file client preserves durable create and edit receipts after owner re
   assert.ok((await client.readFile(created.identity))?.markdown.includes(edit.text))
 })
 
-test('Viva profile receipts are replayable and old numeric fact methods are absent', async t => {
+test('removed legacy profile and numeric fact methods are absent from owner host protocol', async t => {
   const { dir, defer } = scratch(t, 'memory-client-profile-')
   const root = path.join(dir, 'owner')
-  let owner = open(root)
+  const owner = open(root)
   defer(() => owner.close())
   await owner.recover()
-  let client = ownerClient(owner)
-  const operation = randomUUID()
-  const profile = await client.setProfile({ role: '后端负责人' }, operation)
-  assert.deepEqual(await client.setProfile({ role: '后端负责人' }, operation), profile)
-  await owner.close()
-  owner = open(root)
-  await owner.recover()
-  client = ownerClient(owner)
-  assert.deepEqual(await client.setProfile({ role: '后端负责人' }, operation), profile)
-  await assert.rejects(client.setProfile({ role: '不同角色' }, operation), /conflict|different input/i)
-  for (const method of ['listMemories', 'addMemory', 'editMemory', 'stopMemory', 'restoreMemory', 'deleteMemory', 'resolveConflictPair', 'undoChange']) {
+  const client = ownerClient(owner)
+  for (const method of ['setProfile', 'profile', 'fileProfile', 'onboarding', 'setOnboarding',
+    'listMemories', 'addMemory', 'editMemory', 'stopMemory', 'restoreMemory', 'deleteMemory', 'resolveConflictPair', 'undoChange']) {
     assert.equal(Object.hasOwn(client, method), false)
     await assert.rejects(owner.handleHost(method, { args: [] }), /Unknown memory host method/)
   }

@@ -1,4 +1,4 @@
-import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
+import type { MemoryDomainErrorCode, MemoryDomainErrorDetails } from '../contracts/domain-error.ts'
 /** Optional wording supplied by a host; domain error codes and rules do not depend on its locale. */
 const defaultText = Object.freeze({
   'change.pending': 'A memory change is in progress.',
@@ -6,6 +6,7 @@ const defaultText = Object.freeze({
   'invalid.text': 'Invalid memory text.',
   'not.found': 'Memory not found.',
   'operation.conflict': 'The operation ID was already used with different input.',
+  'profile.confirmed_too_long': 'Confirmed profile preferences exceed the {limit}-character limit ({actual} characters).',
   'restore.explicit': 'Explicit restoration is required.',
   'revision.conflict': 'Memory changed. Refresh before trying again.',
   'clarify.pending.ended': 'No longer applies',
@@ -22,7 +23,6 @@ const defaultText = Object.freeze({
 export type MemoryTextKey = keyof typeof defaultText
 export type MemoryTextValues = Readonly<Record<string, string | number>>
 export interface MemoryPresentation {
-  profileLabels?: () => readonly { key: string, label: string }[]
   text?: (key: MemoryTextKey, values?: MemoryTextValues) => string
 }
 export function defaultMemoryText(key: MemoryTextKey, values: MemoryTextValues = {}): string {
@@ -30,9 +30,11 @@ export function defaultMemoryText(key: MemoryTextKey, values: MemoryTextValues =
 }
 export class MemoryDomainError extends Error {
   readonly code: MemoryDomainErrorCode
-  constructor(code: MemoryDomainErrorCode, message = defaultMemoryText(code)) {
-    super(message)
+  readonly details?: MemoryDomainErrorDetails
+  constructor(code: MemoryDomainErrorCode, message?: string, details?: MemoryDomainErrorDetails) {
+    super(message ?? defaultMemoryText(code, details ? { limit: details.limit, actual: details.actual } : {}))
     this.name = 'MemoryDomainError'
     this.code = code
+    if (details) this.details = details
   }
 }

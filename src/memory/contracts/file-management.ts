@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { memorySourceReference } from './service.ts'
-import { memoryDomainErrorCode } from './domain-error.ts'
+import { memoryDomainErrorCode, memoryDomainErrorDetails } from './domain-error.ts'
 import { MAX_MESSAGE_CHARS } from './text-limits.ts'
 
 const opaque = z.string().min(1).max(512)
@@ -36,11 +36,11 @@ export const memoryFileMutationResult = z.strictObject({ operationId: z.uuid(), 
   contentRevision: opaque, usageVersion: z.number().int().nonnegative(), action: z.enum(['ENABLE', 'DISABLE', 'UNDO', 'FORGET', 'CREATE', 'EDIT']) })
 export const memoryFileWriteResult = z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('applied'), receipt: memoryFileMutationResult }),
-  z.strictObject({ status: z.literal('rejected'), code: memoryDomainErrorCode }),
+  z.strictObject({ status: z.literal('rejected'), code: memoryDomainErrorCode, details: memoryDomainErrorDetails.optional() }),
 ])
 export const memoryFileForgetResult = z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('applied'), receipt: memoryFileMutationResult, cleanup: z.enum(['pending', 'complete']) }),
-  z.strictObject({ status: z.literal('rejected'), code: memoryDomainErrorCode }),
+  z.strictObject({ status: z.literal('rejected'), code: memoryDomainErrorCode, details: memoryDomainErrorDetails.optional() }),
 ])
 export type MemoryManagedFileIdentity = z.infer<typeof memoryFileIdentity>
 export type MemoryManagedFileVersion = z.infer<typeof memoryFileVersion>
@@ -48,8 +48,6 @@ export type MemoryFileListRequest = z.infer<typeof memoryFileListRequest>
 export type MemoryFileListResult = z.infer<typeof memoryFileListResult>
 export type MemoryFileSummary = z.infer<typeof memoryFileSummary>
 export type MemoryFileDetail = z.infer<typeof memoryFileDetail>
-export type MemoryFileProfileItem = { identity: MemoryManagedFileIdentity, text: string }
-export type MemoryFileProfile = { user: MemoryFileProfileItem[], project: MemoryFileProfileItem[] | null }
 export type MemoryFileMutation = z.infer<typeof memoryFileMutation>
 export type MemoryFileSetEnabledRequest = z.infer<typeof memoryFileSetEnabledRequest>
 export type MemoryFileForgetRequest = z.infer<typeof memoryFileForgetRequest>

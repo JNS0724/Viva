@@ -26,9 +26,12 @@ export interface MemorySource {
   hash: string | null
   length: number
   question: string | null
+  questionAt?: number | null
+  questionProfileGen?: number | null
   requestId: string | null
   questionId: string | null
   at: number
+  seq?: number
   timezone: string
   outcome: string
 }

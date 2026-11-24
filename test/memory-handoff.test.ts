@@ -34,7 +34,7 @@ import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defa
 import { SQLITE_BUSY_TIMEOUT_MS } from '../src/memory/node/sqlite.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
-import type { MemoryFileDetail, MemoryFileListResult, MemoryFileProfile } from '../src/memory/contracts/file-management.ts'
+import type { MemoryFileDetail, MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
 import { openMemoryFileIndex } from '../src/memory/node/memory-file-index.ts'
 import type { AgentInfo } from '../src/shared/agent-info.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
@@ -925,13 +925,12 @@ test('global memory crosses work folders while native session and schedule bound
     assert.ok(switched.ok)
     const sourceId = randomUUID()
     await step(`${label}:remember`, () => app.call('agent:prompt', text, [], sourceId))
-    const summary = await step(`${label}:file-profile`, () => eventually(async () => {
-      const { fileProfile } = await app.call<Promise<{ fileProfile: { user: { identity: MemoryFileDetail['identity'], text: string }[], project: null } }>>('memory:get')
-      assert.equal(fileProfile.project, null)
-      return fileProfile.user.find(item => item.text.includes(text.slice('记住：'.length)))
+    const saved = await step(`${label}:saved-file`, () => eventually(async () => {
+      const files = await app.files()
+      return files.find(item => item.markdown.includes(text.slice('记住：'.length)))
     }))
-    assert.ok(summary)
-    const detail = await step(`${label}:read-file`, () => app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', summary.identity))
+    assert.ok(saved)
+    const detail = await step(`${label}:read-file`, () => app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', saved.identity))
     assert.ok(detail?.sources.some(source => source.link))
     return switched.info
   }
@@ -943,10 +942,15 @@ test('global memory crosses work folders while native session and schedule bound
     await step(`${label}:search-history`, () => app.ask(history))
     const scopedMessages = app.model.requests.slice(count, beforeHistory).map(raw => (raw as Request).messages)
     const historyMessages = app.model.requests.slice(beforeHistory).map(raw => (raw as Request).messages)
+    const trailingUsers = (rows: Request['messages']) => {
+      let start = rows.length
+      while (start > 0 && rows[start - 1]?.role === 'user') start -= 1
+      return JSON.stringify(rows.slice(start))
+    }
     assert.ok(scopedMessages.some(rows => {
-      const last = JSON.stringify(rows.at(-1))
-      return last.includes('<about-user>') && last.includes('File memory evidence') && last.includes(present)
-    }))
+      const last = trailingUsers(rows)
+      return last.includes('<memory-recall') && last.includes('File memory evidence') && last.includes(present)
+    }), JSON.stringify({ label, present, tails: scopedMessages.map(rows => rows.slice(-2)) }))
     assert.ok(scopedMessages.some(rows =>
       modelToolResults({ messages: rows }, 'memory_recall').some(result => JSON.stringify(result).includes(present))),
     JSON.stringify({ name: 'memory_recall', results: scopedMessages.flatMap(rows => modelToolResults({ messages: rows }, 'memory_recall')) }))
@@ -1015,8 +1019,10 @@ test('global memory crosses work folders while native session and schedule bound
   const afterSwitchBeforeHistory = app.model.requests.slice(beforeSwitch, beforeProjectBHistory) as Request[]
   assert.ok(afterSwitchBeforeHistory.some(request => questionOf(request.messages) === secondFact && JSON.stringify(request.system).includes('个人工作助手')))
   assert.ok(afterSwitchBeforeHistory.some(request => {
-    const last = JSON.stringify(request.messages.at(-1))
-    return last.includes('<about-user>') && last.includes('File memory evidence') && last.includes(firstMarker)
+    let start = request.messages.length
+    while (start > 0 && request.messages[start - 1]?.role === 'user') start -= 1
+    const last = JSON.stringify(request.messages.slice(start))
+    return last.includes('<memory-recall') && last.includes('File memory evidence') && last.includes(firstMarker)
   }), 'memory from the other folder is automatically available')
 
   // A picture-only conversation still has a native history boundary.
@@ -1092,13 +1098,12 @@ test('deleting a memory file preserves the original chat and the task and report
 test('an explicit save completes in a foreground session that already received file evidence', { timeout: 30_000 }, async t => {
   const app = await setup(t, () => null)
   await app.recallOld()
-  const profile = await app.call<Promise<{ fileProfile: MemoryFileProfile }>>('memory:get')
-  assert.ok(profile.fileProfile.user.some(item => item.text.includes(oldValue)), 'a natural remembered original belongs to the file-backed user profile')
+  assert.ok((await app.files()).some(item => item.markdown.includes(oldValue)), 'a natural remembered original belongs to the managed memory files')
   await app.newTopic()
   const offset = app.model.requests.length
   await app.ask('核对下周报提交邮箱背景资料')
   assert.ok((app.model.requests.slice(offset) as Request[]).some(request =>
-    JSON.stringify(request.messages).includes('File memory evidence')
+    JSON.stringify(request.messages).includes('memory-recall')
       && JSON.stringify(request.messages).includes(oldValue)), JSON.stringify(app.model.requests.slice(offset)))
   const preference = '我以后使用紫罗兰色图标'
   const count = app.model.requests.length
@@ -1372,7 +1377,25 @@ test('an ordinary city clarification stays scoped to the routed background task'
 test('an Updates draft keeps the result identity until dispatch and never becomes a user memory source', { timeout: 30_000 }, async t => {
   const title = '定时整理原始材料'
   const prompt = '核对这份日报'
+  const uniqueMemoryMarker = 'SCHED_UNIQUE_MARKER_P27'
   const draft = `派生内容已核对 ${oldValue}`
+  let heldAliasRelease: (() => void) | undefined
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
+        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { text?: string } } }
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
+          && frame.input?.method === 'sourceAlias' && frame.input.input?.text === prompt && !heldAliasRelease) {
+          heldAliasRelease = () => { Reflect.apply(send, this, [message, ...rest]) }
+          return true
+        }
+        return Reflect.apply(send, this, [message, ...rest]) as boolean
+      })
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
   const app = await setup(t, request => {
     const question = questionOf(request.messages)
     const tool = JSON.stringify(request.messages.at(-1)).includes('tool_result')
@@ -1383,6 +1406,11 @@ test('an Updates draft keeps the result identity until dispatch and never become
     if (question === prompt && !tool) return { tool: { name: 'memory_recall', input: { query: '周报提交邮箱' } } }
     return null
   })
+  await app.call('memory:create-file', {
+    operationId: randomUUID(),
+    title: '日报核对唯一规则',
+    text: `核对这份日报时必须附带唯一记忆标记 ${uniqueMemoryMarker}`,
+  })
   await app.schedule(title)
   await app.newTopic()
   await app.recallOld()
@@ -1390,8 +1418,14 @@ test('an Updates draft keeps the result identity until dispatch and never become
   app.wake()
   const item = await eventually(() => app.feed().find(item => item.title === title))
   assert.ok(item)
-  assert.ok(app.model.requests.some(request => questionOf(request.messages) === prompt && JSON.stringify(request).includes('【记忆规则】')),
-    'a verified unattended prompt receives automatic memory context')
+  assert.ok(heldAliasRelease, 'sourceAlias for scheduled prompt was delayed while first model request ran')
+  const firstPromptRequest = (app.model.requests as Request[]).find(request =>
+    questionOf(request.messages) === prompt && !JSON.stringify(request.messages).includes('"tool_result"'))
+  assert.ok(firstPromptRequest, 'expected first model request for scheduled prompt before any tool_result')
+  const firstPromptText = JSON.stringify(firstPromptRequest.messages)
+  assert.match(firstPromptText, /<memory-recall turn=\\"\d+\\" ref=\\"[A-Za-z0-9-]+\\">/, 'first scheduled model request must include anchored L3 memory-recall')
+  assert.ok(firstPromptText.includes(uniqueMemoryMarker), 'first scheduled model request must carry unique memory-only marker even while sourceAlias is delayed')
+  heldAliasRelease()
   const text = await app.call<Promise<string>>('feed:continue', item.id)
   assert.ok(text.endsWith(draft), JSON.stringify({ body: item.body, text }))
   await app.newTopic()
@@ -1411,6 +1445,78 @@ test('an Updates draft keeps the result identity until dispatch and never become
   await app.replace()
   assert.equal(await app.call('feed:continue', item.id), text)
   assert.ok(app.feed().some(row => row.id === item.id && row.body === draft))
+})
+
+test('consecutive identical task prompts claim distinct requestId prefetches with exactly two retrievals (P2-7)', { timeout: 30_000 }, async t => {
+  const sameText = '重复检查发布清单'
+  const uniqueMarker = 'TASK_REPEAT_MARKER_P27'
+  let prefetchCount = 0
+  let fallbackCount = 0
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
+        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { query?: string }, args?: unknown[] } }
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
+          && frame.input?.method === 'prefetchRecall' && frame.input.input?.query === sameText) {
+          prefetchCount++
+        }
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'adapter'
+          && frame.input?.method === 'automaticRecall') {
+          fallbackCount++
+        }
+        return Reflect.apply(send, this, [message, ...rest]) as boolean
+      })
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  let taskIdToMessage: string | undefined
+  const app = await setup(t, request => {
+    const question = questionOf(request.messages)
+    const tool = JSON.stringify(request.messages.at(-1)).includes('tool_result')
+    if (question === '启动重复任务' && !tool) {
+      return { tool: { name: 'start_background_task', input: { title: '重复任务', brief: sameText } } }
+    }
+    if (question === '再次发送相同任务' && !tool && taskIdToMessage) {
+      return { tool: { name: 'message_background_task', input: { taskId: taskIdToMessage, text: sameText } } }
+    }
+    if (question === sameText) return { text: '已核对发布清单' }
+    return null
+  })
+  await app.call('memory:create-file', {
+    operationId: randomUUID(),
+    title: '发布清单规范',
+    text: `重复检查发布清单时务必核对 ${uniqueMarker}`,
+  })
+  await app.ask('启动重复任务')
+  const firstDone = await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === '重复任务'), { timeoutMs: 8_000 })
+  assert.ok(firstDone)
+  taskIdToMessage = firstDone.task.id
+  const beforeSecondEnd = firstDone.endedAt
+  await app.ask('再次发送相同任务')
+  assert.ok(await eventually(() => {
+    const task = app.tasks().find(row => row.task.id === taskIdToMessage)
+    return Boolean(task && task.endedAt && task.endedAt !== beforeSecondEnd)
+  }, { timeoutMs: 8_000 }))
+
+  const taskRequests = (app.model.requests as Request[]).filter(request =>
+    questionOf(request.messages) === sameText && !JSON.stringify(request.messages).includes('"tool_result"'))
+  assert.equal(taskRequests.length, 2, 'expected two distinct first-step task requests for the two identical deliveries')
+  const refs = taskRequests.map((request, idx) => {
+    const raw = JSON.stringify(request.messages)
+    const matches = [...raw.matchAll(/<memory-recall turn=\\"(\d+)\\" ref=\\"([A-Za-z0-9-]+)\\">/g)]
+    assert.equal(matches.length, idx + 1, `request ${idx + 1} should retain prior turns and append its own L3 recall`)
+    const currentRef = matches.at(-1)![2]!
+    const currentRecallMsg = request.messages.find(msg => JSON.stringify(msg.content).includes(`ref=\\"${currentRef}\\"`) || JSON.stringify(msg.content).includes(`ref="${currentRef}"`))
+    assert.ok(currentRecallMsg, `expected dedicated L3 message for ref ${currentRef}`)
+    const currentRecallText = JSON.stringify(currentRecallMsg.content)
+    assert.ok(currentRecallText.includes(uniqueMarker), `delivery ${idx + 1} L3 message itself (ref=${currentRef}) must contain unique memory marker`)
+    return currentRef
+  })
+  assert.notEqual(refs[0], refs[1], 'consecutive identical task deliveries must claim distinct requestIds')
+  assert.equal(prefetchCount, 2, 'exactly two host prefetches must be executed for two identical task deliveries')
+  assert.equal(fallbackCount, 0, 'no fallback automaticRecall should trigger when both prefetches are claimed')
 })
 
 

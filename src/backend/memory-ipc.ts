@@ -2,7 +2,7 @@ import type { VivaMemoryClient } from './memory-client.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
-import { memoryDomainErrorCode } from '../memory/contracts/domain-error.ts'
+import { memoryDomainErrorCode, parseMemoryDomainErrorDetails } from '../memory/contracts/domain-error.ts'
 import type { MemoryFileMutationResult, MemoryFileWriteResult } from '../memory/contracts/file-management.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { IpcResults, MemoryFileSourceView } from '../shared/ipc-results.ts'
@@ -48,7 +48,12 @@ async function fileWrite(write: Promise<MemoryFileMutationResult>): Promise<Memo
   catch (error) {
     const code = memoryDomainErrorCode.safeParse(error && typeof error === 'object'
       ? ('domainCode' in error ? error.domainCode : 'code' in error ? error.code : undefined) : undefined)
-    if (code.success) return { status: 'rejected', code: code.data }
+    if (code.success) {
+      const details = error && typeof error === 'object' && 'details' in error
+        ? parseMemoryDomainErrorDetails(error.details)
+        : undefined
+      return { status: 'rejected', code: code.data, ...(details ? { details } : {}) }
+    }
     throw error
   }
 }
@@ -66,9 +71,9 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     return lifetime ? { budgetMs: lifetime.remainingMs(), signal: lifetime.signal } : options
   }
   handle('memory:get', async options => {
-    const { profile, onboarding, cleanupPending, revision, fileProfile } = await client.readPage(undefined, readOptions(options))
+    const { cleanupPending, revision, residentProfile } = await client.readPage(undefined, readOptions(options))
     emitDiagnostic({ event: 'operation.progress', operation: 'memory.get', stage: 'responded', metrics: { pendingCount: cleanupPending } })
-    return { profile, onboarding, cleanupPending, revision, habits: habits(), fileProfile }
+    return { cleanupPending, revision, residentProfile, habits: habits() }
   })
   handle('memory:dream-status', client.dreamStatus)
   handle('memory:run-dream', client.requestDream)
@@ -92,9 +97,7 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     // File removal commits before its physical projection and index cleanup finish.
     return { ...result, cleanup: operation?.state === 'completed' && operation.cleanup === 'complete' ? 'complete' : 'pending' }
   })
-  handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))
   handle('memory:rebuild-indexes', () => client.rebuildIndexes())
-  handle('memory:onboarding', client.setOnboarding)
   handle('memory:add-docs', async () => {
     const files = await chooseDocs()
     return files?.length ? copyIntoWorkspace(files, cwd()) : []

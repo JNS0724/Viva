@@ -30,6 +30,7 @@ let booted = false
 let closing = false
 let route: z.output<typeof routeSchema> | null = null
 let lastState = ''
+let lastProfileKey = ''
 const computeTools = new Map<string, MemoryComputeTools>()
 const adapterExecutions = new Set<Promise<unknown>>()
 let pendingDiagnostics = 0
@@ -56,10 +57,20 @@ installDiagnosticPort(diagnosticRelay)
 const notify = (event: object) => {
   if (process.connected) peer.notify(event)
 }
+const publishProfile = (force = false) => {
+  if (!owner || !booted || closing || owner.status() !== 'ready') return
+  const snapshot = owner.profileSnapshot()
+  const profileDeletionGen = owner.runtime.profileDeletionGeneration()
+  const key = JSON.stringify([snapshot.epoch, snapshot.revision, snapshot.text, profileDeletionGen])
+  if (!force && key === lastProfileKey) return
+  lastProfileKey = key
+  notify({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, ...snapshot, profileDeletionGen })
+}
 const publishState = () => {
   if (!owner || !booted || closing) return
   const state = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, state: owner.status(),
-    revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch() }
+    revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch(),
+    profileDeletionGen: owner.runtime.profileDeletionGeneration() }
   const encoded = JSON.stringify(state)
   if (encoded !== lastState) { lastState = encoded; notify(state) }
 }
@@ -90,12 +101,14 @@ async function boot(raw: unknown, signal: AbortSignal) {
     onChange: change => {
       publishState()
       notify({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: owner!.epoch, ...change })
+      publishProfile()
     },
   })
   await owner.recover(preserveActiveTurns)
   signal.throwIfAborted()
   booted = true
   publishState()
+  publishProfile(true)
 }
 
 const inputFrame = z.strictObject({ method: z.string(), args: z.array(z.unknown()).max(8) })
@@ -132,6 +145,29 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
         }
         return current.runtime.handleModelRequest(request, readScope, current.ready, signal)
       })()
+    },
+    automaticRecall: (raw, cwd, originals) => {
+      const request = z.strictObject({ session: idSchema, turn: z.number().int().positive(), question: z.string().max(20_000) }).parse(raw)
+      const session = request.session
+      return (async () => {
+        if (!current.ready() || signal.aborted) return { status: 'unavailable' as const }
+        const resolved = current.resolveIntakeScope(cwd)
+        const origin = current.sessionContext(session)
+        const project = resolved.status === 'project' ? resolved.project : undefined
+        const scopeCurrent = current.scopeMatches(session, resolved)
+        const readScope = scopeCurrent ? { ...origin, project } : { ...origin, project: undefined, context: { kind: 'user' as const } }
+        const question = originals ? current.intakeQuery(session, readScope.project, originals) : request.question
+        if (!question.trim()) return { status: 'skipped' as const }
+        return current.runtime.automaticRecall({ session, turn: request.turn, question }, readScope, current.ready, signal)
+      })()
+    },
+    reportContextUsed: raw => {
+      const input = z.strictObject({
+        session: idSchema,
+        turn: z.number().int().positive(),
+        pushed: z.array(z.strictObject({ text: z.string(), names: z.array(z.string()) })),
+      }).parse(raw)
+      current.reportContextUsed(input)
     },
     setRoute: next => {
       const previous = route

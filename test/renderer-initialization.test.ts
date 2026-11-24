@@ -180,17 +180,19 @@ test('initialization retry replaces the stale view without resetting draft owner
 
 test('optional memory coalesces only live same-page reads and retries independently after timeout without late overwrite', async () => {
   let state: State = initialState
-  const requests: ReturnType<typeof deferred<{ profile: object, onboarding: string, habits: { text: string, samples: number } }>>[] = []
-  const api = { getMemory: () => { const request = deferred<{ profile: object, onboarding: string, habits: { text: string, samples: number } }>(); requests.push(request); return request.promise } } as AgentApi
+  type Page = Awaited<ReturnType<AgentApi['getMemory']>>
+  const requests: ReturnType<typeof deferred<Page>>[] = []
+  const api = { getMemory: () => { const request = deferred<Page>(); requests.push(request); return request.promise } } as AgentApi
   const actions = createMemoryActions({ api, getState: () => state, dispatch: action => { state = reduce(state, action) },
     errorMessage: String, showToast() {}, ask: () => false, readBudgetMs: 10 })
   const first = actions.loadMemory(), same = actions.loadMemory()
   assert.equal(first, same); assert.equal(await first, false)
   const second = actions.loadMemory(); await tick()
-  requests[0]!.resolve({ profile: { stale: true }, onboarding: 'pending', habits: { text: '', samples: 0 } })
-  requests[1]!.resolve({ profile: { fresh: true }, onboarding: 'done', habits: { text: '', samples: 0 } })
+  requests[0]!.resolve({ cleanupPending: 9, revision: 1, residentProfile: null, habits: { text: 'stale', samples: 1 } })
+  requests[1]!.resolve({ cleanupPending: 0, revision: 2, residentProfile: { kind: 'digest', workspace: 'u', id: 'fresh' }, habits: { text: 'fresh', samples: 2 } })
   assert.equal(await second, true)
-  assert.deepEqual(state.memory.profile, { fresh: true })
+  assert.deepEqual(state.memory.residentProfile, { kind: 'digest', workspace: 'u', id: 'fresh' })
+  assert.deepEqual(state.memory.habits, { text: 'fresh', samples: 2 })
 })
 
 test('required conversation events initialize independently of permanently pending memory reads with a failing logger', async t => {

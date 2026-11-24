@@ -5,7 +5,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { activeHours, MIN_SAMPLES } from '../src/backend/habits.ts'
-import { packContext, MAX_CONTEXT_CHARS } from '../src/memory/core/memory-context.ts'
+import { formatAutomaticRecallMessage, formatMemoryRulesSection, formatProfileContext } from '../src/memory/core/memory-context.ts'
+import { assembleDreamProfileBody, MAX_PROFILE_L2_CHARS, measureConfirmedSectionL2, mergeUserProfileEdit, projectProfileL2 } from '../src/memory/core/resident-profile.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { createMemoryRuntime } from './fixtures/localized-memory-runtime.ts'
@@ -46,54 +47,48 @@ test('secrets are refused, mentions and document links are not', () => {
   assert.equal(looksSecret('https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd/edit'), false)
 })
 
-test('profile fields belong to the user and changing a field keeps unrelated memories', async t => {
-  const { runtime } = memoryRuntime(t)
-  await runtime.setProfile({ role: '后端负责人', projects: 'Viva' })
-  assert.deepEqual(Object.keys(runtime.profile()).sort(), ['projects', 'role'])
-  assert.equal(runtime.profile().role.source, 'user')
-  const operationId = randomUUID()
-  const item = await runtime.writeManagedFile(operationId, runtime.manualFileWorkspace(), { operationId, text: '我负责 Viva 的发布' }, () => {})
-  assert.ok(item)
-  await runtime.setProfile({ projects: 'Atlas' })
-  assert.ok(runtime.readFile(item.identity)?.markdown.includes('我负责 Viva 的发布'))
-  assert.equal(runtime.accept('Viva 下周发版', { conversation: 'topic', session: 'session' }).outcome, 'recorded')
-  await runtime.setProfile({ projects: '' })
-  assert.equal(runtime.profile().projects, undefined)
-  assert.throws(() => runtime.setProfile({ department: '支付平台部' }))
-  assert.throws(() => runtime.setProfile({ role: 'token: abcdef1234567' }), /凭据/)
+test('L1 rules, L2 profile context and L3 recall message stay cleanly separated', () => {
+  const rules = formatMemoryRulesSection()
+  assert.match(rules, /memory_read/)
+  assert.match(rules, /## 用户确认/)
+  assert.equal(rules.includes('忘掉 #'), false)
+
+  const profile = formatProfileContext({ text: '## 用户确认\n- 先给结论', today: '2026-11-16' })
+  assert.match(profile, /<about-user>/)
+  assert.match(profile, /2026-11-16/)
+  assert.match(profile, /先给结论/)
+  assert.match(profile, /<\/about-user>$/)
+
+  assert.equal(formatProfileContext({ text: '', today: '2026-11-16' }), '<about-user>\n【今天】\n2026-11-16\n</about-user>')
+  assert.equal(formatProfileContext({ text: '', today: '' }), '')
+
+  const recall = formatAutomaticRecallMessage({
+    turn: 2,
+    ref: 'req-1',
+    result: { status: 'hit', text: '[digest] 周报每周五提交', partial: false, hits: [{ text: '周报每周五提交', names: ['周报'] }] },
+  })
+  assert.ok(recall)
+  assert.match(recall, /^<memory-recall turn="2" ref="req-1">/)
+  assert.match(recall, /周报每周五提交/)
+  assert.match(recall, /<\/memory-recall>$/)
 })
 
-test('onboarding starts pending and only takes known states', t => {
-  const { runtime } = memoryRuntime(t)
-  assert.equal(runtime.onboarding(), 'pending')
-  runtime.setOnboarding('skipped')
-  assert.equal(runtime.onboarding(), 'skipped')
-  assert.throws(() => runtime.setOnboarding('later'), /invalid onboarding state/)
-})
+test('resident profile projection strips Sources, preserves confirmed section first and bounds length', () => {
+  const longAuto = '自动整理的习惯描述'.repeat(120)
+  const markdown = `---\nname: Personal Profile\ndescription: Resident\n---\n\n## 用户确认\n- 始终用中文回复\n\n## 自动整理\n- ${longAuto}\n\n## Sources\n- [[daily/2026-11-16/note-a.md]]`
+  const projected = projectProfileL2(markdown)
+  assert.ok([...projected].length <= MAX_PROFILE_L2_CHARS)
+  assert.match(projected, /## 用户确认\n- 始终用中文回复/)
+  assert.equal(projected.includes('## Sources'), false)
+  assert.equal(projected.includes('[[daily/'), false)
 
-test('the fixed context includes user-authored profile fields and file memory rules', () => {
-  const packed = packContext({ profile: { role: { value: '发布负责人' }, email: { value: 'private@example.com' } }, today: '2026-11-16' })
-  assert.match(packed.text, /发布负责人/)
-  assert.match(packed.text, /2026-11-16/)
-  assert.match(packed.text, /daily/)
-  assert.match(packed.text, /memory_read/)
-  assert.equal(packed.text.includes('private@example.com'), false)
-  assert.equal(packed.text.includes('忘掉 #'), false)
-})
+  const merged = mergeUserProfileEdit('## 自动整理\n- 习惯 A', '## 自动整理\n- 习惯 A\n- 新增偏好 B')
+  assert.match(merged, /## 用户确认\n- 新增偏好 B/)
+  assert.match(merged, /## 自动整理\n- 习惯 A/)
 
-test('the manual profile fixed layer remains inside the context budget', () => {
-  const profile = Object.fromEntries(['role', 'projects', 'preferences', 'other'].map(key => [key, { value: '很长的资料'.repeat(1000) }]))
-  const packed = packContext({ profile, today: '2026-11-16' })
-  assert.ok(packed.text.length <= MAX_CONTEXT_CHARS)
-  assert.match(packed.text, /<about-user>/)
-  assert.match(packed.text, /<\/about-user>$/)
-})
-
-test('custom profile labels keep complete bounded fields and preserve the date', () => {
-  const packed = packContext({ profile: { preference: { value: '简练\n清楚' } }, today: '2026-11-16', profileLabels: [{ key: 'preference', label: '偏好' }] })
-  assert.match(packed.text, /偏好：简练；清楚/)
-  assert.match(packed.text, /2026-11-16/)
-  assert.ok(packed.text.length <= MAX_CONTEXT_CHARS)
+  assert.throws(() => assembleDreamProfileBody({ existingBody: null, autoSummaryBody: '## 用户确认\n- 假冒', action: 'CREATE' }), /dream-profile-reserved-heading/)
+  assert.throws(() => assembleDreamProfileBody({ existingBody: '## 用户确认\n- A', autoSummaryBody: '## 自动整理\n- B\n## 自动整理\n- C', action: 'REFINE' }), /dream-profile-reserved-heading/)
+  assert.ok(measureConfirmedSectionL2(merged) > 0)
 })
 
 test('active hours need enough questions and merge neighbouring hours', () => {
@@ -133,15 +128,15 @@ test('memory IPC creates file memory and reports the profile page in one call', 
   const call = async (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
 
   const result = await call('memory:create-file', { operationId: randomUUID(), text: '回答先给结论。' }) as { status: string }
-  await call('memory:set-profile', { role: '后端负责人' })
   const page = await call('memory:get') as {
-    profile: { role: { value: string } }, onboarding: string, habits: { samples: number },
+    cleanupPending: number, revision: number, residentProfile: unknown, habits: { samples: number },
   }
   assert.equal(result.status, 'applied')
-  assert.deepEqual([page.profile.role.value, page.onboarding, page.habits.samples], ['后端负责人', 'pending', 3])
+  assert.deepEqual([page.cleanupPending, page.residentProfile, page.habits.samples], [0, null, 3])
   assert.equal(handlers.has('memory:add'), false)
+  assert.equal(handlers.has('memory:set-profile'), false)
+  assert.equal(handlers.has('memory:onboarding'), false)
   assert.deepEqual(await call('memory:add-docs'), [], 'cancelling the file picker adds nothing')
-  assert.equal(await call('memory:onboarding', 'done'), 'done')
   await assert.rejects(call('memory:create-file', { operationId: randomUUID(), text: 42 }), /invalid memory:create-file arguments/)
 })
 

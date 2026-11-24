@@ -2,6 +2,7 @@ import type { MemoryFileIndexChanges } from '../core/ports/runtime.ts'
 import type { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
+import { MemoryPhysicalReadError } from '../core/ports/documents.ts'
 import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentRevisionEntry, DocumentSourceRef, DocumentReadRef, DocumentUndoCandidate, DocumentManagementGuard, DocumentManualWrite, MemoryPhysicalFile } from '../core/ports/documents.ts'
 import { MEMORY_CONTRACT } from '../contracts/memory-contract.ts'
 import { digestPath } from '../contracts/memory-file-contract.ts'
@@ -11,6 +12,7 @@ import { memoryFileRevision } from './memory-file-store.ts'
 import { fileErasure, openMemoryFileJournal } from './memory-file-journal.ts'
 import type { FileCheckpoint } from './memory-file-journal.ts'
 import { documentSourceProofCurrent } from '../core/memory-source-proof.ts'
+import { isReservedProfilePath, RESIDENT_PROFILE_PATH, userWorkspaceId } from '../core/resident-profile.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { transaction, truncateMemoryJournal } from './sqlite.ts'
 
@@ -33,7 +35,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   onCommitted?: (receipt: DocumentReceipt) => void,
   managementCurrent?: (before: DocumentSnapshot, guard: DocumentManagementGuard, after: DocumentSnapshot, staged?: MemorySource) => boolean,
   manual?: { token(source: MemorySource): string, workspace(source: MemorySource): string,
-    current(source: MemorySource): boolean, commit(source: MemorySource, parents: readonly DocumentSourceRef[]): void, },
+    current(source: MemorySource, beforeMarkdown?: string): boolean, commit(source: MemorySource, parents: readonly DocumentSourceRef[]): void, },
   index?: MemoryFileIndexChanges,
   deferRecovery?: boolean,
   checkpoint?: (point: FileCheckpoint, path?: string) => void,
@@ -49,8 +51,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     CREATE TABLE IF NOT EXISTS memory_documents (
       id TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL,
       usage_version INTEGER NOT NULL, enabled INTEGER NOT NULL, forgotten INTEGER NOT NULL DEFAULT 0,
-      sources TEXT NOT NULL, UNIQUE(workspace,path)
+      sources TEXT NOT NULL
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_documents_active_path ON memory_documents(workspace,path) WHERE forgotten=0;
     CREATE TABLE IF NOT EXISTS memory_document_revisions (
       operation TEXT PRIMARY KEY, document TEXT NOT NULL, before TEXT, after TEXT, at INTEGER NOT NULL
     );
@@ -70,7 +73,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     return db.prepare('SELECT * FROM memory_documents WHERE id=?').get(id) as Row | undefined
   }
   function rowByPath(scope: string, path: string): Row | undefined {
-    return db.prepare('SELECT * FROM memory_documents WHERE workspace=? AND path=?').get(scope, path) as Row | undefined
+    return db.prepare('SELECT * FROM memory_documents WHERE workspace=? AND path=? AND forgotten=0').get(scope, path) as Row | undefined
   }
   function currentSources(scope: string, refs: readonly DocumentSourceRef[], staged?: MemorySource) {
     return refs.length > 0 && new Set(refs.map(ref => ref.id)).size === refs.length && refs.every(ref => {
@@ -107,7 +110,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       const before = data.before
       const targetCurrent = before ? actual?.id === before.id && actual.revision === before.revision && actual.usage_version === before.usageVersion && !actual.forgotten
         : !actual
-      if (data.manualSource && (!data.after || !manual?.current(data.manualSource))) return false
+      if (data.manualSource && (!data.after || !manual?.current(data.manualSource, before?.markdown))) return false
       if (data.management) {
         if (!targetCurrent || !before || !data.after || !actual) return false
         const physical = journal.files(data.workspace).read(before.path)?.revision
@@ -149,19 +152,37 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (row.input !== hash(input)) throw new Error('memory-request-input-mismatch')
     return JSON.parse(row.receipt) as DocumentReceipt
   }
-  function read(scope: string, path: string, options: { includeDisabled?: boolean, physical?: MemoryPhysicalFile | null } = {}): DocumentSnapshot | null {
+  function read(scope: string, path: string, options: { includeDisabled?: boolean, physical?: MemoryPhysicalFile | null, throwOnPhysicalError?: boolean } = {}): DocumentSnapshot | null {
     workspace(scope)
     digestPath.parse(path)
     const row = rowByPath(scope, path)
     if (!row || row.forgotten || (!row.enabled && !options.includeDisabled) || !currentSources(scope, refsOf(row)) || !journal.visible(scope, path)) return null
-    const file = options.physical === undefined ? journal.files(scope).read(path) : options.physical
+    let file: MemoryPhysicalFile | null
+    if (options.physical === undefined) {
+      if (options.throwOnPhysicalError) {
+        try { file = journal.files(scope).read(path) }
+        catch (error) { throw new MemoryPhysicalReadError('Memory document file is temporarily unavailable', { cause: error }) }
+        if (!file) throw new MemoryPhysicalReadError('Memory document file is missing')
+      } else {
+        file = journal.files(scope).read(path)
+      }
+    } else {
+      file = options.physical
+    }
     // An external edit has no verified provenance. It is quarantined, never silently reinterpreted.
     if (!file || file.path !== path || file.revision !== row.revision) return null
     return { id: row.id, workspace: scope, path, revision: row.revision, usageVersion: row.usage_version, markdown: file.markdown, sources: refsOf(row), enabled: Boolean(row.enabled) }
   }
+  const userWorkspace = userWorkspaceId(memoryFileRevision)
+  function checkReservedProfilePath(scope: string, filePath: string) {
+    if (!isReservedProfilePath(filePath)) return
+    if (scope !== userWorkspace || filePath !== RESIDENT_PROFILE_PATH) {
+      throw new Error('memory-reserved-profile-path')
+    }
+  }
   function list(scope: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[] {
     workspace(scope)
-    return (db.prepare('SELECT path FROM memory_documents WHERE workspace=? ORDER BY path').all(scope) as Array<{ path: string }>)
+    return (db.prepare('SELECT path FROM memory_documents WHERE workspace=? AND forgotten=0 ORDER BY path').all(scope) as Array<{ path: string }>)
       .flatMap(row => read(scope, row.path, options) ?? [])
   }
   function apply(input: unknown, before: DocumentSnapshot | null, after: DocumentSnapshot | null, receipt: DocumentReceipt, sources: DocumentSourceRef[], reads: DocumentReadRef[], files: Array<{ path: string, revision: string }> = [], management?: DocumentManagementGuard, manualSource?: MemorySource) {
@@ -185,11 +206,16 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const prior = replay(input.operationId, input)
     if (prior) return prior
     digestPath.parse(input.path)
+    checkReservedProfilePath(input.workspace, input.path)
     parseMemoryDocument(input.markdown)
     const before = read(input.workspace, input.path)
     if (rowByPath(input.workspace, input.path) && !before) throw new Error('memory-document-unavailable')
     if ((before?.revision ?? null) !== input.expectedRevision) throw new Error('memory-document-version')
     if ((input.action === 'CREATE') !== !before) throw new Error('memory-document-action')
+    if (input.action === 'CREATE') {
+      const pendingPathPurges = purges().filter(p => p.workspace === input.workspace && p.path === input.path)
+      if (pendingPathPurges.length) applyPurges(pendingPathPurges)
+    }
     if (before && before.sources.some(ref => !input.sources.some(next => next.id === ref.id && next.token === ref.token && (!next.spans || ref.spans && ref.spans.every(part => next.spans!.some(span => span.start <= part.start && span.end >= part.end)))))) throw new Error('memory-document-source-loss')
     if (!currentSources(input.workspace, input.sources) || !currentReads(input.workspace, input.reads)) throw new Error('memory-document-source-version')
     const id = before?.id ?? randomUUID(), revision = memoryFileRevision(input.markdown), usageVersion = (before?.usageVersion ?? 0) + 1
@@ -203,6 +229,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (prior) return prior
     if (!manual) throw new MemoryDomainError('not.found')
     digestPath.parse(input.path)
+    checkReservedProfilePath(input.workspace, input.path)
     parseMemoryDocument(input.markdown)
     const before = read(input.workspace, input.path)
     const expected = input.expected
@@ -253,9 +280,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const prior = replay(input.operationId, input)
     if (prior) return prior
     const row = rowById(input.documentId)
-    if (!row || row.workspace !== input.workspace) throw new Error('memory-document-unavailable')
+    if (!row || row.workspace !== input.workspace || row.forgotten) throw new Error('memory-document-unavailable')
     const current = read(input.workspace, row.path, { includeDisabled: true })
-    if (!current || current.revision !== input.revision || current.usageVersion !== input.usageVersion) throw new Error('memory-document-version')
+    if (!current || current.id !== input.documentId || current.revision !== input.revision || current.usageVersion !== input.usageVersion) throw new Error('memory-document-version')
     const candidate = undoHistory(current)
     if (!candidate) throw new Error('memory-document-undo-unavailable')
     if (input.expectedChangeId !== undefined && input.expectedChangeId !== candidate.history.operation) throw new Error('memory-document-change-version')
@@ -272,9 +299,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const prior = replay(input.operationId, input)
     if (prior) return prior
     const row = rowById(input.documentId)
-    if (!row || row.workspace !== input.workspace) throw new Error('memory-document-unavailable')
+    if (!row || row.workspace !== input.workspace || row.forgotten) throw new Error('memory-document-unavailable')
     const current = read(input.workspace, row.path, { includeDisabled: true })
-    if (!current || current.revision !== input.expectedRevision || current.usageVersion !== input.expectedUsageVersion) throw new Error('memory-document-version')
+    if (!current || current.id !== input.documentId || current.revision !== input.expectedRevision || current.usageVersion !== input.expectedUsageVersion) throw new Error('memory-document-version')
     const after = { ...current, enabled: input.enabled, usageVersion: current.usageVersion + Number(current.enabled !== input.enabled) }
     const receipt: DocumentReceipt = { operationId: input.operationId, documentId: row.id, path: row.path, revision: after.revision, usageVersion: after.usageVersion, action: input.enabled ? 'ENABLE' : 'DISABLE' }
     const management = input.expectedPolicyToken === undefined ? undefined : { policyToken: input.expectedPolicyToken }
@@ -290,6 +317,12 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   function applyPurges(rows: ReturnType<typeof purges>) {
     for (const purge of rows) {
       try {
+        const active = rowByPath(purge.workspace, purge.path)
+        if (active && active.id !== purge.document) {
+          // A newer active document now owns this path; retire the old tombstone's purge entry without touching disk.
+          journal.commit(`purge:${purge.document}`, hash(purge), () => ({ workspace: purge.workspace, changes: [], data: { ...purge, kind: 'purge' } }))
+          continue
+        }
         const before = journal.files(purge.workspace).read(purge.path)
         // A prepared CREATE has no accepted ownership of unrelated on-disk bytes.
         // Keep cleanup pending if its physical state cannot be verified.

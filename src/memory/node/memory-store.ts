@@ -11,8 +11,8 @@ import { memoryScopeKey } from '../core/scope.ts'
 export { memoryScopeKey } from '../core/scope.ts'
 export type { MemorySource, MemoryFileDependency } from '../contracts/records.ts'
 
-type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'requestId' | 'questionId'> & {
-  scope: string, context: string | null, project: string | null, request_id: string | null, question_id: string | null
+type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'requestId' | 'questionId' | 'questionAt' | 'questionProfileGen'> & {
+  seq?: number, scope: string, context: string | null, project: string | null, request_id: string | null, question_id: string | null, question_at: number | null, question_profile_gen: number | null
 }
 export const memoryHash = (text: string) => createHash('sha256').update(text).digest('hex')
 
@@ -22,7 +22,7 @@ const SCHEMA = `
   CREATE TABLE memory_sources (
     id TEXT PRIMARY KEY, operation TEXT NOT NULL, version INTEGER NOT NULL,
     conversation TEXT, session TEXT, scope TEXT NOT NULL, context TEXT, project TEXT, author TEXT NOT NULL,
-    text TEXT, hash TEXT, length INTEGER NOT NULL, question TEXT, request_id TEXT, question_id TEXT, at INTEGER NOT NULL, timezone TEXT NOT NULL,
+    text TEXT, hash TEXT, length INTEGER NOT NULL, question TEXT, question_at INTEGER, question_profile_gen INTEGER, request_id TEXT, question_id TEXT, at INTEGER NOT NULL, timezone TEXT NOT NULL,
     outcome TEXT NOT NULL, UNIQUE(operation, version)
   );
   CREATE INDEX memory_sources_conversation ON memory_sources(conversation);
@@ -30,7 +30,6 @@ const SCHEMA = `
     source TEXT NOT NULL, parent TEXT NOT NULL, reference TEXT NOT NULL, PRIMARY KEY(source,parent)
   );
   CREATE TABLE memory_commands (key TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, result INTEGER);
-  CREATE TABLE profile (field TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL, revision INTEGER NOT NULL);
 `
 
 export function openMemoryStore(file: string, now = Date.now) {
@@ -60,19 +59,21 @@ export function openMemoryStore(file: string, now = Date.now) {
     if (invalidate) setMeta('epoch', String(next))
     return next
   }
-  const sourceById = db.prepare('SELECT * FROM memory_sources WHERE id=?')
+  const sourceById = db.prepare('SELECT rowid AS seq, * FROM memory_sources WHERE id=?')
+  const maxSourceSeqStmt = db.prepare('SELECT COALESCE(MAX(rowid), 0) AS seq FROM memory_sources')
+  const maxSourceSeq = () => Number((maxSourceSeqStmt.get() as { seq: number }).seq)
   const readSource = (id: string): MemorySource | null => {
     const row = sourceById.get(id) as SourceRow | undefined
     if (!row) return null
-    return { ...row, requestId: row.request_id, questionId: row.question_id,
+    return { ...row, ...(typeof row.seq === 'number' ? { seq: row.seq } : {}), questionAt: row.question_at ?? null, questionProfileGen: row.question_profile_gen ?? null, requestId: row.request_id, questionId: row.question_id,
       scope: memoryScope.parse(JSON.parse(row.scope)), context: row.context ? memoryScope.parse(JSON.parse(row.context)) : null,
       project: row.project ? memoryScope.parse(JSON.parse(row.project)) : null }
   }
   const insertSource = (source: MemorySource) => db.prepare(`INSERT INTO memory_sources
-    (id, operation, version, conversation, session, scope, context, project, author, text, hash, length, question, request_id, question_id, at, timezone, outcome)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
+    (id, operation, version, conversation, session, scope, context, project, author, text, hash, length, question, question_at, question_profile_gen, request_id, question_id, at, timezone, outcome)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
     memoryScopeKey(source.scope), source.context ? memoryScopeKey(source.context) : null, source.project ? memoryScopeKey(source.project) : null, source.author, source.text, source.hash, source.length,
-    source.question, source.requestId, source.questionId, source.at, source.timezone, source.outcome)
+    source.question, source.questionAt ?? null, source.questionProfileGen ?? null, source.requestId, source.questionId, source.at, source.timezone, source.outcome)
   function insertManualFileSource(source: MemorySource, parents: readonly DocumentSourceRef[]) {
     tx(() => {
       insertSource(source)
@@ -83,15 +84,6 @@ export function openMemoryStore(file: string, now = Date.now) {
   const parentsOfManualFile = db.prepare('SELECT reference FROM memory_manual_file_lineage WHERE source=? ORDER BY parent')
   const manualFileParents = (source: string) => parentsOfManualFile.all(source).map(row => JSON.parse(String(row.reference)) as DocumentSourceRef)
   const outcome = (id: string, state: string) => db.prepare('UPDATE memory_sources SET outcome=? WHERE id=?').run(state, id)
-  const profile = () => Object.fromEntries((db.prepare('SELECT field,value,updated_at AS updatedAt,revision FROM profile').all() as Array<{ field: string, value: string, updatedAt: number, revision: number }>)
-    .map(({ field, value, updatedAt, revision }) => [field, { value, updatedAt, revision, source: 'user' }]))
-  function setProfile(fields: Record<string, string>) {
-    for (const [key, value] of Object.entries(fields)) {
-      if (value) db.prepare('INSERT OR REPLACE INTO profile VALUES (?,?,?,?)').run(key, value, now(), revision())
-      else db.prepare('DELETE FROM profile WHERE field=?').run(key)
-    }
-    return profile()
-  }
   const command = (key: string) => db.prepare('SELECT kind,payload,result FROM memory_commands WHERE key=?').get(key) as { kind: string, payload: string, result: number | null } | undefined
   const recordCommand = (key: string, kind: string, payload: string, result: number | null) =>
     db.prepare('INSERT INTO memory_commands VALUES (?,?,?,?)').run(key, kind, payload, result)
@@ -99,8 +91,8 @@ export function openMemoryStore(file: string, now = Date.now) {
   return { get fileRoot() {
     return file === ':memory:' ? temporaryFileRoot ??= fs.mkdtempSync(path.join(tmpdir(), 'viva-memory-files-')) : path.join(path.dirname(file), 'memory-files')
   }, db, tx, revision, epoch, nextRevision,
-    readSource, insertSource, insertManualFileSource, manualFileParents,
-    outcome, meta, setMeta, profile, setProfile, command, recordCommand,
+    readSource, maxSourceSeq, insertSource, insertManualFileSource, manualFileParents,
+    outcome, meta, setMeta, command, recordCommand,
     close() { try { db.close() } finally { if (temporaryFileRoot) fs.rmSync(temporaryFileRoot, { recursive: true, force: true }) } }
   }
 }

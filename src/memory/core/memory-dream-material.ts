@@ -14,3 +14,11 @@ export function inspectMemoryDocumentText(markdown: string, trustedPaths: readon
   }
   return inspected
 }
+
+/** Replace only exact backend-verified wikilink target paths (`[[path]]` / `[[path#anchor]]`), keeping anchors and prose intact. */
+export function stripTrustedMemoryLinks(text: string, trustedPaths: readonly string[]): string {
+  const allowed = new Set(trustedPaths.filter(Boolean))
+  if (!allowed.size) return text
+  return text.replace(/\[\[([^\[\]\r\n#]+)(#[^\[\]\r\n]*)?\]\]/gu, (match, targetPath: string, anchor: string | undefined) =>
+    allowed.has(targetPath) ? `[memory-reference]${anchor ?? ''}` : match)
+}

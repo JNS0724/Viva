@@ -2,6 +2,7 @@ import type { MemoryFileIndexChanges } from '../core/ports/runtime.ts'
 import type { DailyAllocation, DailyFileRegistration } from '../core/ports/notes.ts'
 import { truncateMemoryJournal } from './sqlite.ts'
 import { documentSourceProofCurrent } from '../core/memory-source-proof.ts'
+import { MemoryPhysicalReadError } from '../core/ports/documents.ts'
 import type { MemoryPhysicalFile } from '../core/ports/documents.ts'
 import { memoryFileRevision } from './memory-file-store.ts'
 import { memorySourceWorkspace as workspaceOf, memorySourceToken as token } from './source-identity.ts'
@@ -117,20 +118,31 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       }
     },
   })
-  function read(key: string, physical?: MemoryPhysicalFile | null): Note | undefined {
+  function read(key: string, physical?: MemoryPhysicalFile | null, options?: { throwOnPhysicalError?: boolean }): Note | undefined {
     const row = rawNote(key)
     if (!row?.file_revision || !journal.visible(row.workspace, row.path)) return
     const refs = references(key)
     if (!refs.every(validRef)) return
+    let file: MemoryPhysicalFile | null
+    if (physical === undefined) {
+      if (options?.throwOnPhysicalError) {
+        try { file = journal.files(row.workspace).read(row.path) }
+        catch (error) { throw new MemoryPhysicalReadError('Memory note file is temporarily unavailable', { cause: error }) }
+        if (!file) throw new MemoryPhysicalReadError('Memory note file is missing')
+      } else {
+        try { file = journal.files(row.workspace).read(row.path) }
+        catch { return undefined }
+      }
+    } else {
+      file = physical
+    }
+    if (!file || file.path !== row.path || file.revision !== row.file_revision) return
     try {
-      const file = physical === undefined ? journal.files(row.workspace).read(row.path) : physical
-      if (!file || file.path !== row.path || file.revision !== row.file_revision) return
       const doc = parseMemoryDocument(file.markdown)
       const session = doc.metadata.session_id
       return { ...row, file_revision: file.revision, enabled: Boolean(row.enabled), title: String(doc.metadata.name ?? ''), markdown: doc.body,
         document: file.markdown, fileRevision: file.revision, ...(typeof session === 'string' ? { session } : {}) }
     } catch { return undefined } // One malformed or externally replaced file cannot hide unrelated accepted notes.
-
   }
   function dialog(workspace: string, session: string): DialogTurn[] {
     const text = journal.files(workspace).read(sessionPath(session))?.markdown ?? ''
@@ -245,6 +257,15 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     fileRegistry: () => (db.prepare(`SELECT key,day,workspace,path,revision,updated_at AS updatedAt,file_revision AS fileRevision,enabled
       FROM memory_daily_notes WHERE file_revision IS NOT NULL`).all() as unknown as Array<Omit<DailyFileRegistration, 'enabled'> & { enabled: number }>)
       .map(row => ({ ...row, enabled: Boolean(row.enabled) })),
+    noteRegistration(key: string) {
+      const isDeleted = deleted(key)
+      const row = rawNote(key)
+      if (!row) return isDeleted ? { key, workspace: '', path: '', revision: 0, processed: 0, fileRevision: null, enabled: false, deleted: true } : null
+      return {
+        key: row.key, workspace: row.workspace, path: row.path, revision: row.revision, processed: row.processed,
+        fileRevision: row.file_revision, enabled: Boolean(row.enabled), deleted: isDeleted,
+      }
+    },
     setEnabled: (key: string, revision: number, enabled: boolean) => db.prepare(`UPDATE memory_daily_notes SET enabled=?,revision=revision+1
       WHERE key=? AND revision=? AND enabled<>?`).run(Number(enabled), key, revision, Number(enabled)).changes === 1,
     deleteFile,

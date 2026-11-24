@@ -26,10 +26,12 @@ async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]
   return { ...harness, agent, call, ask, freshSession, session: () => session }
 }
 interface ModelRequest { system?: unknown, messages: { content: string | { type: string, text?: string }[] }[] }
+function lastForeground(llm: { requests: object[] }) {
+  return (llm.requests as ModelRequest[]).findLast(request => JSON.stringify(request.system ?? '').includes('你是用户的个人工作助手'))
+}
 function lastContext(llm: { requests: object[] }) {
-  const foreground = (llm.requests as ModelRequest[]).findLast(request => JSON.stringify(request.system ?? '').includes('你是用户的个人工作助手')
-    && JSON.stringify(request.messages.at(-1)).includes('<about-user>'))
-  return JSON.stringify(foreground?.messages.at(-1) ?? '')
+  const foreground = lastForeground(llm)
+  return JSON.stringify(foreground?.messages ?? '')
 }
 
 test('a resumed task publishes its own committed answer after restart', { timeout: DSH_TIMEOUT_MS }, async t => {
@@ -66,22 +68,27 @@ test('the plugin preserves Viva persona and normal conversation replies', { time
   assert.ok(replies(events).join('').includes('你好'))
 })
 
-test('automatic context times out without interrupting the request', { timeout: DSH_TIMEOUT_MS }, async t => {
+test('automatic recall times out without interrupting the request', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { agent, call, ask, llm, events } = await setupMemory(t)
-  await call('setProfile', { args: [{ role: 'injection-receipt-test' }, randomUUID()] })
+  await call('createFile', { args: [{ operationId: randomUUID(), text: '照常回复规则：injection-receipt-test' }] })
   const pid = agent.pid(), emit = ChildProcess.prototype.emit
   let admitted = false, lookup = false, extraSessionReads = 0
   let lostReceiptBudget: number | undefined
   t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
     const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
+    if (frame?.kind === 'request' && (frame.method === 'claimPrefetch' || frame.method === 'claimPrefetchBatch')) {
+      lookup = true
+      lostReceiptBudget = frame.budgetMs
+      return true // Simulate hung host prefetch claim.
+    }
     if (frame?.kind === 'request' && frame.method === 'adapter') {
       const call = objectOf(frame.input), input = Array.isArray(call?.args) ? objectOf(call.args[0]) : null
       if (call?.method === 'receiveSource' && input?.live === true) admitted = true
       if (admitted && !lookup && call?.method === 'sessionView') extraSessionReads++
-      if (call?.method === 'sidecarRequest' && input?.op === 'context') {
+      if (call?.method === 'automaticRecall' || (call?.method === 'sidecarRequest' && input?.op === 'context')) {
         lookup = true
         lostReceiptBudget = frame.budgetMs
-        return true // The owner never returns this optional context lookup.
+        return true // The owner never returns this optional recall lookup.
       }
     }
     return Reflect.apply(emit, this, [event, ...args]) as boolean
@@ -94,13 +101,12 @@ test('automatic context times out without interrupting the request', { timeout: 
   assert.doesNotMatch(JSON.stringify(llm.requests), /injection-receipt-test/)
 })
 
-test('the plugin injects manual profile and recalls file memory with exact evidence after restart', { timeout: DSH_TIMEOUT_MS }, async t => {
+test('the plugin injects static memory rules and recalls file memory with exact evidence after restart', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { llm, call, ask, agent, bridge } = await setupMemory(t)
-  await call('setProfile', { args: [{ role: '后端负责人' }, randomUUID()] })
   const input = { operationId: randomUUID(), text: '周报每周五下班前交给张三。' }
   const created = await call('createFile', { args: [input] })
   await ask('帮我写周报')
-  assert.match(lastContext(llm), /后端负责人/)
+  assert.match(JSON.stringify(llm.requests.at(-1)), /memory_read/)
   assert.match(lastContext(llm), /周报每周五下班前交给张三/)
   assert.ok(llm.requests.every(request => !JSON.stringify(request).includes('dsh_session_log')))
   const epoch = agent.memory.state()!.epoch
@@ -131,7 +137,6 @@ test('trusted source aliases retain exact user evidence and refuse reused operat
 
 test('memory_remember saves exact current user evidence directly into a file', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { call, ask, events, llm } = await setupMemory(t)
-  await call('setProfile', { args: [{ role: 'profile-across-tool-steps' }, randomUUID()] })
   const text = '周报每周五提交，客户故障时另行确认。'
   await ask(`记住：${text}`)
   const files = await call('listFiles', { args: [{ kind: 'digest' }] })
@@ -141,12 +146,9 @@ test('memory_remember saves exact current user evidence directly into a file', {
   assert.ok(detail)
   assert.ok(detail.markdown.includes(text))
   const continuation = (llm.requests as ModelRequest[]).find(request =>
-    request.messages.some(message => JSON.stringify(message.content).includes('tool_result'))
-    && request.messages.some(message => JSON.stringify(message.content).includes('profile-across-tool-steps')))
+    request.messages.some(message => JSON.stringify(message.content).includes('tool_result')))
   assert.ok(continuation, 'the model continued after executing the memory tool')
-  const latestContext = continuation.messages.findLast(message => JSON.stringify(message.content).includes('current session')
-    || JSON.stringify(message.content).includes('Current runtime context: none'))
-  assert.match(JSON.stringify(latestContext), /profile-across-tool-steps/)
+  assert.match(JSON.stringify(continuation), /memory_read/)
   assert.equal(detail.sources.length, 1)
   assert.equal(detail.sources[0]?.namespace, 'canonical')
 })
@@ -164,4 +166,63 @@ test('the actual remember tool accepts a precise fragment from a natural request
   assert.ok(saved)
   const detail = await call('readFile', { args: [saved.identity] })
   assert.ok(detail?.markdown.includes(text))
+})
+
+test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) and confirms memory_context exactly once per committed turn including tool continuation (R2 P2-7, R3 P2-7)', { timeout: DSH_TIMEOUT_MS }, async t => {
+  let toolCallIssued = false
+  const { llm, call, ask, agent } = await setupMemory(t, {
+    decideFirst: routeFixtureTools((request: ModelRequest) => {
+      const text = questionOf(request.messages)
+      if (!toolCallIssued && text.includes('月报') && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+        toolCallIssued = true
+        return { tool: { name: 'memory_node_search', input: { query: '月报' } } }
+      }
+      return null
+    }),
+  })
+  await call('createFile', { args: [{ operationId: randomUUID(), text: '周报每周五下午五点发给产品组。' }] })
+  await call('createFile', { args: [{ operationId: randomUUID(), text: '月报每月底最后一天发给运营组。' }] })
+
+  const pid = agent.pid(), emit = ChildProcess.prototype.emit
+  const contextUsedReports: Array<{ turn: number, pushed: Array<{ text: string, names: string[] }> }> = []
+  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
+    if (frame?.kind === 'request' && frame.method === 'adapter') {
+      const payload = objectOf(frame.input)
+      if (payload?.method === 'reportContextUsed' && Array.isArray(payload.args)) {
+        const arg = objectOf(payload.args[0])
+        if (arg && typeof arg.turn === 'number' && Array.isArray(arg.pushed)) {
+          contextUsedReports.push({ turn: arg.turn, pushed: arg.pushed as Array<{ text: string, names: string[] }> })
+        }
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+
+  const textsOf = (request: ModelRequest) => request.messages.flatMap(msg =>
+    typeof msg.content === 'string' ? [msg.content] : msg.content.map(part => part.text ?? ''),
+  ).join('\n')
+
+  await ask('帮我写周报')
+  assert.ok(await eventually(() => contextUsedReports.filter(r => r.turn === 1).length === 1), 'turn 1 must report memory_context once')
+  const firstReq = lastForeground(llm)
+  assert.ok(firstReq)
+  assert.match(JSON.stringify(firstReq.system ?? ''), /memory_read/, 'L1 static rules must reside in system prompt')
+  const firstText = textsOf(firstReq)
+  assert.match(firstText, /<memory-recall turn="1" ref="/, 'L3 recall message must be attached for turn 1')
+  assert.match(firstText, /产品组/)
+
+  // Turn 2 executes a multi-step tool continuation (step 1 calls memory_node_search, step 2 replies)
+  await ask('帮我写月报')
+  assert.equal(toolCallIssued, true, 'turn 2 must exercise real multi-step tool continuation')
+  assert.ok(await eventually(() => contextUsedReports.filter(r => r.turn === 2).length === 1), 'turn 2 must report memory_context once')
+  const secondReq = lastForeground(llm)
+  assert.ok(secondReq)
+  const secondText = textsOf(secondReq)
+  assert.match(secondText, /<memory-recall turn="1" ref="/, 'Option A: turn 1 recall message must remain preserved in history')
+  assert.match(secondText, /<memory-recall turn="2" ref="/, 'turn 2 recall message must be appended cleanly')
+  assert.match(secondText, /运营组/)
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(contextUsedReports.filter(r => r.turn === 2).length, 1, 'committed multi-step tool continuation turn must emit exactly 1 memory_context report')
+  assert.equal(contextUsedReports.length, 2, 'normal 2-turn commit (including multi-step tool continuation) must emit exactly 2 memory_context reports')
 })

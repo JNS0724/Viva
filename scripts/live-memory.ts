@@ -180,7 +180,7 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryRoot 
     }
     return { sessionId, model, turns, injected, files: await fileSnapshot(bridge.memory.call),
       cleanupPending: await bridge.memory.call('cleanupPending', { args: [] }),
-      profile: await bridge.memory.call('profile', { args: [] }) }
+      profile: await bridge.memory.call('profilePage', { args: [] }) }
   } finally {
     try { await bridge.dispose() } finally { await memoryOwner.close() }
   }
@@ -201,7 +201,7 @@ async function main() {
     sessions: Awaited<ReturnType<typeof runSession>>[],
     files?: MemoryFileDetail[],
     cleanupPending?: number,
-    profile?: Record<string, string>,
+    profile?: Awaited<ReturnType<typeof runSession>>['profile'],
   } = { startedAt: new Date().toISOString(), sessions: [] }
   try {
     for (const questions of SESSIONS) {
@@ -210,7 +210,7 @@ async function main() {
     const latest = report.sessions.at(-1)
     report.files = latest?.files ?? []
     report.cleanupPending = latest?.cleanupPending ?? 0
-    report.profile = Object.fromEntries(Object.entries(latest?.profile ?? {}).map(([field, entry]) => [field, entry.value]))
+    report.profile = latest?.profile
   } finally {
     fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true })
     fs.writeFileSync(OUT_FILE, `${JSON.stringify(report, null, 2)}\n`)

@@ -74,7 +74,7 @@ export function checkAnswers(questions: readonly Question[], answers: unknown): 
 /** A question waiting: from which session, and the background task it belongs to (null for the main conversation's). */
 interface Pending {
   question: QuestionSet, sessionId: string, taskId: string | null, context: ConversationContext | null,
-  turn?: number, check?: () => boolean,
+  turn?: number, askedAt: number, questionProfileGen?: number, check?: () => boolean,
 }
 export type QuestionAdmission = boolean | (() => boolean)
 
@@ -82,11 +82,12 @@ export type QuestionAdmission = boolean | (() => boolean)
  * send: to the plugin; emit: to the window; sessionId: the conversation on screen; taskOf: the background
  * task a session is, if any (its questions go to the window as task_question).
  */
-export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, allowGeneralQuestion }: {
+export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, allowGeneralQuestion, profileDeletionGen }: {
   send: (message: object) => void, emit: (event: { type: string, [field: string]: unknown }) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null,
   conversationContext?: (sessionId: string) => ConversationContext | null,
   onAnswer?: (entry: Pending, answers: Answer[], operation?: string) => string | { sourceIds: Readonly<Record<string, string>> } | void | Promise<string | { sourceIds: Readonly<Record<string, string>> } | void>,
   allowGeneralQuestion?: (sessionId: string, questions: readonly Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') => QuestionAdmission | Promise<QuestionAdmission>,
+  profileDeletionGen?: () => number | undefined,
 }) {
   const pending = new Map<string, Pending>()
   const checking = new Map<string, Pending>()
@@ -118,7 +119,8 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     const context = taskId ? null : conversationContext?.(message.sessionId) ?? null
     if (!taskId && conversationContext && !context) return send({ type: 'decline', id: question.id })
     const turn = typeof message.turn === 'number' && Number.isSafeInteger(message.turn) && message.turn > 0 ? message.turn : undefined
-    const entry: Pending = { question, sessionId: message.sessionId, taskId, context, turn }
+    const gen = profileDeletionGen?.()
+    const entry: Pending = { question, sessionId: message.sessionId, taskId, context, turn, askedAt: Date.now(), ...(gen !== undefined ? { questionProfileGen: gen } : {}) }
     checking.set(question.id, entry)
     const waiting = () => checking.get(question.id) === entry || pending.get(question.id) === entry
     const admission = allowGeneralQuestion?.(entry.sessionId, question.questions, waiting, 'show') ?? true
