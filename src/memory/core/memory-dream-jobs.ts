@@ -760,7 +760,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) return 'unverifiable'
         return 'stale'
       }
-      const latest = notes.read(file.key, undefined, { throwOnPhysicalError: true })
+      let latest: ReturnType<MemoryNotes['read']>
+      try {
+        latest = notes.read(file.key, undefined, { throwOnPhysicalError: true })
+      } catch (error) {
+        if (isPhysicalReadError(error)) return 'unverifiable'
+        throw error
+      }
       if (!latest) return 'stale'
       const snap: MemoryPhysicalFile = { path: latest.path, markdown: latest.document, revision: latest.fileRevision }
       return noteMatchesPolicy(latest, snap) ? 'current' : 'stale'
@@ -918,6 +924,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             progress(job, 'source_changed', 'consolidate')
             if (!options.isDeferredRetry) scanRetry = true
             continue
+          }
+          // If the loaded batch already observed the target file as missing/unreadable, defer before dependency wait checks.
+          if (checkpointBatch) {
+            const targetBatchRev = checkpointBatch.observedRevision(target.file.workspace, target.file.path)
+            if (targetBatchRev === undefined || targetBatchRev === null) {
+              unresolved.push(target)
+              continue
+            }
           }
 
           // 2. Partition observed notes into distinct dependencies vs self-observations of target.file.key so the
@@ -1367,7 +1381,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       if (!effects.holds(job)) return 'done'
       const note = notes.read(file.key, check?.physical(file.workspace, file.path))
       if (!note) continue
-      const view = (check ?? policy).read(file.workspace, file.path)
+      const view = check?.readStrict ? check.readStrict(file.workspace, file.path) : (check ? check.read(file.workspace, file.path) : policy.readStrict(file.workspace, file.path))
       if (view) {
         available.push(note)
         initialViews.set(note.key, view)

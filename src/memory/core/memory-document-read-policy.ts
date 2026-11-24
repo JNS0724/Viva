@@ -19,6 +19,7 @@ export const MEMORY_DOCUMENT_READ_CONCURRENCY = 3
 export interface MemoryDocumentReadBatch {
   load(files: readonly FileLocation[], phaseSignal?: AbortSignal): Promise<void>
   read(workspace: string, path: string): MemoryDocumentView | null
+  readStrict?(workspace: string, path: string): MemoryDocumentView | null
   physical(workspace: string, path: string): MemoryPhysicalFile | null
   readObservation(workspace: string, path: string): MemoryDocumentView | null | undefined
   managementRead(workspace: string, path: string): MemoryDocumentManagementView | null
@@ -197,11 +198,14 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     }
     const readObservation = (workspace: string, path: string) =>
       observe(workspace, path, verified => read(workspace, path, verified))
+    const readStrictObservation = (workspace: string, path: string) =>
+      observe(workspace, path, verified => readStrict(workspace, path, verified))
     const managementObservation = (workspace: string, path: string) =>
       observe(workspace, path, verified => managementRead(workspace, path, verified))
     return {
       load, managementObservation, readObservation, physical: snapshot,
       read: (workspace, path) => readObservation(workspace, path) ?? null,
+      readStrict: (workspace, path) => readStrictObservation(workspace, path) ?? null,
       managementRead: (workspace, path) => managementObservation(workspace, path) ?? null,
       observedRevision: (workspace, path) => {
         const physical = loaded.get(locationKey(workspace, path))

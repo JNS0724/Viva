@@ -52,6 +52,7 @@ function dreamHarness(t: TestContext, options: {
     filePath: string,
   ) => { path: string, revision: string, markdown: string } | null
   omitReadFileAtCommit?: boolean
+  omitReadFileRevisionAtCommit?: boolean
   omitReadPhysicalFile?: boolean
   readFileRevisionAtCommitOverride?: (
     defaultRead: (workspace: string, filePath: string) => string | undefined,
@@ -120,18 +121,20 @@ function dreamHarness(t: TestContext, options: {
                 : defaultReadPhysical(workspace, filePath, signal),
           }),
       ...(options.omitReadFileAtCommit
-        ? {
-            readFileRevisionAtCommit: (workspace: string, filePath: string) =>
-              options.readFileRevisionAtCommitOverride
-                ? options.readFileRevisionAtCommitOverride((w, p) => defaultReadAtCommit(w, p)?.revision, workspace, filePath)
-                : defaultReadAtCommit(workspace, filePath)?.revision,
-          }
+        ? options.omitReadFileRevisionAtCommit
+          ? {}
+          : {
+              readFileRevisionAtCommit: (workspace: string, filePath: string) =>
+                options.readFileRevisionAtCommitOverride
+                  ? options.readFileRevisionAtCommitOverride((w, p) => defaultReadAtCommit(w, p)?.revision, workspace, filePath)
+                  : defaultReadAtCommit(workspace, filePath)?.revision,
+            }
         : {
             readFileAtCommit: (workspace: string, filePath: string) =>
               options.readFileAtCommitOverride
                 ? options.readFileAtCommitOverride(defaultReadAtCommit, workspace, filePath)
                 : defaultReadAtCommit(workspace, filePath),
-            readFileRevisionAtCommit: (workspace: string, filePath: string) => defaultReadAtCommit(workspace, filePath)?.revision,
+            ...(options.omitReadFileRevisionAtCommit ? {} : { readFileRevisionAtCommit: (workspace: string, filePath: string) => defaultReadAtCommit(workspace, filePath)?.revision }),
           }),
       calculate: async request => {
         modelLog.push({
@@ -2580,37 +2583,149 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   assert.equal(hP.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'self-observed target note must complete cleanly using its single physical observation (R14 P2-2)')
   fs.renameSync(d1PBackup, d1PAbs)
 
-  // Part Q (R14 P2-3): Metadata decoding error during target policy validation (after strict notes.read succeeds)
-  // must propagate via policy.readStrict (keeping manual Dream request pending with completedAt === null).
-  let armCorruptQ = false
-  const hQ = dreamHarness(t, {
+  // Part Q (R14 P2-3, R15 P2-1): Metadata decoding error during target policy validation AND across retries
+  // (on both no-batch and batch runtimes) must propagate via readStrict and NEVER emit an empty completion receipt!
+  for (const omitPhysical of [true, false]) {
+    let armCorruptQ = false
+    const hQ = dreamHarness(t, {
+      initialNow: TODAY_MS,
+      omitReadFileAtCommit: omitPhysical,
+      omitReadPhysicalFile: omitPhysical,
+    })
+    const d1Q = hQ.addDailyNote([{ text: `目标 Q 策略校验与重试元数据损坏 (${omitPhysical})` }], { session: `s-r14-q1-${omitPhysical}`, day: '2026-11-16' })
+    const origReadQ = hQ.notes.read
+    hQ.notes.read = (key, physical, opts) => {
+      const res = origReadQ(key, physical, opts)
+      if (armCorruptQ && key === d1Q.key && (omitPhysical ? opts?.throwOnPhysicalError : physical !== undefined) && res) {
+        armCorruptQ = false
+        hQ.store.db.prepare('UPDATE memory_note_sources SET spans = ? WHERE note = ?')
+          .run('{malformed-json', d1Q.key)
+      }
+      return res
+    }
+    hQ.setModel(async request => {
+      if (request.system === DREAM_PROFILE_SYSTEM) {
+        armCorruptQ = true
+        return JSON.stringify({ action: 'NOOP' })
+      }
+      return JSON.stringify({ operations: [] })
+    })
+    const manualOpQ = randomUUID()
+    hQ.jobs.request(manualOpQ)
+    await hQ.effects.wake()
+    assert.equal(armCorruptQ, false, `target metadata corruption must have fired (omitPhysical=${omitPhysical})`)
+    const statusQ1 = hQ.jobs.status(manualOpQ)
+    assert.equal(statusQ1.completedAt, null, `first failure must NOT emit completedAt receipt (omitPhysical=${omitPhysical}) (R14 P2-3)`)
+    assert.notEqual(statusQ1.state, 'idle')
+    // Retry with the corruption STILL present in DB: candidate scan must ALSO propagate via readStrict (never idle/empty)!
+    await hQ.retryNow()
+    const statusQ2 = hQ.jobs.status(manualOpQ)
+    assert.equal(statusQ2.completedAt, null, `retry with persistent metadata corruption must NOT emit completedAt/empty receipt (omitPhysical=${omitPhysical}) (R15 P2-1)`)
+    assert.notEqual(statusQ2.state, 'idle')
+  }
+
+  // Part R (R15 P2-2): Missing target already observed by checkpointBatch + temporarily ineligible dependency must defer
+  // (saving deferred checkpoint and finishing with 2 total planner calls, NOT waiting & replanning).
+  const ineligibleR = new Set<string>()
+  let d1RPath = ''
+  let d1RAbs = ''
+  let d1RBackup = ''
+  let d0RSourceId = ''
+  let armCheckpointR = false
+  let postProfileReadsOfD1R = 0
+  const hR = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    eligible: src => !ineligibleR.has(src.id),
+    async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+      if (armCheckpointR && filePath === d1RPath) {
+        postProfileReadsOfD1R++
+        // 1st read after profile pass is profileInputsCurrent(); 2nd read is checkpointTargets loadFiles()!
+        if (postProfileReadsOfD1R === 2) {
+          armCheckpointR = false
+          fs.renameSync(d1RAbs, d1RBackup)
+          ineligibleR.add(d0RSourceId)
+        }
+      }
+      return defaultRead(workspace, filePath, signal)
+    },
+  })
+  const d0R = hR.addDailyNote([{ text: '旧摘要来源：宁波机房配置' }], { session: 's-r15-r0', day: '2026-11-15' })
+  d0RSourceId = d0R.sources[0]!.id
+  hR.documents.commit({
+    operationId: randomUUID(),
+    workspace: d0R.workspace,
+    path: 'digest/wiki/doc-r.md',
+    expectedRevision: null,
+    action: 'CREATE',
+    markdown: '---\nname: Doc R\ndescription: Observed digest for ineligible + missing target test\n---\n\n宁波机房运维配置。\n',
+    sources: [{ id: d0R.sources[0]!.id, token: memorySourceToken(d0R.sources[0]!) }],
+    reads: [],
+  })
+  hR.notes.markProcessed(d0R.key, d0R.note.revision)
+  const d1R = hR.addDailyNote([{ text: '目标 R 读取 doc-r 后缺失且依赖暂不可入场' }], { session: 's-r15-r1', day: '2026-11-16' })
+  d1RPath = d1R.path
+  d1RAbs = path.join(hR.store.fileRoot, d1R.workspace, d1R.path)
+  d1RBackup = `${d1RAbs}.moved`
+  let modelCallsR = 0
+  hR.setModel(async request => {
+    modelCallsR++
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armCheckpointR = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-docr', name: 'read', input: { path: 'digest/wiki/doc-r.md' } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  const manualOpR = randomUUID()
+  hR.jobs.request(manualOpR)
+  await hR.effects.wake()
+  assert.equal(armCheckpointR, false, 'target move + dependency ineligibility must have triggered right before checkpoint loading')
+  assert.equal(modelCallsR, 2)
+  assert.ok(hR.jobs.status(manualOpR).completedAt !== null, 'manual request must complete while missing target is deferred (R15 P2-2)')
+  assert.equal(hR.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
+  // Restore both target and eligibility -> deferred checkpoint completes with 0 extra planner calls (2 total)!
+  fs.renameSync(d1RBackup, d1RAbs)
+  ineligibleR.clear()
+  await hR.retryNow()
+  assert.equal(modelCallsR, 2, 'missing target deferred before dependency wait must finish with 0 extra planner calls (R15 P2-2)')
+  assert.equal(hR.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+
+  // Part S (R15 P2-3): Caller omitting BOTH readFileAtCommit AND readFileRevisionAtCommit (plus readPhysicalFile):
+  // moving target immediately before strict read must defer (0 extra planner calls after restore).
+  const hS = dreamHarness(t, {
     initialNow: TODAY_MS,
     omitReadFileAtCommit: true,
+    omitReadFileRevisionAtCommit: true,
     omitReadPhysicalFile: true,
   })
-  const d1Q = hQ.addDailyNote([{ text: '目标 Q 策略校验前触发元数据损坏' }], { session: 's-r14-q1', day: '2026-11-16' })
-  const origReadQ = hQ.notes.read
-  hQ.notes.read = (key, physical, opts) => {
-    const res = origReadQ(key, physical, opts)
-    if (armCorruptQ && key === d1Q.key && opts?.throwOnPhysicalError && res) {
-      armCorruptQ = false
-      hQ.store.db.prepare('UPDATE memory_note_sources SET spans = ? WHERE note = ?')
-        .run('{malformed-json', d1Q.key)
+  const d1S = hS.addDailyNote([{ text: '目标 S 省略两个 commit reader 时的物理读错恢复' }], { session: 's-r15-s1', day: '2026-11-16' })
+  const d1SAbs = path.join(hS.store.fileRoot, d1S.workspace, d1S.path)
+  const d1SBackup = `${d1SAbs}.moved`
+  let armMoveS = false
+  const origReadS = hS.notes.read
+  hS.notes.read = (key, physical, opts) => {
+    if (armMoveS && key === d1S.key && opts?.throwOnPhysicalError) {
+      armMoveS = false
+      fs.renameSync(d1SAbs, d1SBackup)
     }
-    return res
+    return origReadS(key, physical, opts)
   }
-  hQ.setModel(async request => {
+  let modelCallsS = 0
+  hS.setModel(async request => {
+    modelCallsS++
     if (request.system === DREAM_PROFILE_SYSTEM) {
-      armCorruptQ = true
+      armMoveS = true
       return JSON.stringify({ action: 'NOOP' })
     }
     return JSON.stringify({ operations: [] })
   })
-  const manualOpQ = randomUUID()
-  hQ.jobs.request(manualOpQ)
-  await hQ.effects.wake()
-  assert.equal(armCorruptQ, false, 'target metadata corruption must have fired right before policy.readStrict')
-  const statusQ = hQ.jobs.status(manualOpQ)
-  assert.equal(statusQ.completedAt, null, 'metadata decoding failure during target policy validation must NOT emit completedAt receipt (R14 P2-3)')
-  assert.notEqual(statusQ.state, 'idle', 'job must enter retry rather than idle/empty on target policy decoding error (R14 P2-3)')
+  await hS.run()
+  assert.equal(armMoveS, false, 'target move immediately before strict read must have fired')
+  assert.equal(modelCallsS, 2)
+  assert.equal(hS.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'physical read error with both commit readers omitted must defer instead of throwing (R15 P2-3)')
+  fs.renameSync(d1SBackup, d1SAbs)
+  await hS.retryNow()
+  assert.equal(modelCallsS, 2, 'restoring target with both commit readers omitted must complete deferred checkpoint with 0 extra planner calls (R15 P2-3)')
+  assert.equal(hS.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
 })
