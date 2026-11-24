@@ -720,6 +720,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           return Boolean(latest && latest.enabled && latest.workspace === file.workspace && latest.path === file.path
             && latest.revision === file.checkpoint && latest.fileRevision === file.revision && refsCurrent(file.sources)) ? 'current' : 'stale'
         }
+        if (fileCurrent(file)) return 'current'
+        // No-batch revision-only fallback: distinguish a file that disappeared before notes.read from an in-place change.
+        const afterMiss = livePhysicalState(file.workspace, file.path)
+        if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) return 'unverifiable'
+        return 'stale'
       }
       return fileCurrent(file) ? 'current' : 'stale'
     }
@@ -745,6 +750,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (ref.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) hasWait = true
           }
           let physical: MemoryPhysicalFile | null | undefined
+          let revisionOnlyNoBatch = false
           if (batch) {
             const obsRev = batch.observedRevision(workspace, row.path)
             if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
@@ -761,10 +767,18 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               if (live.revision !== ref.revision) return 'stale'
               const cached = fallbackBatch?.physical(workspace, row.path)
               if (cached && cached.revision === live.revision) physical = cached
+              else revisionOnlyNoBatch = true
             }
           }
           const doc = documents.read(workspace, row.path, physical !== undefined ? { physical } : undefined)
-          if (!doc || doc.id !== ref.id || doc.revision !== ref.revision || doc.usageVersion !== ref.usageVersion) return 'stale'
+          if (!doc) {
+            if (revisionOnlyNoBatch) {
+              const afterMiss = livePhysicalState(workspace, row.path)
+              if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) { hasUnverifiable = true; continue }
+            }
+            return 'stale'
+          }
+          if (doc.id !== ref.id || doc.revision !== ref.revision || doc.usageVersion !== ref.usageVersion) return 'stale'
         }
       }
       for (const obsNote of observedNotes ?? []) {
@@ -776,6 +790,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         if (!refsCurrent(obsNote.sources)) return 'stale'
         if (obsNote.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) hasWait = true
         let physical: MemoryPhysicalFile | null | undefined
+        let revisionOnlyNoBatch = false
         if (batch) {
           const obsRev = batch.observedRevision(workspace, obsNote.path)
           if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
@@ -792,10 +807,18 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (live.revision !== obsNote.revision) return 'stale'
             const cached = fallbackBatch?.physical(workspace, obsNote.path)
             if (cached && cached.revision === live.revision) physical = cached
+            else revisionOnlyNoBatch = true
           }
         }
         const latest = notes.read(obsNote.key, physical)
-        if (!latest || !latest.enabled || latest.workspace !== workspace || latest.path !== obsNote.path
+        if (!latest) {
+          if (revisionOnlyNoBatch) {
+            const afterMiss = livePhysicalState(workspace, obsNote.path)
+            if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) { hasUnverifiable = true; continue }
+          }
+          return 'stale'
+        }
+        if (!latest.enabled || latest.workspace !== workspace || latest.path !== obsNote.path
           || latest.revision !== obsNote.checkpoint || latest.fileRevision !== obsNote.revision) {
           return 'stale'
         }

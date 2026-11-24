@@ -224,6 +224,7 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     prefetch,
     startPrefetch: (input: PrefetchStartInput) => prefetch.startPrefetch(input),
     cancelPrefetch: (sessionId: string, requestId: string) => prefetch.cancelPrefetch(sessionId, requestId),
+    finishPrefetch: (sessionId: string, requestId: string) => prefetch.finishPrefetch(sessionId, requestId),
     clearSessionPrefetches: (sessionId: string) => prefetch.clearSession(sessionId),
     profile: () => prefetch.profile(),
     profileDeletionGen: () => currentProfileDeletionGen,

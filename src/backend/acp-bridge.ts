@@ -534,7 +534,7 @@ export function createAcpBridge({
         if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
       },
       onEnd: (response, finalReply) => {
-        if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
+        if (asked && routed) memoryOwner?.finishPrefetch?.(asked, routed.requestId)
         if (asked === sessionId) toolWatchdog.clear()
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
         else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason,

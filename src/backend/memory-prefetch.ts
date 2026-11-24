@@ -34,6 +34,7 @@ type PrefetchEntry = {
   settled: boolean
   requeried: boolean
   cancelled?: boolean
+  cancelledSiblings?: Set<string>
   result?: AutomaticRecallResult
   controller?: AbortController
   timer?: ReturnType<typeof setTimeout>
@@ -54,6 +55,14 @@ function boundedSet<K, V>(map: Map<K, V>, key: K, value: V, maxSize = MAX_CANCEL
     if (!oldest.done) map.delete(oldest.value)
   }
   map.set(key, value)
+}
+
+function lruHas<K, V>(map: Map<K, V>, key: K): boolean {
+  if (!map.has(key)) return false
+  const value = map.get(key)!
+  map.delete(key)
+  map.set(key, value)
+  return true
 }
 
 /**
@@ -89,9 +98,8 @@ export function createMemoryPrefetchManager({
   const deliveryTerminals = new Map<string, DeliveryTerminal>()
   const refreshable = new Map<string, PrefetchEntry>()
   const deliveredHits = new Map<string, { entry?: PrefetchEntry, expiresAt: number }>()
-  // Bounded idempotent cancellation sets (no 60s expiry; freed by clearSession, close, startPrefetch, or LRU cap).
-  const cancelledUnclaimed = new Map<string, true>()
-  const cancelledAfterClaim = new Map<string, true>()
+  // Bounded true-LRU idempotent cancellation map (refreshed on read; freed by clearSession, close, startPrefetch, or LRU cap).
+  const cancelledRecords = new Map<string, true>()
 
   function cleanupExpired(at = now()) {
     for (const [key, entry] of refreshable) {
@@ -121,23 +129,15 @@ export function createMemoryPrefetchManager({
   }
 
   function isCancelledKey(key: string): boolean {
-    return cancelledUnclaimed.has(key) || cancelledAfterClaim.has(key)
+    return lruHas(cancelledRecords, key)
   }
 
-  function cancelledIdsForSession(sessionId: string, excludeRequestId?: string): string[] {
-    const prefix = `${sessionId}\0`
-    const ids: string[] = []
-    for (const key of cancelledAfterClaim.keys()) {
-      if (!key.startsWith(prefix)) continue
-      const reqId = key.slice(prefix.length)
-      if (reqId && reqId !== excludeRequestId) ids.push(reqId)
-    }
-    return ids
-  }
-
-  function attachCancelled(sessionId: string, excludeRequestId: string | undefined, claim: ClaimPrefetchResult): ClaimPrefetchResult {
-    const ids = cancelledIdsForSession(sessionId, excludeRequestId)
-    return ids.length ? { ...claim, cancelledRequestIds: ids } : claim
+  function attachCancelled(entry: PrefetchEntry | undefined, claim: ClaimPrefetchResult): ClaimPrefetchResult {
+    const siblings = entry?.cancelledSiblings
+    if (!siblings?.size) return claim
+    const ids = [...siblings]
+    siblings.clear()
+    return { ...claim, cancelledRequestIds: ids }
   }
 
   function invalidateUnclaimedHits(reason: 'changed' | 'unavailable') {
@@ -208,8 +208,7 @@ export function createMemoryPrefetchManager({
   function startPrefetch(input: PrefetchStartInput) {
     cleanupExpired()
     const key = prefetchKey(input.sessionId, input.requestId)
-    cancelledUnclaimed.delete(key)
-    cancelledAfterClaim.delete(key)
+    cancelledRecords.delete(key)
     deliveredHits.delete(key)
     const previous = entries.get(key)
     if (previous) {
@@ -363,7 +362,7 @@ export function createMemoryPrefetchManager({
     const key = prefetchKey(sessionId, requestId)
     const entry = entries.get(key)
     if (!entry) {
-      if (cancelledUnclaimed.has(key) || cancelledAfterClaim.has(key)) {
+      if (isCancelledKey(key)) {
         return { claim: { found: true, result: { status: 'skipped' } } }
       }
       const terminal = deliveryTerminals.get(key)
@@ -468,12 +467,12 @@ export function createMemoryPrefetchManager({
     if (entry?.cancelled || isCancelledKey(key)) {
       refreshable.delete(key)
       deliveredHits.delete(key)
-      return attachCancelled(sessionId, requestId, { found: true, result: { status: 'skipped' } })
+      return attachCancelled(entry, { found: true, result: { status: 'skipped' } })
     }
     if (claim.found && claim.result.status === 'hit') {
       boundedSet(deliveredHits, key, { entry, expiresAt: now() + cacheTtlMs })
     }
-    return attachCancelled(sessionId, requestId, claim)
+    return attachCancelled(entry, claim)
   }
 
   /** Perform at most one bounded refresh on the host using the original verified query/scope/deadline. */
@@ -487,24 +486,24 @@ export function createMemoryPrefetchManager({
     refreshable.delete(key)
     if (entry?.cancelled || isCancelledKey(key)) {
       deliveredHits.delete(key)
-      return attachCancelled(sessionId, requestId, { found: true, result: { status: 'skipped' } })
+      return attachCancelled(entry, { found: true, result: { status: 'skipped' } })
     }
     if (!entry || entry.requeried || signal?.aborted) {
-      return attachCancelled(sessionId, requestId, { found: true, result: { status: 'timeout' } })
+      return attachCancelled(entry, { found: true, result: { status: 'timeout' } })
     }
     const remaining = entry.deadlineAt - now()
-    if (remaining <= 0) return attachCancelled(sessionId, requestId, { found: true, result: { status: 'timeout' } })
+    if (remaining <= 0) return attachCancelled(entry, { found: true, result: { status: 'timeout' } })
     claiming.set(key, entry)
     try {
       const retried = await runRequeryOnce(entry, remaining, signal)
       if (entry.cancelled || isCancelledKey(key)) {
         deliveredHits.delete(key)
-        return attachCancelled(sessionId, requestId, { found: true, result: { status: 'skipped' } })
+        return attachCancelled(entry, { found: true, result: { status: 'skipped' } })
       }
       if (retried.result.status === 'hit') {
         boundedSet(deliveredHits, key, { entry, expiresAt: now() + cacheTtlMs })
       }
-      return attachCancelled(sessionId, requestId, { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true })
+      return attachCancelled(entry, { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true })
     } finally {
       if (claiming.get(key) === entry) claiming.delete(key)
     }
@@ -575,13 +574,37 @@ export function createMemoryPrefetchManager({
       refreshEntry.cancelled = true
       refreshable.delete(key)
     }
+    // Retain a bounded true-LRU cancellation record so delayed/replayed claims stay idempotently `skipped`.
+    boundedSet(cancelledRecords, key, true)
+    // Attach this cancellation ONLY to concurrent sibling entries in the same session still awaiting adoption.
     if (wasDelivered || activeClaim) {
-      boundedSet(cancelledAfterClaim, key, true)
-    } else {
-      // Retain a bounded idempotent cancellation record so delayed or replayed claims return terminal `skipped`.
-      boundedSet(cancelledUnclaimed, key, true)
+      const attachTo = (map: Map<string, PrefetchEntry>) => {
+        for (const sibling of map.values()) {
+          if (sibling.sessionId === sessionId && sibling.requestId !== requestId) {
+            sibling.cancelledSiblings ??= new Set()
+            sibling.cancelledSiblings.add(requestId)
+          }
+        }
+      }
+      attachTo(entries)
+      attachTo(claiming)
+      attachTo(refreshable)
     }
     onCancelled?.({ sessionId, requestId })
+  }
+
+  /** Normal turn-end cleanup: release residual state for a completed delivery without recording a cancellation. */
+  function finishPrefetch(sessionId: string, requestId: string) {
+    const key = prefetchKey(sessionId, requestId)
+    const entry = entries.get(key)
+    if (entry) {
+      entry.controller?.abort()
+      clearTimeout(entry.timer)
+      entries.delete(key)
+    }
+    deliveryTerminals.delete(key)
+    refreshable.delete(key)
+    deliveredHits.delete(key)
   }
 
   function clearSession(sessionId: string) {
@@ -617,11 +640,8 @@ export function createMemoryPrefetchManager({
         deliveredHits.delete(key)
       }
     }
-    for (const key of cancelledUnclaimed.keys()) {
-      if (key.startsWith(prefix)) cancelledUnclaimed.delete(key)
-    }
-    for (const key of cancelledAfterClaim.keys()) {
-      if (key.startsWith(prefix)) cancelledAfterClaim.delete(key)
+    for (const key of cancelledRecords.keys()) {
+      if (key.startsWith(prefix)) cancelledRecords.delete(key)
     }
     onCancelled?.({ sessionId })
   }
@@ -648,15 +668,14 @@ export function createMemoryPrefetchManager({
     deliveryTerminals.clear()
     refreshable.clear()
     deliveredHits.clear()
-    cancelledUnclaimed.clear()
-    cancelledAfterClaim.clear()
+    cancelledRecords.clear()
   }
 
   return {
     onState, onChange, onProfile, onUnavailable,
     acceptProfile,
     profile: (): MemoryProfileSnapshot | undefined => latestProfile,
-    startPrefetch, claimPrefetch, claimPrefetchBatch, refreshPrefetch, cancelPrefetch, clearSession, cleanupExpired, close,
+    startPrefetch, claimPrefetch, claimPrefetchBatch, refreshPrefetch, cancelPrefetch, finishPrefetch, clearSession, cleanupExpired, close,
   }
 }
 export type MemoryPrefetchManager = ReturnType<typeof createMemoryPrefetchManager>

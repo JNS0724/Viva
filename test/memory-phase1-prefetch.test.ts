@@ -1473,27 +1473,83 @@ test('cancel before claim, settled-sibling cancel before adoption, late valid-hi
   assert.equal(fallbackCalls, 0, 'session clear during await next() must issue 0 automaticRecall fallback RPCs (R9 P2-2)')
   assert.equal(clearDecision.messages.length, 1, 'cleared pre-step must not inject recall')
 
-  // Part G (R9 P2-3): Disconnected DSH IPC before exit must NOT cause cancelPrefetch or clearSessionPrefetches to throw.
+  // Part G (R9 P2-3, R10): Disconnected DSH IPC before exit must reach the throwing sender and NOT throw on cancel/clear.
   const ownerR9 = createDesktopMemoryOwner({ root: path.join(dir, 'owner-r9'), dailyNotes: true }, {})
   const dshExit = deferred<void>()
+  const attachedAck = deferred<void>()
+  const attachId = randomUUID()
   let sendDisconnected = false
+  let attemptedDisconnectSends = 0
   const linkR9 = ownerR9.bindDsh(frame => {
-    if (sendDisconnected) throw new Error('IPC channel closed')
+    if (sendDisconnected) {
+      attemptedDisconnectSends++
+      throw new Error('IPC channel closed')
+    }
     const parsed = ownerRpcFrame(frame)
-    if (parsed?.kind === 'result') return
+    if (parsed?.kind === 'result' && parsed.id === attachId && parsed.ok) {
+      attachedAck.resolve()
+    }
   }, dshExit.promise, () => undefined)
-  // Attach the mock adapter cleanly, then flip sendDisconnected = true before process exit!
   linkR9.receive({
     type: MEMORY_OWNER_RPC,
     kind: 'request',
-    id: 'attach-r9',
+    id: attachId,
     method: 'attach',
+    budgetMs: 5000,
     input: { protocol: MEMORY_HOST_PROTOCOL, root: path.join(dir, 'owner-r9'), hostNamespace: 'viva' },
   })
-  await new Promise(resolve => setTimeout(resolve, 15))
+  await attachedAck.promise
   sendDisconnected = true
   assert.doesNotThrow(() => ownerR9.cancelPrefetch('sess-dc', randomUUID()), 'cancelPrefetch must not throw on disconnected DSH IPC (R9 P2-3)')
   assert.doesNotThrow(() => ownerR9.clearSessionPrefetches('sess-dc'), 'clearSessionPrefetches must not throw on disconnected DSH IPC (R9 P2-3)')
+  assert.equal(attemptedDisconnectSends, 2, 'both cleanup calls must reach the throwing sender after valid attach (R10)')
   dshExit.resolve()
   await ownerR9.close()
+
+  // Part H (R10 P2-1 + Additional P2):
+  //   (a) At the 4,096-record LRU cap, replaying a cancelled ID refreshes recency so adding another cancellation does NOT evict it;
+  //   (b) After 1,024 claimed hits + cancelPrefetch in one session, subsequent claim sends ZERO historical cancelledRequestIds.
+  const prefetchCap = createMemoryPrefetchManager({
+    defaultBudgetMs: 100,
+    async callPrefetch() {
+      return { epoch: 'e-cap', revision: 1, result: { status: 'hit', text: 'CAP_HIT', partial: false, hits: [{ text: 'CAP_HIT', names: ['c'] }] } }
+    },
+  })
+  t.after(() => prefetchCap.close())
+  prefetchCap.onState(ownerState('e-cap', 1))
+  const hotCancelledId = randomUUID()
+  prefetchCap.cancelPrefetch('sess-cap', hotCancelledId)
+  for (let i = 0; i < 4095; i++) {
+    prefetchCap.cancelPrefetch('sess-cap', `filler-${i}`)
+  }
+  assert.deepEqual(
+    await prefetchCap.claimPrefetch({ requestId: hotCancelledId, sessionId: 'sess-cap' }),
+    { found: true, result: { status: 'skipped' } },
+    'replaying cancelled ID at 4,096 cap must hit and refresh LRU recency (R10 P2-1)',
+  )
+  prefetchCap.cancelPrefetch('sess-cap', 'overflow-4096')
+  assert.deepEqual(
+    await prefetchCap.claimPrefetch({ requestId: hotCancelledId, sessionId: 'sess-cap' }),
+    { found: true, result: { status: 'skipped' } },
+    'recently replayed cancelled ID must NOT be evicted by the next cancellation (R10 P2-1)',
+  )
+
+  const prefetchHist = createMemoryPrefetchManager({
+    defaultBudgetMs: 100,
+    async callPrefetch(input) {
+      return { epoch: 'e-hist', revision: 1, result: { status: 'hit', text: `H_${input.query}`, partial: false, hits: [{ text: `H_${input.query}`, names: ['h'] }] } }
+    },
+  })
+  t.after(() => prefetchHist.close())
+  prefetchHist.onState(ownerState('e-hist', 1))
+  for (let i = 0; i < 1024; i++) {
+    const id = `turn-${i}`
+    prefetchHist.startPrefetch({ requestId: id, sessionId: 'sess-hist', queryText: `q-${i}` })
+    await prefetchHist.claimPrefetch({ requestId: id, sessionId: 'sess-hist' })
+    prefetchHist.cancelPrefetch('sess-hist', id)
+  }
+  prefetchHist.startPrefetch({ requestId: 'turn-1024', sessionId: 'sess-hist', queryText: 'q-1024' })
+  const nextClaim = await prefetchHist.claimPrefetch({ requestId: 'turn-1024', sessionId: 'sess-hist' })
+  assert.equal(nextClaim.found && nextClaim.result.status, 'hit')
+  assert.equal(nextClaim.cancelledRequestIds, undefined, 'subsequent turn claim must NOT resend 1,024 historical cancellations (R10 Additional P2)')
 })

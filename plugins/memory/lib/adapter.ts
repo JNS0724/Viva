@@ -109,7 +109,12 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   function isRequestCancelled(sessionId: string, requestId: string | undefined, stepToken: { cancelled: boolean }): boolean {
     if (stepToken.cancelled) return true
     if (!requestId) return false
-    return cancelledRequests.has(cancelKey(sessionId, requestId))
+    const key = cancelKey(sessionId, requestId)
+    if (!cancelledRequests.has(key)) return false
+    // Refresh recency on read so replayed cancelled IDs are never evicted at the LRU cap.
+    cancelledRequests.delete(key)
+    cancelledRequests.set(key, true)
+    return true
   }
   let route: { provider: string, model: string } | null = null
   let published: { epoch: string | undefined, provider: string, model: string } | undefined

@@ -52,6 +52,7 @@ function dreamHarness(t: TestContext, options: {
     filePath: string,
   ) => { path: string, revision: string, markdown: string } | null
   omitReadFileAtCommit?: boolean
+  omitReadPhysicalFile?: boolean
   readFileRevisionAtCommitOverride?: (
     defaultRead: (workspace: string, filePath: string) => string | undefined,
     workspace: string,
@@ -110,10 +111,14 @@ function dreamHarness(t: TestContext, options: {
       reference: id => ({ namespace: 'canonical', sourceId: id, revision: 1 }),
       transaction: write => store.tx(write),
       committed: receipt => onCommittedHook?.(receipt),
-      readPhysicalFile: (workspace, filePath, signal) =>
-        options.readPhysicalOverride
-          ? options.readPhysicalOverride(defaultReadPhysical, workspace, filePath, signal)
-          : defaultReadPhysical(workspace, filePath, signal),
+      ...(options.omitReadPhysicalFile
+        ? {}
+        : {
+            readPhysicalFile: (workspace: string, filePath: string, signal?: AbortSignal) =>
+              options.readPhysicalOverride
+                ? options.readPhysicalOverride(defaultReadPhysical, workspace, filePath, signal)
+                : defaultReadPhysical(workspace, filePath, signal),
+          }),
       ...(options.omitReadFileAtCommit
         ? {
             readFileRevisionAtCommit: (workspace: string, filePath: string) =>
@@ -2157,4 +2162,51 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   assert.equal(armMoveAfterRev, false, 'move right after revision check must have fired')
   assert.equal(hG.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'revision-only live check must reuse checkpointBatch snapshot without reopening disk in notes.read (R9 P2-4)')
   fs.renameSync(d0GBackup, d0GAbs)
+
+  // Part H (R10 P2-4): Revision-only runtime ALSO omitting optional readPhysicalFile (no checkpointBatch):
+  // moving an observed note right after readFileRevisionAtCommit must classify as unverifiable (0 extra planner calls on retry).
+  let d0HPath = ''
+  let d0HAbs = ''
+  let d0HBackup = ''
+  let armMoveNoBatch = false
+  const hH = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    omitReadFileAtCommit: true,
+    omitReadPhysicalFile: true,
+    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
+      const rev = defaultRead(workspace, filePath)
+      if (armMoveNoBatch && filePath === d0HPath && rev) {
+        armMoveNoBatch = false
+        fs.renameSync(d0HAbs, d0HBackup)
+      }
+      return rev
+    },
+  })
+  const d0H = hH.addDailyNote([{ text: '旧日记：武汉机房配置' }], { session: 's-r10-h0', day: '2026-11-15' })
+  d0HPath = d0H.path
+  d0HAbs = path.join(hH.store.fileRoot, d0H.workspace, d0H.path)
+  d0HBackup = `${d0HAbs}.moved`
+  hH.notes.markProcessed(d0H.key, d0H.note.revision)
+  hH.addDailyNote([{ text: '目标 H 无新建摘要' }], { session: 's-r10-h1', day: '2026-11-16' })
+  let modelCallsH = 0
+  hH.setModel(async request => {
+    modelCallsH++
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armMoveNoBatch = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0h', name: 'read', input: { path: d0H.path } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  await hH.run()
+  assert.equal(armMoveNoBatch, false, 'move right after revision check must have fired in no-batch mode')
+  const callsAfterDeferH = modelCallsH
+  assert.equal(hH.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'no-batch missing note must defer instead of marking processed')
+  await hH.retryNow()
+  assert.equal(modelCallsH, callsAfterDeferH, 'no-batch revision-only runtime must preserve deferred checkpoint with 0 extra planner calls while file is absent (R10 P2-4)')
+  fs.renameSync(d0HBackup, d0HAbs)
+  await hH.retryNow()
+  assert.equal(modelCallsH, callsAfterDeferH, 'restored file must complete deferred checkpoint with 0 extra planner calls (R10 P2-4)')
+  assert.equal(hH.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
 })
