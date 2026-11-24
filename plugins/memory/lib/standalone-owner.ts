@@ -124,6 +124,7 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
     else {
       const profile = memoryOwnerProfile.safeParse(event)
       if (profile.success) {
+        if (current?.epoch && profile.data.epoch !== current.epoch) return
         if (currentProfile && currentProfile.epoch === profile.data.epoch && profile.data.revision < currentProfile.revision) return
         currentProfile = profile.data
       }
@@ -165,7 +166,7 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
             if (current === before) onEvent(reply)
           } else {
             if (reply.state && current === before) onEvent(reply.state)
-            if (reply.profile) {
+            if (reply.profile && (!current?.epoch || reply.profile.epoch === current.epoch)) {
               onEvent({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, ...reply.profile })
             }
           }
@@ -190,6 +191,7 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
     },
     reconciled(epoch, ready) { peer.notify({ type: 'memory_adapter_ready', epoch, ready }) },
     claimPrefetch: (input, opts) => peer.call('claimPrefetch', input, opts),
+    claimPrefetchBatch: (input, opts) => peer.call('claimPrefetchBatch', input, opts),
     callAdapter: (method, args, opts) => peer.call('adapter', { method, args, epoch: current?.epoch }, opts),
     callHost: () => Promise.reject(new Error('The Viva memory adapter has no host capabilities')),
     subscribe(listener) {

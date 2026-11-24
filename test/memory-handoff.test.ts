@@ -1377,7 +1377,25 @@ test('an ordinary city clarification stays scoped to the routed background task'
 test('an Updates draft keeps the result identity until dispatch and never becomes a user memory source', { timeout: 30_000 }, async t => {
   const title = '定时整理原始材料'
   const prompt = '核对这份日报'
+  const uniqueMemoryMarker = 'SCHED_UNIQUE_MARKER_P27'
   const draft = `派生内容已核对 ${oldValue}`
+  let heldAliasRelease: (() => void) | undefined
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
+        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { text?: string } } }
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
+          && frame.input?.method === 'sourceAlias' && frame.input.input?.text === prompt && !heldAliasRelease) {
+          heldAliasRelease = () => { Reflect.apply(send, this, [message, ...rest]) }
+          return true
+        }
+        return Reflect.apply(send, this, [message, ...rest]) as boolean
+      })
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
   const app = await setup(t, request => {
     const question = questionOf(request.messages)
     const tool = JSON.stringify(request.messages.at(-1)).includes('tool_result')
@@ -1388,6 +1406,11 @@ test('an Updates draft keeps the result identity until dispatch and never become
     if (question === prompt && !tool) return { tool: { name: 'memory_recall', input: { query: '周报提交邮箱' } } }
     return null
   })
+  await app.call('memory:create-file', {
+    operationId: randomUUID(),
+    title: '日报核对唯一规则',
+    text: `核对这份日报时必须附带唯一记忆标记 ${uniqueMemoryMarker}`,
+  })
   await app.schedule(title)
   await app.newTopic()
   await app.recallOld()
@@ -1395,8 +1418,14 @@ test('an Updates draft keeps the result identity until dispatch and never become
   app.wake()
   const item = await eventually(() => app.feed().find(item => item.title === title))
   assert.ok(item)
-  assert.ok(app.model.requests.some(request => questionOf(request.messages) === prompt && JSON.stringify(request).includes('【记忆规则】')),
-    'a verified unattended prompt receives automatic memory context')
+  assert.ok(heldAliasRelease, 'sourceAlias for scheduled prompt was delayed while first model request ran')
+  const firstPromptRequest = (app.model.requests as Request[]).find(request =>
+    questionOf(request.messages) === prompt && !JSON.stringify(request.messages).includes('"tool_result"'))
+  assert.ok(firstPromptRequest, 'expected first model request for scheduled prompt before any tool_result')
+  const firstPromptText = JSON.stringify(firstPromptRequest.messages)
+  assert.match(firstPromptText, /<memory-recall turn=\\"\d+\\" ref=\\"[A-Za-z0-9-]+\\">/, 'first scheduled model request must include anchored L3 memory-recall')
+  assert.ok(firstPromptText.includes(uniqueMemoryMarker), 'first scheduled model request must carry unique memory-only marker even while sourceAlias is delayed')
+  heldAliasRelease()
   const text = await app.call<Promise<string>>('feed:continue', item.id)
   assert.ok(text.endsWith(draft), JSON.stringify({ body: item.body, text }))
   await app.newTopic()
@@ -1416,6 +1445,74 @@ test('an Updates draft keeps the result identity until dispatch and never become
   await app.replace()
   assert.equal(await app.call('feed:continue', item.id), text)
   assert.ok(app.feed().some(row => row.id === item.id && row.body === draft))
+})
+
+test('consecutive identical task prompts claim distinct requestId prefetches with exactly two retrievals (P2-7)', { timeout: 30_000 }, async t => {
+  const sameText = '重复检查发布清单'
+  const uniqueMarker = 'TASK_REPEAT_MARKER_P27'
+  let prefetchCount = 0
+  let fallbackCount = 0
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
+        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { query?: string }, args?: unknown[] } }
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
+          && frame.input?.method === 'prefetchRecall' && frame.input.input?.query === sameText) {
+          prefetchCount++
+        }
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'adapter'
+          && frame.input?.method === 'automaticRecall') {
+          fallbackCount++
+        }
+        return Reflect.apply(send, this, [message, ...rest]) as boolean
+      })
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  let taskIdToMessage: string | undefined
+  const app = await setup(t, request => {
+    const question = questionOf(request.messages)
+    const tool = JSON.stringify(request.messages.at(-1)).includes('tool_result')
+    if (question === '启动重复任务' && !tool) {
+      return { tool: { name: 'start_background_task', input: { title: '重复任务', brief: sameText } } }
+    }
+    if (question === '再次发送相同任务' && !tool && taskIdToMessage) {
+      return { tool: { name: 'message_background_task', input: { taskId: taskIdToMessage, text: sameText } } }
+    }
+    if (question === sameText) return { text: '已核对发布清单' }
+    return null
+  })
+  await app.call('memory:create-file', {
+    operationId: randomUUID(),
+    title: '发布清单规范',
+    text: `重复检查发布清单时务必核对 ${uniqueMarker}`,
+  })
+  await app.ask('启动重复任务')
+  const firstDone = await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === '重复任务'), { timeoutMs: 8_000 })
+  assert.ok(firstDone)
+  taskIdToMessage = firstDone.task.id
+  const beforeSecondEnd = firstDone.endedAt
+  await app.ask('再次发送相同任务')
+  assert.ok(await eventually(() => {
+    const task = app.tasks().find(row => row.task.id === taskIdToMessage)
+    return Boolean(task && task.endedAt && task.endedAt !== beforeSecondEnd)
+  }, { timeoutMs: 8_000 }))
+
+  const taskRequests = (app.model.requests as Request[]).filter(request =>
+    questionOf(request.messages) === sameText && !JSON.stringify(request.messages).includes('"tool_result"'))
+  assert.equal(taskRequests.length, 2, 'expected two distinct first-step task requests for the two identical deliveries')
+  const refs = taskRequests.map((request, idx) => {
+    const raw = JSON.stringify(request.messages)
+    assert.ok(raw.includes(uniqueMarker), 'each task delivery must receive L3 hit with unique memory marker')
+    const matches = [...raw.matchAll(/<memory-recall turn=\\"(\d+)\\" ref=\\"([A-Za-z0-9-]+)\\">/g)]
+    assert.equal(matches.length, idx + 1, `request ${idx + 1} should retain prior turns and append its own L3 recall`)
+    return matches.at(-1)![2]!
+  })
+  assert.notEqual(refs[0], refs[1], 'consecutive identical task deliveries must claim distinct requestIds')
+  assert.equal(prefetchCount, 2, 'exactly two host prefetches must be executed for two identical task deliveries')
+  assert.equal(fallbackCount, 0, 'no fallback automaticRecall should trigger when both prefetches are claimed')
 })
 
 

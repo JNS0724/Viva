@@ -74,7 +74,7 @@ export function checkAnswers(questions: readonly Question[], answers: unknown): 
 /** A question waiting: from which session, and the background task it belongs to (null for the main conversation's). */
 interface Pending {
   question: QuestionSet, sessionId: string, taskId: string | null, context: ConversationContext | null,
-  turn?: number, check?: () => boolean,
+  turn?: number, askedAt: number, check?: () => boolean,
 }
 export type QuestionAdmission = boolean | (() => boolean)
 
@@ -118,7 +118,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     const context = taskId ? null : conversationContext?.(message.sessionId) ?? null
     if (!taskId && conversationContext && !context) return send({ type: 'decline', id: question.id })
     const turn = typeof message.turn === 'number' && Number.isSafeInteger(message.turn) && message.turn > 0 ? message.turn : undefined
-    const entry: Pending = { question, sessionId: message.sessionId, taskId, context, turn }
+    const entry: Pending = { question, sessionId: message.sessionId, taskId, context, turn, askedAt: Date.now() }
     checking.set(question.id, entry)
     const waiting = () => checking.get(question.id) === entry || pending.get(question.id) === entry
     const admission = allowGeneralQuestion?.(entry.sessionId, question.questions, waiting, 'show') ?? true

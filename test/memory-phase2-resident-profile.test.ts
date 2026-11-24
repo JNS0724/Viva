@@ -12,9 +12,11 @@ import type { DreamCalculate } from '../src/memory/core/memory-dream-jobs.ts'
 import { DREAM_PROFILE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { DREAM } from '../src/memory/core/memory-notes.ts'
 import {
+  assembleDreamProfileBody,
   CONFIRMED_SECTION_HEADING,
   MAX_PROFILE_L2_CHARS,
   measureConfirmedSectionL2,
+  parseProfileSections,
   projectProfileL2,
   RESIDENT_PROFILE_PATH,
 } from '../src/memory/core/resident-profile.ts'
@@ -921,4 +923,410 @@ test('renderer memory-actions separates pendingDreamRequest from watchingDreamOp
   await actions.runDream()
   assert.equal(runIds.length, 2)
   assert.notEqual(runIds[1], runIds[0])
+})
+
+test('real Dream-generated resident profile with 64-hex daily note provenance link edits cleanly while still rejecting new secrets (P1-1)', async t => {
+  const { dir, defer } = scratch(t, 'phase2-p1-1-')
+  const root = path.join(dir, 'memory')
+  const owner = openMemoryOwner({ root, dailyNotes: true, compute: () => null, route: () => null })
+  defer(() => owner.close())
+  await owner.recover()
+  const store = openMemoryStore(path.join(root, 'memory.db'))
+  defer(() => store.close())
+  const notes = openMemoryNotes(store, () => true)
+  const documents = openMemoryDocuments({
+    db: store.db,
+    root: store.fileRoot,
+    source(id) {
+      const current = store.readSource(id)
+      return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
+    },
+  })
+
+  const session = randomUUID()
+  const src1 = randomUUID()
+  await owner.receiveSource({ sessionId: session, messageId: src1, text: '我习惯先看结论', at: TODAY_MS, timezone: 'UTC', turn: 1, cwd: null })
+  const srcRow = store.readSource(src1)!
+  const userWs = memorySourceWorkspace(srcRow)
+  const noteKey = notes.add(session, '2026-11-16', [srcRow], '好的', src1)!
+  const rows = notes.pending(noteKey, 10)
+  const notePath = `daily/2026-11-16/note-${memoryFileRevision(noteKey)}.md`
+  assert.match(notePath, /^daily\/2026-11-16\/note-[a-f0-9]{64}\.md$/u)
+  assert.equal(notes.commit(noteKey, rows, { status: 'write', title: 'Daily', markdown: '用户习惯先看结论' }, 1, TODAY_MS, notes.snapshot([src1]), undefined), true)
+  const created = documents.commit({
+    operationId: randomUUID(),
+    workspace: userWs,
+    path: RESIDENT_PROFILE_PATH,
+    expectedRevision: null,
+    action: 'CREATE',
+    markdown: `---\nname: Personal Profile\ndescription: Resident\n---\n\n## 自动整理\n- 习惯先看结论\n\n## Sources\n- [[${notePath}]]`,
+    sources: [{ id: srcRow.id, token: memorySourceToken(srcRow) }],
+    reads: [],
+  })
+  const identity = { kind: 'digest' as const, workspace: userWs, id: created.documentId }
+  const client = createVivaMemoryClient((m, input) => owner.handleHost(m, input) as Promise<never>)
+
+  const before = (await client.readFile(identity))!
+  assert.ok(before.editor!.text.includes(notePath))
+
+  // Editing by appending an ordinary preference MUST succeed (not falsely flagged by looksSecret on 64-hex note path).
+  const edited = await client.editFile({
+    operationId: randomUUID(),
+    identity,
+    version: before.version,
+    text: `${before.editor!.text}\n- 回答简洁直接`,
+  })
+  assert.equal(edited.action, 'EDIT')
+
+  // Edited profile remains readable and projected to L2.
+  const after = (await client.readFile(identity))!
+  assert.ok(after)
+  assert.match(after.markdown, /## 用户确认\n- 回答简洁直接/)
+  assert.ok(after.markdown.includes(notePath))
+  assert.match(owner.profileSnapshot().text, /## 用户确认\n- 回答简洁直接/)
+
+  // Appending a real secret or an untrusted 64-hex token MUST still be rejected with credentials!
+  await assert.rejects(() => client.editFile({
+    operationId: randomUUID(),
+    identity,
+    version: after.version,
+    text: `${after.editor!.text}\n- api_key: sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234`,
+  }), (err: unknown) => Boolean(err && typeof err === 'object' && 'code' in err && err.code === 'credentials'))
+
+  await assert.rejects(() => client.editFile({
+    operationId: randomUUID(),
+    identity,
+    version: after.version,
+    text: `${after.editor!.text}\n- [[daily/2026-11-16/note-${'a1'.repeat(32)}.md]]`,
+  }), (err: unknown) => Boolean(err && typeof err === 'object' && 'code' in err && err.code === 'credentials'))
+})
+
+test('pre-deletion question answered after profile deletion hides pre-deletion question text from profile planner (P1-2)', async t => {
+  const deleteAt = TODAY_MS + 1_000
+  const h = dreamHarness(t, { initialNow: deleteAt })
+  h.store.setMeta('profile_deleted_at', String(deleteAt))
+
+  // Question card was asked BEFORE deleteAt (questionAt = deleteAt - 500), answered AFTER deleteAt (at = deleteAt + 500)
+  // in a fresh turn with NO prior questionContext.
+  const ansId = randomUUID()
+  const ansSrc = {
+    id: ansId, operation: ansId, version: 1,
+    conversation: 'conv-q', session: 'sess-q',
+    scope: { kind: 'user' as const }, context: { kind: 'user' as const }, project: null,
+    author: 'answer' as const,
+    text: '是的，以后都用英文',
+    hash: memoryHash('是的，以后都用英文'),
+    length: 9,
+    question: '是否沿用已删除旧画像里的 SECRET_OLD_PROFILE_HINT？',
+    questionAt: deleteAt - 500,
+    requestId: 'req-q1',
+    questionId: 'q1',
+    at: deleteAt + 500,
+    timezone: 'UTC',
+    outcome: 'note-pending',
+  }
+  h.store.insertSource(ansSrc)
+  const noteKey = h.notes.add('sess-q', '2026-11-16', [ansSrc], '收到', ansId, [], '收到', { questionSources: [], questionCurrent: true })!
+  const rows = h.notes.pending(noteKey, 10)
+  assert.equal(h.notes.commit(noteKey, rows, { status: 'write', title: 'Q Note', markdown: '回答：是的，以后都用英文' }, 1, deleteAt + 600, h.notes.snapshot([ansId]), undefined), true)
+
+  type ProfileInputSnapshot = { canonicalSources: Array<{ sourceId: string, text: string, question: string | null, questionUnavailable: boolean }> }
+  let profileInputSeen: ProfileInputSnapshot | undefined
+  h.setModel(async request => {
+    if (request.system !== DREAM_PROFILE_SYSTEM) return JSON.stringify({ operations: [] })
+    profileInputSeen = request.input as ProfileInputSnapshot
+    return JSON.stringify({ action: 'CREATE', body: '- 以后都用英文', sourceIds: [ansId] })
+  })
+  await h.run()
+
+  assert.ok(profileInputSeen)
+  const seen = profileInputSeen as ProfileInputSnapshot
+  assert.equal(seen.canonicalSources.length, 1)
+  assert.equal(seen.canonicalSources[0]!.question, null, 'pre-deletion question text must be stripped')
+  assert.equal(seen.canonicalSources[0]!.questionUnavailable, true)
+  assert.equal(seen.canonicalSources[0]!.text, '是的，以后都用英文')
+  assert.equal(JSON.stringify(seen).includes('SECRET_OLD_PROFILE_HINT'), false)
+})
+
+test('multi-note profile pass context-window-exceeded splits batch instead of skipping all notes (P1-4)', async t => {
+  const h = dreamHarness(t, { initialNow: TODAY_MS })
+  const d1 = h.addDailyNote([{ text: '偏好一：喜欢喝绿茶' }], { session: 's-split-1' })
+  const d2 = h.addDailyNote([{ text: '偏好二：周末去爬山' }], { session: 's-split-2' })
+
+  let profileCalls = 0
+  let sawSplitMulti = false
+  h.setModel(async request => {
+    if (request.system !== DREAM_PROFILE_SYSTEM) return JSON.stringify({ operations: [] })
+    profileCalls++
+    const input = request.input as { actionMode: 'CREATE' | 'REFINE', canonicalSources: Array<{ sourceId: string, text: string }> }
+    if (input.canonicalSources.length > 1) {
+      sawSplitMulti = true
+      throw new MemoryComputeError('context-window-exceeded')
+    }
+    const only = input.canonicalSources[0]!
+    return JSON.stringify({
+      action: input.actionMode,
+      body: input.actionMode === 'CREATE' ? `- ${only.text}` : `- 偏好一：喜欢喝绿茶\n- ${only.text}`,
+      sourceIds: [only.sourceId],
+    })
+  })
+  await h.run()
+
+  assert.equal(sawSplitMulti, true)
+  assert.equal(profileCalls, 3, '2-note oversized profile pass must split into 2 single-note passes')
+  const profile = h.documents.read(d1.workspace, RESIDENT_PROFILE_PATH)!
+  assert.ok(profile)
+  assert.match(profile.markdown, /绿茶/)
+  assert.match(profile.markdown, /爬山/)
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+  void d2
+})
+
+test('partial-commit recovery clears pendingBatch when one file is missing and another is modified in place regardless of order (P1-5)', async t => {
+  for (const order of [['missing-first', 'modified-second'], ['modified-first', 'missing-second']] as const) {
+    let hidePath: string | null = null
+    const h = dreamHarness(t, {
+      initialNow: TODAY_MS,
+      async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+        if (hidePath && filePath === hidePath) return null
+        return defaultRead(workspace, filePath, signal)
+      },
+    })
+    const d1 = h.addDailyNote([{ text: '素材一：第一篇日记偏好' }], { session: `s-p1-5-${order[0]}-1` })
+    const d2 = h.addDailyNote([{ text: '素材二：第二篇日记偏好' }], { session: `s-p1-5-${order[0]}-2` })
+    const missingNote = order[0] === 'missing-first' ? d1 : d2
+    const modifiedNote = order[0] === 'missing-first' ? d2 : d1
+
+    let stopAfterOrdinary = false
+    h.setCommittedHook(receipt => {
+      if (receipt.path === 'digest/wiki/partial-first.md' && !stopAfterOrdinary) {
+        stopAfterOrdinary = true
+        throw new Error('simulated-crash-mid-commit')
+      }
+    })
+    h.setModel(async request => {
+      if (request.system === DREAM_PROFILE_SYSTEM) {
+        const input = request.input as { canonicalSources: Array<{ sourceId: string }> }
+        return JSON.stringify({ action: 'CREATE', body: '- 偏好合并', sourceIds: input.canonicalSources.map(s => s.sourceId) })
+      }
+      return JSON.stringify({
+        operations: [{
+          action: 'CREATE',
+          path: 'digest/wiki/partial-first.md',
+          name: 'Partial First',
+          description: 'First op before crash',
+          body: '普通摘要内容',
+          dailyPaths: [d1.path],
+          sourceIds: [d1.sources[0]!.id],
+        }],
+      })
+    })
+    await h.run()
+    assert.ok(h.documents.read(d1.workspace, 'digest/wiki/partial-first.md'))
+    assert.equal(h.documents.read(d1.workspace, RESIDENT_PROFILE_PATH), null)
+    assert.ok(h.effects.get(DREAM, 'daily')?.payload, 'pendingBatch must exist after mid-commit crash')
+
+    // Hide missingNote (temporary missing -> null) AND mutate modifiedNote in place on disk (confirmed stale)!
+    h.setCommittedHook(undefined)
+    hidePath = missingNote.path
+    const absModified = path.join(h.store.fileRoot, modifiedNote.workspace, modifiedNote.path)
+    fs.writeFileSync(absModified, `${fs.readFileSync(absModified, 'utf8')}\n<!-- tampered in place -->`)
+
+    await h.restart()
+    h.setModel(async request => {
+      if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
+      return JSON.stringify({ operations: [] })
+    })
+    await h.retryNow()
+
+    // Old pendingBatch MUST have been cleared as stale (not stuck retrying forever on missingNote),
+    // and old profile op MUST NOT have been committed!
+    assert.equal(h.documents.read(d1.workspace, RESIDENT_PROFILE_PATH), null)
+    const remainingPayload = h.effects.get(DREAM, 'daily')?.payload as { pendingBatch?: unknown } | null
+    assert.equal(remainingPayload?.pendingBatch, undefined, `pendingBatch must be cleared in order ${order.join(',')}`)
+  }
+})
+
+test('reserved profile heading guard matches CommonMark ATX closing hashes, indentation, and Setext H2 headings consistently (P1-6)', () => {
+  for (const forged of [
+    '## 用户确认 ##\n- 伪造项',
+    '  ##   用户确认   ###  \n- 伪造项',
+    '##\tUser Confirmed\t##\n- forged',
+    '用户确认\n---\n- 伪造项',
+    '  User Confirmed  \n------\n- forged',
+    '### 用户确认\n- 伪造项',
+  ]) {
+    assert.throws(
+      () => assembleDreamProfileBody({ existingBody: null, autoSummaryBody: forged, action: 'CREATE' }),
+      /dream-profile-reserved-heading/,
+      `must reject forged heading: ${JSON.stringify(forged)}`,
+    )
+    assert.equal(parseProfileSections(forged).hasConfirmedHeading, true)
+  }
+  // Heading inside fenced code block is NOT a section heading.
+  const fenced = '## 自动整理\n```md\n## 用户确认\n```\n- 正常偏好'
+  const parsedFenced = parseProfileSections(fenced)
+  assert.equal(parsedFenced.hasConfirmedHeading, false)
+  assert.equal(parsedFenced.duplicateReservedHeading, false)
+})
+
+test('deleted document old ID cannot modify or undo recreated document at the same path (P1-7)', async t => {
+  const { dir, defer } = scratch(t, 'phase2-p1-7-')
+  const store = openMemoryStore(path.join(dir, 'memory.db'))
+  defer(() => store.close())
+  const documents = openMemoryDocuments({
+    db: store.db,
+    root: store.fileRoot,
+    source(id) {
+      const current = store.readSource(id)
+      return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
+    },
+  })
+  const src1 = noteSource(store, {
+    conversation: 'c1', session: null, scope: { kind: 'user' }, context: { kind: 'user' }, project: null,
+    text: '偏好一', hash: memoryHash('偏好一'), length: 3, at: TODAY_MS, timezone: 'UTC',
+  })
+  const ws = memorySourceWorkspace(src1)
+  const md = '---\nname: Personal Profile\ndescription: Resident\n---\n\n## 自动整理\n- 偏好一'
+  const first = documents.commit({
+    operationId: randomUUID(), workspace: ws, path: RESIDENT_PROFILE_PATH,
+    expectedRevision: null, action: 'CREATE', markdown: md,
+    sources: [{ id: src1.id, token: memorySourceToken(src1) }], reads: [],
+  })
+  documents.deleteFile(ws, first.documentId, first.usageVersion)
+  const second = documents.commit({
+    operationId: randomUUID(), workspace: ws, path: RESIDENT_PROFILE_PATH,
+    expectedRevision: null, action: 'CREATE', markdown: md,
+    sources: [{ id: src1.id, token: memorySourceToken(src1) }], reads: [],
+  })
+  assert.notEqual(second.documentId, first.documentId)
+  assert.equal(second.revision, first.revision)
+  assert.equal(second.usageVersion, first.usageVersion)
+
+  assert.ok(second.revision)
+  assert.throws(() => documents.setEnabled({
+    operationId: randomUUID(), workspace: ws, documentId: first.documentId,
+    expectedRevision: second.revision!, expectedUsageVersion: second.usageVersion, enabled: false,
+  }), /memory-document-unavailable/)
+
+  assert.throws(() => documents.undo({
+    operationId: randomUUID(), workspace: ws, documentId: first.documentId,
+    revision: second.revision!, usageVersion: second.usageVersion,
+  }), /memory-document-unavailable/)
+
+  const live = documents.read(ws, RESIDENT_PROFILE_PATH)!
+  assert.equal(live.id, second.documentId)
+  assert.equal(live.enabled, true)
+  assert.equal(live.usageVersion, second.usageVersion)
+})
+
+test('Dream pre-validation strips uppercase .MD / Digest/ reserved profile variants without failing ordinary ops (P2-5)', async t => {
+  const h = dreamHarness(t, { initialNow: TODAY_MS })
+  const d1 = h.addDailyNote([{ text: '今天定了项目里程碑和浅色主题偏好' }])
+  let generalCalls = 0
+  h.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      return JSON.stringify({ action: 'CREATE', body: '- 浅色主题偏好', sourceIds: [d1.sources[0]!.id] })
+    }
+    generalCalls++
+    if (generalCalls === 1) {
+      return JSON.stringify({
+        operations: [
+          {
+            action: 'CREATE',
+            path: 'digest/personal/profile.MD',
+            name: 'Profile Upper Ext',
+            description: 'Should be stripped before digestPath regex',
+            body: '误写画像',
+            dailyPaths: [d1.path],
+            sourceIds: [d1.sources[0]!.id],
+          },
+          {
+            action: 'CREATE',
+            path: 'Digest/personal/profile.md',
+            name: 'Profile Upper Prefix',
+            description: 'Should also be stripped',
+            body: '误写画像二',
+            dailyPaths: [d1.path],
+            sourceIds: [d1.sources[0]!.id],
+          },
+          {
+            action: 'CREATE',
+            path: 'digest/wiki/milestone-p2-5.md',
+            name: 'Milestone',
+            description: 'Valid ordinary digest',
+            body: '项目里程碑已确定',
+            dailyPaths: [d1.path],
+            sourceIds: [d1.sources[0]!.id],
+          },
+        ],
+        hasMore: true,
+      })
+    }
+    return JSON.stringify({ operations: [], hasMore: false })
+  })
+  await h.run()
+  assert.equal(generalCalls, 1)
+  assert.ok(h.documents.read(d1.workspace, 'digest/wiki/milestone-p2-5.md'))
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'hasMore=true must keep note checkpoint open for next pass')
+
+  await h.retryNow()
+  assert.equal(generalCalls, 2, 'second pass finishes after hasMore=true')
+  assert.ok(h.documents.read(d1.workspace, RESIDENT_PROFILE_PATH))
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+})
+
+test('profile_deleted_at watermark stays monotonic across system clock rollback (P2-6)', async t => {
+  const { dir, defer } = scratch(t, 'phase2-p2-6-')
+  const root = path.join(dir, 'memory')
+  let clock = TODAY_MS + 10_000
+  const owner = openMemoryOwner({ root, dailyNotes: true, now: () => clock, compute: () => null, route: () => null })
+  defer(() => owner.close())
+  await owner.recover()
+  const store = openMemoryStore(path.join(root, 'memory.db'), () => clock)
+  defer(() => store.close())
+  const documents = openMemoryDocuments({
+    db: store.db,
+    root: store.fileRoot,
+    now: () => clock,
+    source(id) {
+      const current = store.readSource(id)
+      return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
+    },
+  })
+  const client = createVivaMemoryClient((m, input) => owner.handleHost(m, input) as Promise<never>)
+
+  const session = randomUUID()
+  const src1 = randomUUID()
+  await owner.receiveSource({ sessionId: session, messageId: src1, text: '初版偏好', at: TODAY_MS + 1_000, timezone: 'UTC', turn: 1, cwd: null })
+  const srcRow1 = store.readSource(src1)!
+  const ws = memorySourceWorkspace(srcRow1)
+  const first = documents.commit({
+    operationId: randomUUID(), workspace: ws, path: RESIDENT_PROFILE_PATH,
+    expectedRevision: null, action: 'CREATE',
+    markdown: '---\nname: Personal Profile\ndescription: Resident\n---\n\n## 自动整理\n- 初版偏好',
+    sources: [{ id: srcRow1.id, token: memorySourceToken(srcRow1) }], reads: [],
+  })
+  const firstDetail = (await client.readFile({ kind: 'digest', workspace: ws, id: first.documentId }))!
+  // Delete #1 at t = TODAY_MS + 10_000
+  await client.forgetFile({ operationId: randomUUID(), identity: firstDetail.identity, version: firstDetail.version })
+  const watermark1 = Number(store.meta('profile_deleted_at'))
+  assert.equal(watermark1, TODAY_MS + 10_000)
+
+  // Recreate with post-delete source at t = TODAY_MS + 12_000
+  const src2 = randomUUID()
+  await owner.receiveSource({ sessionId: session, messageId: src2, text: '重建偏好', at: TODAY_MS + 12_000, timezone: 'UTC', turn: 2, cwd: null })
+  const srcRow2 = store.readSource(src2)!
+  const second = documents.commit({
+    operationId: randomUUID(), workspace: ws, path: RESIDENT_PROFILE_PATH,
+    expectedRevision: null, action: 'CREATE',
+    markdown: '---\nname: Personal Profile\ndescription: Resident\n---\n\n## 自动整理\n- 重建偏好',
+    sources: [{ id: srcRow2.id, token: memorySourceToken(srcRow2) }], reads: [],
+  })
+  const secondDetail = (await client.readFile({ kind: 'digest', workspace: ws, id: second.documentId }))!
+  // Roll clock BACKWARDS to TODAY_MS + 5_000 and delete again!
+  clock = TODAY_MS + 5_000
+  await client.forgetFile({ operationId: randomUUID(), identity: secondDetail.identity, version: secondDetail.version })
+  const watermark2 = Number(store.meta('profile_deleted_at'))
+  assert.equal(watermark2, watermark1, 'profile_deleted_at must never move backwards on clock rollback')
 })

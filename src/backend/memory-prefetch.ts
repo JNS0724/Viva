@@ -16,7 +16,7 @@ export type PrefetchStartInput = {
 
 export type ClaimPrefetchResult =
   | { found: false }
-  | { found: true, result: AutomaticRecallResult }
+  | { found: true, result: AutomaticRecallResult, epoch?: string, revision?: number }
 
 type PrefetchEntry = {
   key: string
@@ -32,14 +32,16 @@ type PrefetchEntry = {
   revision: number | undefined
   stale: boolean
   settled: boolean
+  requeried: boolean
   result?: AutomaticRecallResult
   controller?: AbortController
   timer?: ReturnType<typeof setTimeout>
   work?: Promise<void>
 }
 
+type DeliveryTerminal = { status: 'skipped' | 'timeout', deadlineAt: number }
+
 const DEFAULT_CACHE_TTL_MS = 60_000
-const MAX_SKIPPED_DELIVERIES = 1_000
 
 const prefetchKey = (sessionId: string, requestId: string) => `${sessionId}\0${requestId}`
 
@@ -48,7 +50,8 @@ const prefetchKey = (sessionId: string, requestId: string) => `${sessionId}\0${r
  * - Caches monotonic `{ epoch, revision, text }` snapshots (accepting `text: ''` as a valid update);
  * - Starts L3 prefetch at the exact validated dispatch point keyed by `(requestId, sessionId)`;
  * - Enforces double-point `{ ownerEpoch, revision }` invalidation (both on reply write and on claim);
- * - Preserves `skipped` delivery markers across cache TTL eviction until consumed.
+ * - Preserves `skipped` and `timeout` delivery terminals across cache TTL eviction until consumed or cancelled,
+ *   without retaining skipped/sensitive query text.
  */
 export function createMemoryPrefetchManager({
   callPrefetch,
@@ -69,11 +72,16 @@ export function createMemoryPrefetchManager({
   let ownerAvailable = false
   let latestProfile: MemoryProfileSnapshot | undefined
   const entries = new Map<string, PrefetchEntry>()
-  const skippedDeliveries = new Set<string>()
+  const deliveryTerminals = new Map<string, DeliveryTerminal>()
 
   function cleanupExpired(at = now()) {
     for (const [key, entry] of entries) {
-      if (entry.settled && entry.expiresAt <= at) entries.delete(key)
+      if (entry.settled && entry.expiresAt <= at) {
+        if (entry.result?.status === 'timeout' || entry.result?.status === 'skipped') {
+          deliveryTerminals.set(key, { status: entry.result.status, deadlineAt: entry.deadlineAt })
+        }
+        entries.delete(key)
+      }
     }
   }
 
@@ -137,14 +145,6 @@ export function createMemoryPrefetchManager({
     invalidateUnclaimedHits('unavailable')
   }
 
-  function rememberSkipped(key: string) {
-    if (skippedDeliveries.size >= MAX_SKIPPED_DELIVERIES) {
-      const oldest = skippedDeliveries.values().next().value
-      if (oldest !== undefined) skippedDeliveries.delete(oldest)
-    }
-    skippedDeliveries.add(key)
-  }
-
   function versionCurrent(epoch: string | undefined, revision: number | undefined): boolean {
     return ownerAvailable && epoch !== undefined && revision !== undefined
       && epoch === currentEpoch && revision === currentRevision
@@ -165,23 +165,18 @@ export function createMemoryPrefetchManager({
     const expiresAt = startedAt + cacheTtlMs
 
     if (!input.queryText.trim() || looksSecret(input.queryText)) {
-      rememberSkipped(key)
-      entries.set(key, {
-        key, requestId: input.requestId, sessionId: input.sessionId, queryText: input.queryText,
-        cwd: input.cwd, context: input.context, project: input.project,
-        deadlineAt, expiresAt, ownerEpoch: currentEpoch, revision: currentRevision,
-        stale: false, settled: true, result: { status: 'skipped' },
-      })
+      // Never retain skipped/sensitive query text in memory; keep only the terminal status until consumed or cancelled.
+      deliveryTerminals.set(key, { status: 'skipped', deadlineAt })
       return
     }
-    skippedDeliveries.delete(key)
+    deliveryTerminals.delete(key)
 
     if (!ownerAvailable || !currentEpoch || currentRevision === undefined) {
       entries.set(key, {
-        key, requestId: input.requestId, sessionId: input.sessionId, queryText: input.queryText,
+        key, requestId: input.requestId, sessionId: input.sessionId, queryText: '',
         cwd: input.cwd, context: input.context, project: input.project,
         deadlineAt, expiresAt, ownerEpoch: currentEpoch, revision: currentRevision,
-        stale: false, settled: true, result: { status: 'unavailable' },
+        stale: false, settled: true, requeried: false, result: { status: 'unavailable' },
       })
       return
     }
@@ -191,12 +186,13 @@ export function createMemoryPrefetchManager({
       key, requestId: input.requestId, sessionId: input.sessionId, queryText: input.queryText,
       cwd: input.cwd, context: input.context, project: input.project,
       deadlineAt, expiresAt, ownerEpoch: currentEpoch, revision: currentRevision,
-      stale: false, settled: false, controller,
+      stale: false, settled: false, requeried: false, controller,
     }
     entry.timer = setTimeout(() => {
       if (!entry.settled) {
         entry.settled = true
         entry.result = { status: 'timeout' }
+        entry.queryText = ''
         controller.abort(new RequestTimeout())
       }
     }, budgetMs)
@@ -211,6 +207,13 @@ export function createMemoryPrefetchManager({
     }, { signal: controller.signal, budgetMs }).then(reply => {
       clearTimeout(entry.timer)
       if (entry.settled) return
+      // Enforce absolute deadline even if the reply arrives before the setTimeout callback executes.
+      if (now() >= entry.deadlineAt) {
+        entry.settled = true
+        entry.result = { status: 'timeout' }
+        entry.queryText = ''
+        return
+      }
       entry.ownerEpoch = reply.epoch
       entry.revision = reply.revision
       if (reply.result.status === 'hit') {
@@ -229,6 +232,7 @@ export function createMemoryPrefetchManager({
       clearTimeout(entry.timer)
       if (entry.settled) return
       entry.settled = true
+      entry.queryText = ''
       entry.result = error instanceof RequestTimeout || controller.signal.aborted
         ? { status: 'timeout' }
         : { status: ownerAvailable ? 'timeout' : 'unavailable' }
@@ -237,11 +241,14 @@ export function createMemoryPrefetchManager({
     entries.set(key, entry)
   }
 
-  async function runRequeryOnce(entry: PrefetchEntry, remainingMs: number, signal?: AbortSignal): Promise<AutomaticRecallResult> {
-    if (!ownerAvailable || remainingMs <= 0 || signal?.aborted) return ownerAvailable ? { status: 'timeout' } : { status: 'unavailable' }
+  async function runRequeryOnce(entry: PrefetchEntry, remainingMs: number, signal?: AbortSignal): Promise<{ result: AutomaticRecallResult, epoch?: string, revision?: number }> {
+    entry.requeried = true
+    if (!ownerAvailable || remainingMs <= 0 || now() >= entry.deadlineAt || signal?.aborted) {
+      return { result: ownerAvailable ? { status: 'timeout' } : { status: 'unavailable' } }
+    }
     const reqEpoch = currentEpoch
     const reqRevision = currentRevision
-    if (!reqEpoch || reqRevision === undefined) return { status: 'unavailable' }
+    if (!reqEpoch || reqRevision === undefined) return { result: { status: 'unavailable' } }
     const controller = new AbortController()
     const onAbort = () => controller.abort(signal?.reason)
     signal?.addEventListener('abort', onAbort, { once: true })
@@ -255,52 +262,52 @@ export function createMemoryPrefetchManager({
         ...(entry.context ? { context: entry.context } : {}),
         ...(entry.project ? { project: entry.project } : {}),
       }, { signal: controller.signal, budgetMs: remainingMs })
+      if (now() >= entry.deadlineAt) return { result: { status: 'timeout' } }
       if (reply.result.status === 'hit') {
         if (reply.epoch !== reqEpoch || reply.revision !== reqRevision || !versionCurrent(reply.epoch, reply.revision)) {
-          return { status: 'timeout' }
+          return { result: { status: 'timeout' } }
         }
       }
-      return reply.result
+      return { result: reply.result, epoch: reply.epoch, revision: reply.revision }
     } catch (error) {
-      if (error instanceof RequestTimeout || controller.signal.aborted) return { status: 'timeout' }
-      return ownerAvailable ? { status: 'timeout' } : { status: 'unavailable' }
+      if (error instanceof RequestTimeout || controller.signal.aborted) return { result: { status: 'timeout' } }
+      return { result: ownerAvailable ? { status: 'timeout' } : { status: 'unavailable' } }
     } finally {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
     }
   }
 
-  async function claimPrefetch({ requestId, sessionId, signal }: {
-    requestId: string
-    sessionId: string
-    signal?: AbortSignal
-  }): Promise<ClaimPrefetchResult> {
+  async function claimSingleInternal(requestId: string, sessionId: string, signal?: AbortSignal): Promise<{ claim: ClaimPrefetchResult, entry?: PrefetchEntry }> {
     cleanupExpired()
     const key = prefetchKey(sessionId, requestId)
     const entry = entries.get(key)
     if (!entry) {
-      if (skippedDeliveries.delete(key)) {
-        return { found: true, result: { status: 'skipped' } }
+      const terminal = deliveryTerminals.get(key)
+      if (terminal) {
+        deliveryTerminals.delete(key)
+        return { claim: { found: true, result: { status: terminal.status } } }
       }
-      return { found: false }
+      return { claim: { found: false } }
     }
     entries.delete(key)
-    skippedDeliveries.delete(key)
+    deliveryTerminals.delete(key)
 
     // Step 1: Consume valid completed terminal results FIRST (even if now() > deadlineAt).
     if (entry.settled) {
       if (entry.result && entry.result.status !== 'hit') {
-        return { found: true, result: entry.result }
+        return { claim: { found: true, result: entry.result }, entry }
       }
       if (entry.result?.status === 'hit' && !entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
-        return { found: true, result: entry.result }
+        return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision }, entry }
       }
       // Stale hit: allow at most one re-query within remaining original budget.
       const remaining = entry.deadlineAt - now()
-      if (remaining > 0) {
-        return { found: true, result: await runRequeryOnce(entry, remaining, signal) }
+      if (remaining > 0 && !entry.requeried) {
+        const retried = await runRequeryOnce(entry, remaining, signal)
+        return { claim: { found: true, ...retried }, entry }
       }
-      return { found: true, result: { status: 'timeout' } }
+      return { claim: { found: true, result: { status: 'timeout' } }, entry }
     }
 
     // Step 2: Still pending — check remaining original deadline.
@@ -308,7 +315,7 @@ export function createMemoryPrefetchManager({
     if (remaining <= 0) {
       entry.controller?.abort(new RequestTimeout())
       clearTimeout(entry.timer)
-      return { found: true, result: { status: 'timeout' } }
+      return { claim: { found: true, result: { status: 'timeout' } }, entry }
     }
     if (entry.work) {
       let wake: () => void = () => {}
@@ -331,18 +338,70 @@ export function createMemoryPrefetchManager({
     }
 
     if (entry.settled && entry.result) {
-      if (entry.result.status !== 'hit') return { found: true, result: entry.result }
+      if (entry.result.status !== 'hit') return { claim: { found: true, result: entry.result }, entry }
       // Claim-side double-point invalidation check.
       if (!entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
-        return { found: true, result: entry.result }
+        return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision }, entry }
       }
     }
     // Invalidated while pending: allow at most one re-query within remaining original budget.
     const afterWaitRemaining = entry.deadlineAt - now()
-    if (entry.stale && afterWaitRemaining > 0 && !signal?.aborted) {
-      return { found: true, result: await runRequeryOnce(entry, afterWaitRemaining, signal) }
+    if (entry.stale && afterWaitRemaining > 0 && !entry.requeried && !signal?.aborted) {
+      const retried = await runRequeryOnce(entry, afterWaitRemaining, signal)
+      return { claim: { found: true, ...retried }, entry }
     }
-    return { found: true, result: { status: 'timeout' } }
+    return { claim: { found: true, result: { status: 'timeout' } }, entry }
+  }
+
+  async function claimPrefetch({ requestId, sessionId, signal }: {
+    requestId: string
+    sessionId: string
+    signal?: AbortSignal
+  }): Promise<ClaimPrefetchResult> {
+    const { claim } = await claimSingleInternal(requestId, sessionId, signal)
+    return claim
+  }
+
+  /** Claim multiple messages in the same step in parallel and verify every hit against live version before adoption. */
+  async function claimPrefetchBatch({ requestIds, sessionId, signal }: {
+    requestIds: readonly string[]
+    sessionId: string
+    signal?: AbortSignal
+  }): Promise<ClaimPrefetchResult[]> {
+    const claimed = await Promise.all(requestIds.map(requestId => claimSingleInternal(requestId, sessionId, signal)))
+    // Re-check every resolved hit against live (epoch, revision) after sibling claims complete.
+    const rechecked = await Promise.all(claimed.map(async ({ claim, entry }) => {
+      if (!claim.found || claim.result.status !== 'hit') return claim
+      if (versionCurrent(claim.epoch, claim.revision)) return claim
+      if (entry && !entry.requeried && !signal?.aborted) {
+        const remaining = entry.deadlineAt - now()
+        if (remaining > 0) {
+          const retried = await runRequeryOnce(entry, remaining, signal)
+          return { found: true as const, ...retried }
+        }
+      }
+      return { found: true as const, result: { status: 'timeout' as const } }
+    }))
+    // Final synchronous sweep so no sibling re-query can mask an even later invalidation.
+    return rechecked.map(claim => (
+      claim.found && claim.result.status === 'hit' && !versionCurrent(claim.epoch, claim.revision)
+        ? { found: true as const, result: { status: 'timeout' as const } }
+        : claim
+    ))
+  }
+
+  function clearSession(sessionId: string) {
+    const prefix = `${sessionId}\0`
+    for (const [key, entry] of entries) {
+      if (key.startsWith(prefix)) {
+        entry.controller?.abort()
+        clearTimeout(entry.timer)
+        entries.delete(key)
+      }
+    }
+    for (const key of deliveryTerminals.keys()) {
+      if (key.startsWith(prefix)) deliveryTerminals.delete(key)
+    }
   }
 
   function close() {
@@ -351,14 +410,14 @@ export function createMemoryPrefetchManager({
       clearTimeout(entry.timer)
     }
     entries.clear()
-    skippedDeliveries.clear()
+    deliveryTerminals.clear()
   }
 
   return {
     onState, onChange, onProfile, onUnavailable,
     acceptProfile,
     profile: (): MemoryProfileSnapshot | undefined => latestProfile,
-    startPrefetch, claimPrefetch, cleanupExpired, close,
+    startPrefetch, claimPrefetch, claimPrefetchBatch, clearSession, cleanupExpired, close,
   }
 }
 export type MemoryPrefetchManager = ReturnType<typeof createMemoryPrefetchManager>

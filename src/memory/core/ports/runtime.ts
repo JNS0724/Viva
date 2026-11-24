@@ -27,5 +27,5 @@ export interface MemoryRuntimeResources {
   readPhysicalFile?: ReadMemoryPhysicalFile
   openNotes(readable: (id: string) => boolean, currentJob: (key: string, generation: number) => boolean, options?: { onCommitted(): void, index?: MemoryFileIndexChanges, deferRecovery?: boolean }): MemoryNotes
   openDocuments(readable: (id: string) => boolean, onCommitted: (receipt: DocumentReceipt) => void, policy?: { managementCurrent(before: DocumentSnapshot, guard: DocumentManagementGuard, after: DocumentSnapshot, staged?: MemorySource): boolean,
-    manualCurrent?(source: MemorySource): boolean, index?: MemoryFileIndexChanges, deferRecovery?: boolean }): MemoryDocuments
+    manualCurrent?(source: MemorySource, beforeMarkdown?: string): boolean, index?: MemoryFileIndexChanges, deferRecovery?: boolean }): MemoryDocuments
 }

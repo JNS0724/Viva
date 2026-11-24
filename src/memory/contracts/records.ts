@@ -26,6 +26,7 @@ export interface MemorySource {
   hash: string | null
   length: number
   question: string | null
+  questionAt?: number | null
   requestId: string | null
   questionId: string | null
   at: number

@@ -34,7 +34,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   onCommitted?: (receipt: DocumentReceipt) => void,
   managementCurrent?: (before: DocumentSnapshot, guard: DocumentManagementGuard, after: DocumentSnapshot, staged?: MemorySource) => boolean,
   manual?: { token(source: MemorySource): string, workspace(source: MemorySource): string,
-    current(source: MemorySource): boolean, commit(source: MemorySource, parents: readonly DocumentSourceRef[]): void, },
+    current(source: MemorySource, beforeMarkdown?: string): boolean, commit(source: MemorySource, parents: readonly DocumentSourceRef[]): void, },
   index?: MemoryFileIndexChanges,
   deferRecovery?: boolean,
   checkpoint?: (point: FileCheckpoint, path?: string) => void,
@@ -109,7 +109,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       const before = data.before
       const targetCurrent = before ? actual?.id === before.id && actual.revision === before.revision && actual.usage_version === before.usageVersion && !actual.forgotten
         : !actual
-      if (data.manualSource && (!data.after || !manual?.current(data.manualSource))) return false
+      if (data.manualSource && (!data.after || !manual?.current(data.manualSource, before?.markdown))) return false
       if (data.management) {
         if (!targetCurrent || !before || !data.after || !actual) return false
         const physical = journal.files(data.workspace).read(before.path)?.revision
@@ -268,9 +268,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const prior = replay(input.operationId, input)
     if (prior) return prior
     const row = rowById(input.documentId)
-    if (!row || row.workspace !== input.workspace) throw new Error('memory-document-unavailable')
+    if (!row || row.workspace !== input.workspace || row.forgotten) throw new Error('memory-document-unavailable')
     const current = read(input.workspace, row.path, { includeDisabled: true })
-    if (!current || current.revision !== input.revision || current.usageVersion !== input.usageVersion) throw new Error('memory-document-version')
+    if (!current || current.id !== input.documentId || current.revision !== input.revision || current.usageVersion !== input.usageVersion) throw new Error('memory-document-version')
     const candidate = undoHistory(current)
     if (!candidate) throw new Error('memory-document-undo-unavailable')
     if (input.expectedChangeId !== undefined && input.expectedChangeId !== candidate.history.operation) throw new Error('memory-document-change-version')
@@ -287,9 +287,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const prior = replay(input.operationId, input)
     if (prior) return prior
     const row = rowById(input.documentId)
-    if (!row || row.workspace !== input.workspace) throw new Error('memory-document-unavailable')
+    if (!row || row.workspace !== input.workspace || row.forgotten) throw new Error('memory-document-unavailable')
     const current = read(input.workspace, row.path, { includeDisabled: true })
-    if (!current || current.revision !== input.expectedRevision || current.usageVersion !== input.expectedUsageVersion) throw new Error('memory-document-version')
+    if (!current || current.id !== input.documentId || current.revision !== input.expectedRevision || current.usageVersion !== input.expectedUsageVersion) throw new Error('memory-document-version')
     const after = { ...current, enabled: input.enabled, usageVersion: current.usageVersion + Number(current.enabled !== input.enabled) }
     const receipt: DocumentReceipt = { operationId: input.operationId, documentId: row.id, path: row.path, revision: after.revision, usageVersion: after.usageVersion, action: input.enabled ? 'ENABLE' : 'DISABLE' }
     const management = input.expectedPolicyToken === undefined ? undefined : { policyToken: input.expectedPolicyToken }

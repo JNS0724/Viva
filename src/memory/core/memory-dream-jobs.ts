@@ -60,6 +60,7 @@ type PreparedOperation = {
   reads: Array<{ id: string, revision: string, usageVersion: number }>
   linkedPaths: string[]
   files: Array<{ path: string, revision: string }>
+  questionSourceIds?: string[]
 }
 type PersistedOperation = {
   operationId: string
@@ -71,6 +72,7 @@ type PersistedOperation = {
   reads: Array<{ id: string, revision: string, usageVersion: number }>
   linkedPaths: string[]
   files: Array<{ path: string, revision: string }>
+  questionSourceIds?: string[]
 }
 type PersistedBatch = {
   workspace: string
@@ -340,12 +342,19 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     const parsed = Number(raw)
     return Number.isFinite(parsed) ? parsed : null
   }
-  const profileSourcesAllowedByWatermark = (sources: readonly DocumentSourceRef[]): boolean => {
+  const profileSourcesAllowedByWatermark = (
+    sources: readonly DocumentSourceRef[],
+    questionSourceIds: readonly string[] = [],
+  ): boolean => {
     const watermark = profileDeletedAt()
     if (watermark === null) return true
-    return sources.every(ref => {
+    if (!sources.every(ref => {
       const item = source(ref.id)
       return Boolean(item && item.at > watermark)
+    })) return false
+    return questionSourceIds.every(id => {
+      const item = source(id)
+      return Boolean(item && typeof item.questionAt === 'number' && item.questionAt > watermark)
     })
   }
   const schedule = (payload: JobPayload | null = null) => effects.queue(DREAM, DAILY, payload, nextDreamAt(now(), timezone, dreamTime))
@@ -726,7 +735,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       const opSourcesValid = (op: PersistedOperation, requireEligible: boolean) => {
         if (isReservedProfilePath(op.path)) {
           if (workspace !== userWorkspace || op.path !== RESIDENT_PROFILE_PATH) return false
-          if (!profileSourcesAllowedByWatermark(op.sources)) return false
+          if (!profileSourcesAllowedByWatermark(op.sources, op.questionSourceIds)) return false
           if (!op.sources.every(ref => { const item = source(ref.id); return Boolean(item && isPureUserSource(item)) })) return false
         }
         return refsCurrent(op.sources)
@@ -812,14 +821,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           }
           if (!effects.holds(job)) return 'cancelled'
           if (observed) {
+            let hasUnverifiable = false
             for (const file of batch.fileRefs) {
               const fileState = classifyNoteFile(file, observed)
-              if (fileState === 'unverifiable') return 'retry'
               if (fileState === 'stale') {
                 clearPendingBatch()
                 progress(job, 'source_changed', 'consolidate')
                 return 'stale'
               }
+              if (fileState === 'unverifiable') hasUnverifiable = true
             }
             for (const ref of opReads) {
               const target = regById.get(ref.id)
@@ -829,8 +839,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 return 'stale'
               }
               const obsRev = observed.observedRevision(workspace, target.path)
-              if (obsRev === undefined || obsRev === null) return 'retry'
-              if (obsRev !== ref.revision) {
+              if (obsRev === undefined || obsRev === null) {
+                hasUnverifiable = true
+              } else if (obsRev !== ref.revision) {
                 clearPendingBatch()
                 progress(job, 'source_changed', 'consolidate')
                 return 'stale'
@@ -838,20 +849,23 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             }
             const targetObsRev = observed.observedRevision(workspace, op.path)
             if (op.action === 'CREATE') {
-              if (targetObsRev === undefined) return 'retry'
-              if (targetObsRev !== null) {
+              if (targetObsRev === undefined) {
+                hasUnverifiable = true
+              } else if (targetObsRev !== null) {
                 clearPendingBatch()
                 progress(job, 'source_changed', 'consolidate')
                 return 'stale'
               }
             } else {
-              if (targetObsRev === undefined || targetObsRev === null) return 'retry'
-              if (targetObsRev !== op.expectedRevision) {
+              if (targetObsRev === undefined || targetObsRev === null) {
+                hasUnverifiable = true
+              } else if (targetObsRev !== op.expectedRevision) {
                 clearPendingBatch()
                 progress(job, 'source_changed', 'consolidate')
                 return 'stale'
               }
             }
+            if (hasUnverifiable) return 'retry'
           }
           if (makeOpCurrent(op, opReads)(observed)) return 'ready'
           if (!effects.holds(job)) return 'cancelled'
@@ -1080,25 +1094,51 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; scanRetry = true; return }
             if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
             try {
-              const plan = parseDreamPlan(parse(raw), changedPaths, allowedSourceIds, remainingAtStart)
-              // Pre-persistence sanitization: strip reserved profile paths (case-insensitive) and ops depending on them.
-              const strippedDraftPaths = new Set<string>()
-              const retainedOperations: DreamOperation[] = []
-              for (const operation of plan.operations) {
-                if (isReservedProfilePath(operation.path)) {
-                  strippedDraftPaths.add(operation.path.toLowerCase())
-                  continue
+              const parsedRaw = parse(raw)
+              let planInput: unknown = parsedRaw
+              // Pre-validation sanitization: strip reserved profile path variants (including uppercase `.MD` or `Digest/...`)
+              // and ops linking to stripped drafts before `digestPath` strict regex validation runs.
+              if (parsedRaw && typeof parsedRaw === 'object' && !Array.isArray(parsedRaw)) {
+                const candidate = parsedRaw as Record<string, unknown>
+                const keys = Object.keys(candidate)
+                if (keys.every(key => key === 'operations' || key === 'hasMore')
+                  && Array.isArray(candidate.operations)
+                  && candidate.operations.length <= remainingAtStart
+                  && (candidate.hasMore === undefined || typeof candidate.hasMore === 'boolean')) {
+                  const strippedDraftPaths = new Set<string>()
+                  const retainedRaw: unknown[] = []
+                  for (const entry of candidate.operations) {
+                    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+                      const opRecord = entry as Record<string, unknown>
+                      const rawPath = typeof opRecord.path === 'string' ? opRecord.path : null
+                      if (rawPath && isReservedProfilePath(rawPath)) {
+                        strippedDraftPaths.add(rawPath.toLowerCase())
+                        continue
+                      }
+                      const rawBody = typeof opRecord.body === 'string' ? opRecord.body : ''
+                      const rawEdits = Array.isArray(opRecord.edits)
+                        ? opRecord.edits.flatMap(edit =>
+                            edit && typeof edit === 'object' && typeof (edit as { newText?: unknown }).newText === 'string'
+                              ? [(edit as { newText: string }).newText] : [])
+                            .join('\n')
+                        : ''
+                      const draftText = rawBody || rawEdits
+                      const draftLinks = draftText ? memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: draftText })) : []
+                      if (draftLinks.some(link => strippedDraftPaths.has(link.split('#')[0]!.toLowerCase()))) {
+                        if (rawPath) strippedDraftPaths.add(rawPath.toLowerCase())
+                        continue
+                      }
+                    }
+                    retainedRaw.push(entry)
+                  }
+                  planInput = {
+                    operations: retainedRaw,
+                    ...(candidate.hasMore !== undefined ? { hasMore: candidate.hasMore } : {}),
+                  }
                 }
-                const draftText = operation.action === 'CREATE'
-                  ? operation.body
-                  : operation.body ?? operation.edits?.map(edit => edit.newText).join('\n') ?? ''
-                const draftLinks = memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: draftText }))
-                if (draftLinks.some(link => strippedDraftPaths.has(link.split('#')[0]!.toLowerCase()))) {
-                  strippedDraftPaths.add(operation.path.toLowerCase())
-                  continue
-                }
-                retainedOperations.push(operation)
               }
+              const plan = parseDreamPlan(planInput, changedPaths, allowedSourceIds, remainingAtStart)
+              const retainedOperations: DreamOperation[] = plan.operations
               const effectiveHasMore = plan.hasMore && retainedOperations.length > 0
 
               const validated: PreparedOperation[] = []
@@ -1259,7 +1299,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 if (!original?.text) { progress(job, 'source_changed', 'consolidate'); scanRetry = true; return }
                 const context = notes.sourceQuestionContext(ref.id)
                 const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
+                const questionAfterWatermark = watermark === null
+                  || (typeof original.questionAt === 'number' && original.questionAt > watermark)
                 const questionAllowed = Boolean(original.question) && wholeSource && context.current
+                  && questionAfterWatermark
                   && (!context.refs.length || refsCurrent(context.refs))
                   && allowsText(original.question!, original)
                   && context.refs.every(dep => {
@@ -1370,7 +1413,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                       if (!evidence.length || !refsCurrent(evidence) || !materialAllowed(markdown, evidence)) {
                         throw new Error('dream-material-rejected')
                       }
-                      if (!profileSourcesAllowedByWatermark(evidence)) {
+                      const questionSourceIds = opRefs.filter(ref => profileQuestionContexts.has(ref.id)).map(ref => ref.id)
+                      if (!profileSourcesAllowedByWatermark(evidence, questionSourceIds)) {
                         throw new Error('dream-profile-watermark')
                       }
                       if (!evidence.every(ref => { const item = source(ref.id); return Boolean(item && isPureUserSource(item)) })) {
@@ -1392,6 +1436,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                           : [],
                         linkedPaths: [],
                         files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
+                        ...(questionSourceIds.length ? { questionSourceIds } : {}),
                       }
                       profileResolved = true
                     }
@@ -1402,6 +1447,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   }
                 } catch (error) {
                   if (error instanceof MemoryComputeError && error.reason === 'context-window-exceeded') {
+                    if (batch.length > 1) {
+                      await split()
+                      return
+                    }
+                    if (!await profileInputsCurrent()) {
+                      progress(job, 'source_changed', 'consolidate', attempt)
+                      scanRetry = true
+                      return
+                    }
                     progress(job, 'oversized', 'consolidate', attempt)
                     oversizedAny = true
                     batchOversized = true

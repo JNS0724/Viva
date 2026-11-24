@@ -5,9 +5,9 @@ export const MAX_PROFILE_L2_CHARS = 800
 export const CONFIRMED_SECTION_HEADING = '## 用户确认'
 export const AUTO_SECTION_HEADING = '## 自动整理'
 
-const CONFIRMED_HEADINGS = new Set(['## 用户确认', '## user confirmed'])
-const AUTO_HEADINGS = new Set(['## 自动整理', '## auto summary'])
-const SOURCES_HEADINGS = new Set(['## sources', '## 来源'])
+const CONFIRMED_TITLES = new Set(['用户确认', 'user confirmed'])
+const AUTO_TITLES = new Set(['自动整理', 'auto summary'])
+const SOURCES_TITLES = new Set(['sources', '来源'])
 
 export function userWorkspaceId(hash: (text: string) => string): string {
   return hash(JSON.stringify([{ kind: 'user' }, { kind: 'user' }, null]))
@@ -26,12 +26,58 @@ export function codePointLength(text: string): number {
   return [...text].length
 }
 
-function classifyHeading(line: string): 'confirmed' | 'auto' | 'sources' | null {
-  const normalized = line.trim().toLowerCase()
-  if (CONFIRMED_HEADINGS.has(normalized)) return 'confirmed'
-  if (AUTO_HEADINGS.has(normalized)) return 'auto'
-  if (SOURCES_HEADINGS.has(normalized)) return 'sources'
+function classifyReservedTitle(title: string): 'confirmed' | 'auto' | 'sources' | null {
+  const normalized = title.trim().replace(/\s+/gu, ' ').toLowerCase()
+  if (CONFIRMED_TITLES.has(normalized)) return 'confirmed'
+  if (AUTO_TITLES.has(normalized)) return 'auto'
+  if (SOURCES_TITLES.has(normalized)) return 'sources'
   return null
+}
+
+/** Parse CommonMark ATX heading (`#`..`######`) with optional leading 0-3 spaces and closing `#`s. */
+function parseAtxHeading(line: string): string | null {
+  const match = /^[ ]{0,3}#{1,6}(?:[ \t]+(.*?))?[ \t]*$/u.exec(line)
+  if (!match) return null
+  const raw = (match[1] ?? '').trim()
+  if (!raw) return ''
+  // CommonMark: optional closing `#` sequence must be preceded by space/tab (or be the entire content).
+  if (/^#+$/u.test(raw)) return ''
+  return raw.replace(/[ \t]+#+$/u, '').trim()
+}
+
+function isFenceStart(line: string): { marker: '`' | '~', length: number } | null {
+  const match = /^[ ]{0,3}(`{3,}|~{3,})/u.exec(line)
+  if (!match) return null
+  const seq = match[1]!
+  const marker = seq[0] as '`' | '~'
+  // CommonMark: backtick fence info string cannot contain backticks.
+  if (marker === '`' && line.slice(match[0].length).includes('`')) return null
+  return { marker, length: seq.length }
+}
+
+function isFenceEnd(line: string, fence: { marker: '`' | '~', length: number }): boolean {
+  const match = /^[ ]{0,3}(`{3,}|~{3,})[ \t]*$/u.exec(line)
+  return Boolean(match && match[1]![0] === fence.marker && match[1]!.length >= fence.length)
+}
+
+function isSetextUnderline(line: string): boolean {
+  return /^[ ]{0,3}(?:=+|-+)[ \t]*$/u.test(line)
+}
+
+function isSetextParagraphCandidate(line: string): boolean {
+  if (!line.trim()) return false
+  if (/^[ ]{4}/u.test(line)) return false
+  if (/^[ ]{0,3}#{1,6}(?:[ \t]|$)/u.test(line)) return false
+  if (/^[ ]{0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$/u.test(line)) return false
+  if (/^[ ]{0,3}>/u.test(line)) return false
+  if (/^[ ]{0,3}(?:`{3,}|~{3,})/u.test(line)) return false
+  if (/^[ ]{0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/u.test(line)) return false
+  return true
+}
+
+function classifyHeading(line: string): 'confirmed' | 'auto' | 'sources' | null {
+  const title = parseAtxHeading(line)
+  return title === null ? null : classifyReservedTitle(title)
 }
 
 export interface ParsedProfileSections {
@@ -52,23 +98,48 @@ export function parseProfileSections(body: string): ParsedProfileSections {
   let confirmedCount = 0
   let autoCount = 0
   let duplicateReservedHeading = false
-  for (const rawLine of lines) {
-    const kind = classifyHeading(rawLine)
+  let fence: { marker: '`' | '~', length: number } | null = null
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i]!
+    if (fence) {
+      if (isFenceEnd(rawLine, fence)) fence = null
+      if (section === 'confirmed') confirmedLines.push(rawLine)
+      else if (section === 'sources') sourcesLines.push(rawLine)
+      else autoLines.push(rawLine)
+      continue
+    }
+    const openedFence = isFenceStart(rawLine)
+    if (openedFence) {
+      fence = openedFence
+      if (section === 'confirmed') confirmedLines.push(rawLine)
+      else if (section === 'sources') sourcesLines.push(rawLine)
+      else autoLines.push(rawLine)
+      continue
+    }
+    let kind = classifyHeading(rawLine)
+    let consumedSetext = false
+    if (!kind && i + 1 < lines.length && isSetextParagraphCandidate(rawLine) && isSetextUnderline(lines[i + 1]!)) {
+      kind = classifyReservedTitle(rawLine)
+      if (kind) consumedSetext = true
+    }
     if (kind === 'confirmed') {
       confirmedCount++
       if (confirmedCount > 1) duplicateReservedHeading = true
       section = 'confirmed'
+      if (consumedSetext) i++
       continue
     }
     if (kind === 'auto') {
       autoCount++
       if (autoCount > 1) duplicateReservedHeading = true
       section = 'auto'
+      if (consumedSetext) i++
       continue
     }
     if (kind === 'sources') {
       section = 'sources'
-      sourcesLines.push(rawLine)
+      sourcesLines.push(consumedSetext ? '## Sources' : rawLine)
+      if (consumedSetext) i++
       continue
     }
     if (section === 'confirmed') confirmedLines.push(rawLine)

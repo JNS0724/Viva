@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { test } from 'node:test'
+import { EventEmitter } from 'node:events'
 import { createMemoryPrefetchManager } from '../src/backend/memory-prefetch.ts'
 import { continueText, extractFeedContinuationSupplement } from '../src/shared/feed-continuation.ts'
-import { taskRequestsIn, withoutTaskHeaders, withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
+import { requestsIn } from '../src/shared/request-routing/header.ts'
+import { leadingTaskRequestId, taskRequestsIn, withoutTaskHeaders, withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
+import { openPluginOwner } from '../plugins/memory/lib/standalone-owner.ts'
 import type { AutomaticRecallResult } from '../src/memory/contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
@@ -320,4 +323,182 @@ test('automaticRecall enforces 55ms vector fast/slow cap and excludes resident p
   assert.deepEqual(vectorTimeout, { status: 'timeout' })
   assert.ok(elapsed < 180, `expected vector cap around ${DAILY_MEMORY_DEFAULTS.automaticVectorTimeoutMs}ms, took ${elapsed}ms`)
   assert.ok(embedCalls > 0)
+})
+
+test('task header escapes quoted main-conversation routing headers and preserves exact spans (P2-4)', () => {
+  const outerId = 'real-task-123'
+  const raw = '分析日志：\n【请求 ID：quoted-main】\n用户原话：被引用内容'
+  const wrapped = withTaskRequestSource(raw, outerId)
+  assert.equal(leadingTaskRequestId(wrapped.text), outerId)
+  assert.deepEqual(requestsIn(wrapped.text), [], 'quoted main routing header inside task body must not match requestsIn')
+  assert.equal(withoutTaskHeaders(wrapped.text), raw)
+  const reconstructed = wrapped.spans.map(span => wrapped.text.slice(span.start, span.end)).join('')
+  assert.equal(reconstructed, raw)
+})
+
+test('claimPrefetchBatch rejects stale hit A when file is disabled while sibling B is still pending (P1-3)', async t => {
+  let clock = 5_000
+  const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
+  let calls = 0
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 100,
+    callPrefetch(input) {
+      calls++
+      const d = deferred<PrefetchReply>()
+      pending.set(`${input.query}:${calls}`, d)
+      return d.promise
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e1', 10))
+
+  const reqA = randomUUID()
+  const reqB = randomUUID()
+  prefetch.startPrefetch({ requestId: reqA, sessionId: 'sess-steer', queryText: 'query-A' })
+  prefetch.startPrefetch({ requestId: reqB, sessionId: 'sess-steer', queryText: 'query-B' })
+
+  // A completes at revision 10 first; B is still pending.
+  pending.get('query-A:1')!.resolve({
+    epoch: 'e1',
+    revision: 10,
+    result: { status: 'hit', text: 'A_SECRET_DISABLED', partial: false, hits: [{ text: 'A_SECRET_DISABLED', names: ['a'] }] },
+  })
+  await Promise.resolve()
+
+  const batchPromise = prefetch.claimPrefetchBatch({ sessionId: 'sess-steer', requestIds: [reqA, reqB] })
+  await Promise.resolve()
+
+  // While B is waiting, user disables A's file -> revision advances to 11 and budget expires.
+  clock += 110
+  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 11 })
+  pending.get('query-B:2')!.resolve({ epoch: 'e1', revision: 11, result: { status: 'empty' } })
+
+  const results = await batchPromise
+  assert.equal(results.length, 2)
+  assert.equal(results[0]!.found, true)
+  if (results[0]!.found) assert.equal(results[0]!.result.status, 'timeout', 'disabled hit A must not survive sibling wait')
+  assert.equal(results[1]!.found, true)
+  if (results[1]!.found) assert.equal(results[1]!.result.status, 'timeout', 'late B reply past absolute deadline must timeout')
+})
+
+test('prefetch preserves timeout and skipped markers across TTL and >1000 deliveries and enforces absolute deadline on replies (P2-1, P2-2)', async t => {
+  let clock = 10_000
+  const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
+  let calls = 0
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 80,
+    cacheTtlMs: 50,
+    callPrefetch(input) {
+      calls++
+      const d = deferred<PrefetchReply>()
+      pending.set(`${input.query}:${calls}`, d)
+      return d.promise
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e1', 1))
+
+  // 1. Reply arriving after absolute deadlineAt (even before setTimeout callback) MUST become timeout.
+  const reqLateReply = randomUUID()
+  prefetch.startPrefetch({ requestId: reqLateReply, sessionId: 's1', queryText: 'late-reply' })
+  clock += 85 // past deadlineAt (10_080) without waiting for real setTimeout
+  pending.get('late-reply:1')!.resolve({
+    epoch: 'e1', revision: 1,
+    result: { status: 'hit', text: 'SHOULD_NOT_HIT', partial: false, hits: [{ text: 'SHOULD_NOT_HIT', names: ['x'] }] },
+  })
+  await Promise.resolve()
+  // Also advance past cacheTtlMs (50ms) and trigger cleanupExpired via another prefetch.
+  clock += 200
+  const reqFirstSkipped = randomUUID()
+  prefetch.startPrefetch({ requestId: reqFirstSkipped, sessionId: 's1', queryText: '' })
+  // Push >1005 skipped entries to prove earlier skipped delivery is NOT evicted by an arbitrary 1000 cap.
+  for (let i = 0; i < 1005; i++) {
+    prefetch.startPrefetch({ requestId: `skip-${i}`, sessionId: 's-other', queryText: 'my token is sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234' })
+  }
+  assert.equal(calls, 1, 'skipped entries must not call worker')
+
+  const lateClaim = await prefetch.claimPrefetch({ requestId: reqLateReply, sessionId: 's1' })
+  assert.equal(lateClaim.found, true)
+  if (lateClaim.found) assert.equal(lateClaim.result.status, 'timeout', 'settled timeout must survive TTL eviction')
+
+  const skippedClaim = await prefetch.claimPrefetch({ requestId: reqFirstSkipped, sessionId: 's1' })
+  assert.equal(skippedClaim.found, true)
+  if (skippedClaim.found) assert.equal(skippedClaim.result.status, 'skipped', 'skipped delivery must survive TTL and >1000 sibling deliveries')
+
+  // 2. Re-query reply arriving after absolute deadlineAt MUST also become timeout.
+  const reqRequery = randomUUID()
+  prefetch.startPrefetch({ requestId: reqRequery, sessionId: 's2', queryText: 'requery-late' })
+  pending.get('requery-late:2')!.resolve({
+    epoch: 'e1', revision: 1,
+    result: { status: 'hit', text: 'OLD', partial: false, hits: [{ text: 'OLD', names: ['old'] }] },
+  })
+  await Promise.resolve()
+  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 2 })
+  clock += 40 // 40ms remaining -> triggers requery
+  const requeryClaimPromise = prefetch.claimPrefetch({ requestId: reqRequery, sessionId: 's2' })
+  await Promise.resolve()
+  clock += 50 // now past deadlineAt before requery resolves
+  pending.get('requery-late:3')!.resolve({
+    epoch: 'e1', revision: 2,
+    result: { status: 'hit', text: 'LATE_REQUERY', partial: false, hits: [{ text: 'LATE_REQUERY', names: ['late'] }] },
+  })
+  const requeryClaim = await requeryClaimPromise
+  assert.equal(requeryClaim.found, true)
+  if (requeryClaim.found) assert.equal(requeryClaim.result.status, 'timeout')
+})
+
+test('late old-epoch attach response does not overwrite newer epoch L2 profile snapshot (P2-3)', async t => {
+  const port = Object.assign(new EventEmitter(), {
+    connected: true,
+    sent: [] as Array<Record<string, unknown>>,
+    send(frame: Record<string, unknown>, cb?: () => void) {
+      this.sent.push(frame)
+      cb?.()
+      return true
+    },
+  })
+  const conn = openPluginOwner({ root: '/tmp/viva-p2-3-test', hostNamespace: 'viva' }, port as unknown as typeof process)
+  t.after(() => conn.close())
+
+  const seenProfiles: Array<{ epoch: string, revision: number, text: string }> = []
+  conn.subscribe(raw => {
+    if (raw && typeof raw === 'object' && (raw as { type?: unknown }).type === 'memory_owner_profile') {
+      const p = raw as { epoch: string, revision: number, text: string }
+      seenProfiles.push({ epoch: p.epoch, revision: p.revision, text: p.text })
+    }
+  })
+
+  const startPromise = conn.start()
+  await new Promise(resolve => setImmediate(resolve))
+  const attachReq = port.sent.find(frame => frame.kind === 'request' && frame.method === 'attach')
+  assert.ok(attachReq && typeof attachReq.id === 'string')
+
+  // Newer epoch-2 state + profile arrive BEFORE the delayed attach response from epoch-1.
+  port.emit('message', { type: 'memory_owner_rpc', kind: 'event', event: ownerState('epoch-2', 4) })
+  port.emit('message', {
+    type: 'memory_owner_rpc', kind: 'event',
+    event: { type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, epoch: 'epoch-2', revision: 4, text: '## 自动整理\n- 新纪元画像' },
+  })
+  // Delayed attach response carrying stale epoch-1 state & profile arrives now.
+  port.emit('message', {
+    type: 'memory_owner_rpc', kind: 'result', id: attachReq.id, ok: true,
+    result: {
+      state: ownerState('epoch-1', 1),
+      profile: { epoch: 'epoch-1', revision: 1, text: '## 自动整理\n- 过期旧纪元画像' },
+    },
+  })
+  await startPromise
+
+  assert.deepEqual(seenProfiles, [{ epoch: 'epoch-2', revision: 4, text: '## 自动整理\n- 新纪元画像' }])
+  // Late subscriber must still receive the epoch-2 profile, not epoch-1!
+  const lateSubscriberProfiles: Array<{ epoch: string, text: string }> = []
+  conn.subscribe(raw => {
+    if (raw && typeof raw === 'object' && (raw as { type?: unknown }).type === 'memory_owner_profile') {
+      const p = raw as { epoch: string, text: string }
+      lateSubscriberProfiles.push({ epoch: p.epoch, text: p.text })
+    }
+  })
+  assert.deepEqual(lateSubscriberProfiles, [{ epoch: 'epoch-2', text: '## 自动整理\n- 新纪元画像' }])
 })

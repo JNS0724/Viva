@@ -9,13 +9,13 @@ import type { AutomaticRecallResult, MemoryRequest } from '../../../src/memory/c
 import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-daily-defaults.ts'
 import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
-import { memoryOwnerProfile, memoryOwnerState, type MemoryProfileSnapshot } from '../../../src/memory/contracts/host.ts'
+import { memoryOwnerChange, memoryOwnerProfile, memoryOwnerState, type MemoryProfileSnapshot } from '../../../src/memory/contracts/host.ts'
 import { dateLine, formatAutomaticRecallMessage, formatMemoryRulesSection, formatProfileContext } from '../../../src/memory/core/memory-context.ts'
 import { looksSecret } from '../../../src/memory/core/memory-sensitive.ts'
 import { resolveMemoryProject } from '../../../src/memory/node/project-scope.ts'
 import { createRequestBudget, APP_WRITE_TIMEOUT_MS, MEMORY_READ_BUDGET_MS } from '../../../src/shared/request-budget.ts'
 import { requestsIn, withoutHeaders } from '../../../src/shared/request-routing/header.ts'
-import { taskRequestsIn, withoutTaskHeaders } from '../../../src/shared/request-routing/task-header.ts'
+import { leadingTaskRequestId, withoutTaskHeaders } from '../../../src/shared/request-routing/task-header.ts'
 import { createManagedDiagnostics } from '../../../src/diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../../../src/diagnostics/node/hub.ts'
 import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort } from '../../../src/diagnostics/node/context.ts'
@@ -31,10 +31,10 @@ import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
 import type {} from './source.ts'
 
 function extractCorrelationRequestId(text: string): string | undefined {
+  const leadingTask = leadingTaskRequestId(text)
+  if (leadingTask) return leadingTask
   const routed = requestsIn(text)
   if (routed.length > 0) return routed[routed.length - 1]!.id
-  const task = taskRequestsIn(text)
-  if (task.length > 0) return task[task.length - 1]!.id
   return undefined
 }
 
@@ -81,11 +81,13 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   const available = () => !lifetime.signal.aborted && owner.ready()
   const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session))
   let cachedProfile: MemoryProfileSnapshot | undefined
+  let currentRevision: number | undefined
   const pendingContextConfirmations = new Map<string, { session: string, turn: number, pushed: Array<{ text: string, names: string[] }> }>()
   let route: { provider: string, model: string } | null = null
   let published: { epoch: string | undefined, provider: string, model: string } | undefined
 
   function acceptProfile(next: MemoryProfileSnapshot) {
+    if (owner.epoch && next.epoch !== owner.epoch) return
     if (cachedProfile && cachedProfile.epoch === next.epoch && next.revision < cachedProfile.revision) return
     cachedProfile = { epoch: next.epoch, revision: next.revision, text: next.text }
   }
@@ -123,14 +125,24 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       acceptProfile({ epoch: profileMsg.data.epoch, revision: profileMsg.data.revision, text: profileMsg.data.text })
       return
     }
+    const changeMsg = memoryOwnerChange.safeParse(raw)
+    if (changeMsg.success) {
+      if (owner.epoch && changeMsg.data.epoch === owner.epoch
+        && (currentRevision === undefined || changeMsg.data.revision > currentRevision)) {
+        currentRevision = changeMsg.data.revision
+      }
+      return
+    }
     const message = memoryOwnerState.safeParse(raw)
     if (!message.success) return
-    const { epoch, state } = message.data
+    const { epoch, state, revision } = message.data
     if (state !== 'ready') {
       readyEpoch = undefined
+      currentRevision = undefined
       connection.reconciled?.(epoch, false)
       return
     }
+    currentRevision = revision
     if (epoch === readyEpoch) return
     readyEpoch = epoch
     connection.reconciled?.(epoch, true)
@@ -169,31 +181,17 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     })
   })
 
-  async function resolveRecallForMessage(
+  async function resolveFallbackRecall(
     sessionId: string,
     cwd: string | null | undefined,
     turn: number,
     msg: { id: string, text: string },
+    requestId: string | undefined,
     stepDeadlineAt: number,
     signal: AbortSignal,
-  ): Promise<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult }> {
-    const requestId = extractCorrelationRequestId(msg.text)
+  ): Promise<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult, epoch?: string, revision?: number }> {
     const remaining = () => Math.max(0, stepDeadlineAt - Date.now())
-
-    // Step 1: Claim host prefetch by exact (requestId, sessionId) when running under Viva host.
-    if (connection.claimPrefetch && requestId) {
-      try {
-        const claimBudget = Math.max(1, remaining() + 50)
-        const claimed = await connection.claimPrefetch({ requestId, sessionId }, { signal, budgetMs: claimBudget })
-        if (claimed.found) return { msg, requestId, result: claimed.result }
-      } catch (error) {
-        if (signal.aborted) return { msg, requestId, result: { status: 'timeout' } }
-        if (!available()) return { msg, requestId, result: { status: 'unavailable' } }
-        report(error)
-      }
-    }
-
-    // Step 2: Fallback live short-budget recall (standalone DSH or genuinely un-prefetched delivery).
+    // Fallback live short-budget recall (standalone DSH or genuinely un-prefetched delivery).
     if (!available()) return { msg, requestId, result: { status: 'unavailable' } }
     const cleanQuery = withoutTaskHeaders(withoutHeaders(msg.text))
     if (!config.host && (!cleanQuery.trim() || looksSecret(cleanQuery))) {
@@ -202,19 +200,91 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const left = remaining()
     if (left <= 0) return { msg, requestId, result: { status: 'timeout' } }
     const budget = createRequestBudget(left, signal)
+    const startEpoch = owner.epoch
+    const startRevision = currentRevision
     try {
       const result = await budget.run(() => owner.call('automaticRecall', [
         { session: sessionId, turn, question: config.host ? '' : cleanQuery },
         cwd,
         config.host ? [msg] : undefined,
       ], { signal: budget.signal, budgetMs: budget.remainingMs() }))
-      return { msg, requestId, result }
+      return { msg, requestId, result, epoch: startEpoch, revision: startRevision }
     } catch (error) {
       if (signal.aborted) return { msg, requestId, result: { status: 'timeout' } }
       if (!available()) return { msg, requestId, result: { status: 'unavailable' } }
       if (!budget.signal.aborted) report(error)
       return { msg, requestId, result: { status: 'timeout' } }
     } finally { budget.close() }
+  }
+
+  async function resolveRecallForMessages(
+    sessionId: string,
+    cwd: string | null | undefined,
+    turn: number,
+    messages: ReadonlyArray<{ id: string, text: string }>,
+    stepDeadlineAt: number,
+    signal: AbortSignal,
+  ): Promise<Array<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult }>> {
+    const remaining = () => Math.max(0, stepDeadlineAt - Date.now())
+    const items = messages.map(msg => ({ msg, requestId: extractCorrelationRequestId(msg.text) }))
+    const prefetchedIndices: number[] = []
+    const prefetchedIds: string[] = []
+    for (let i = 0; i < items.length; i++) {
+      const id = items[i]!.requestId
+      if (id && (connection.claimPrefetchBatch || connection.claimPrefetch)) {
+        prefetchedIndices.push(i)
+        prefetchedIds.push(id)
+      }
+    }
+
+    const claimedByIndex = new Map<number, { result: AutomaticRecallResult, epoch?: string, revision?: number }>()
+    if (prefetchedIds.length > 0) {
+      const left = remaining()
+      if (left <= 0) {
+        for (const index of prefetchedIndices) claimedByIndex.set(index, { result: { status: 'timeout' } })
+      } else {
+        try {
+          const claims = connection.claimPrefetchBatch
+            ? await connection.claimPrefetchBatch({ requestIds: prefetchedIds, sessionId }, { signal, budgetMs: left })
+            : await Promise.all(prefetchedIds.map(requestId =>
+                connection.claimPrefetch!({ requestId, sessionId }, { signal, budgetMs: left })))
+          for (let i = 0; i < prefetchedIndices.length; i++) {
+            const claim = claims[i]
+            if (claim?.found) {
+              claimedByIndex.set(prefetchedIndices[i]!, { result: claim.result, epoch: claim.epoch, revision: claim.revision })
+            }
+          }
+        } catch (error) {
+          const fallbackStatus: AutomaticRecallResult = signal.aborted
+            ? { status: 'timeout' }
+            : !available() ? { status: 'unavailable' } : { status: 'timeout' }
+          if (!signal.aborted && available()) report(error)
+          for (const index of prefetchedIndices) claimedByIndex.set(index, { result: fallbackStatus })
+        }
+      }
+    }
+
+    const resolved = await Promise.all(items.map(async ({ msg, requestId }, index) => {
+      const claimed = claimedByIndex.get(index)
+      if (claimed) return { msg, requestId, ...claimed }
+      return resolveFallbackRecall(sessionId, cwd, turn, msg, requestId, stepDeadlineAt, signal)
+    }))
+
+    // Final adoption-time version guard across all messages in the step.
+    const liveEpoch = owner.epoch
+    const liveRevision = currentRevision
+    return resolved.map(({ msg, requestId, result, epoch, revision }) => {
+      if (result.status === 'hit') {
+        if (!available()) return { msg, requestId, result: { status: 'unavailable' as const } }
+        if (epoch !== undefined && liveEpoch !== undefined && epoch !== liveEpoch) {
+          return { msg, requestId, result: { status: 'timeout' as const } }
+        }
+        if (revision !== undefined && liveRevision !== undefined && revision !== liveRevision) {
+          return { msg, requestId, result: { status: 'timeout' as const } }
+        }
+      }
+      return { msg, requestId, result }
+    })
   }
 
   ctx.on('agent/pre-step', async ({ agent, turn, signal, modelSelection }, next) => {
@@ -229,9 +299,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
 
     const sessionId = String(agent.session.id)
     const stepDeadlineAt = Date.now() + DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs
-    const resolved = await Promise.all(
-      messages.map(msg => resolveRecallForMessage(sessionId, agent.session.header.cwd, turn, msg, stepDeadlineAt, signal)),
-    )
+    const resolved = await resolveRecallForMessages(sessionId, agent.session.header.cwd, turn, messages, stepDeadlineAt, signal)
     if (signal.aborted) return decision
 
     // Append L3 recall messages in original message order [A, B, ...] without modifying prior turns' nodes.

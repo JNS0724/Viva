@@ -23,6 +23,8 @@ import type { MemoryDocumentReadBatch, MemoryDocumentView } from './memory-docum
 import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy, fileDependency } from './memory-document-read-policy.ts'
 import { documentSourceProofCurrent } from './memory-source-proof.ts'
 import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
+import { stripTrustedMemoryLinks } from './memory-dream-material.ts'
+import { memoryDocumentLinks } from './memory-dream-tools.ts'
 import type { DreamCalculate } from './memory-dream-jobs.ts'
 import { guardDiagnosticPort, NO_DIAGNOSTICS, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
 import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
@@ -55,7 +57,7 @@ export const MAX_DEEP_RECALL_CHARS = 12000
 const USER = { kind: 'user' } as const
 type FileProfileScope = { kind: 'user' } | { kind: 'project', id: string }
 type Origin = { conversation: string | null, session: string | null, scope?: MemoryScope, context?: MemoryScope, project?: Extract<FileProfileScope, { kind: 'project' }>, foregroundTurn?: string, turn?: string }
-type AnswerSource = { question: string, requestId: string, questionId: string, custom?: true }
+type AnswerSource = { question: string, requestId: string, questionId: string, custom?: true, questionAt?: number }
 type Receipt = { sourceId: string, outcome: string }
 type MemoryInterval = { from: number | null, to: number | null }
 type Route = { provider: string, model: string }
@@ -115,6 +117,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       scope: origin.scope ?? USER, context: origin.context ?? origin.project ?? origin.scope ?? USER, project: origin.project ?? null, author, text: denied ? null : text, hash,
       length: denied ? 0 : text.length,
       question: answer && !denied ? answer.question.slice(0, 1000) : null,
+      questionAt: answer && !denied ? (answer.questionAt ?? null) : null,
       requestId: answer?.requestId ?? null, questionId: answer?.questionId ?? null,
       at: captured?.at ?? now(), timezone: captured?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       outcome: denied ? 'rejected' : 'received',
@@ -170,14 +173,31 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function documentVisibilityChanged() {
     store.nextRevision()
   }
+  function trustedEditLocators(workspace: string, beforeMarkdown?: string): string[] {
+    if (!beforeMarkdown) return []
+    const known = new Set<string>()
+    for (const note of notes?.storage.allocations() ?? []) if (note.workspace === workspace) known.add(note.path)
+    for (const reg of notes?.storage.registered() ?? []) if (reg.workspace === workspace) known.add(reg.path)
+    for (const doc of documents?.fileRegistry(workspace) ?? []) known.add(doc.path)
+    const trusted: string[] = []
+    for (const link of memoryDocumentLinks(beforeMarkdown)) {
+      const targetPath = link.split('#')[0]!
+      if (known.has(targetPath)
+        || /^daily\/\d{4}-\d{2}-\d{2}\/note-[a-f0-9]{64}\.md$/u.test(targetPath)
+        || /^digest\/(?:personal|procedure|wiki)\/manual-[a-f0-9]{64}\.md$/u.test(targetPath)) {
+        trusted.push(targetPath)
+      }
+    }
+    return trusted
+  }
   documents = resources.openDocuments(id => fileSourceCurrent(id), () => {
     store.nextRevision()
   }, {
     managementCurrent: (before, guard, after, staged) => filePolicy?.managementCurrent(before, guard.policyToken, after, staged) === true,
-    manualCurrent: source => !closed && source.author === 'manual' && source.id === source.operation
+    manualCurrent: (source, beforeMarkdown) => !closed && source.author === 'manual' && source.id === source.operation
       && !store.readSource(source.id)
-      && source.text !== null && source.length === source.text.length && source.hash === memoryHash(source.text) && !looksSecret(source.text)
-      ,
+      && source.text !== null && source.length === source.text.length && source.hash === memoryHash(source.text)
+      && !looksSecret(stripTrustedMemoryLinks(source.text, trustedEditLocators(resources.sourceWorkspace(source), beforeMarkdown))),
     index: indexChanges, deferRecovery: true })
   const notes = createMemoryNoteJobs({
     store, effects, now, diagnostics, capture: Boolean(dailyNotes), openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, { onCommitted: documentVisibilityChanged, index: indexChanges, deferRecovery: true }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
@@ -836,7 +856,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         const sourceText = title ? `${title}\n${body}` : body
         if (!unchanged) {
           if (!body.trim() || body.length > MAX_MESSAGE_CHARS) throw domainError('invalid.text')
-          if (looksSecret(sourceText)) throw domainError('credentials')
+          const inspectedSourceText = stripTrustedMemoryLinks(sourceText, trustedEditLocators(workspace, target?.markdown))
+          if (looksSecret(inspectedSourceText)) throw domainError('credentials')
           if (/[\u0000\uD800-\uDFFF]/u.test(body) || title && /[\u0000\r\n\uD800-\uDFFF]/u.test(title)) throw domainError('invalid.text')
         }
         const isProfileTarget = Boolean(target && isResidentProfileIdentity(workspace, target.path, userWorkspace))
@@ -885,7 +906,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         ? notes.storage.deleteFile(view.workspace, view.daily.allocation.key, view.daily.allocation.revision)
         : documents.deleteFile(view.workspace, view.id, view.usageVersion)
       if (!view.daily && isResidentProfileIdentity(view.workspace, view.path, userWorkspace)) {
-        store.setMeta('profile_deleted_at', String(now()))
+        const prevRaw = store.meta('profile_deleted_at')
+        const prev = prevRaw === undefined ? null : Number(prevRaw)
+        const nextWatermark = prev !== null && Number.isFinite(prev) ? Math.max(prev, now()) : now()
+        store.setMeta('profile_deleted_at', String(nextWatermark))
       }
       store.nextRevision()
       // Deleting the last daily file also removes its workspace from catalog discovery.

@@ -76,7 +76,7 @@ test('automatic recall times out without interrupting the request', { timeout: D
   let lostReceiptBudget: number | undefined
   t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
     const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
-    if (frame?.kind === 'request' && frame.method === 'claimPrefetch') {
+    if (frame?.kind === 'request' && (frame.method === 'claimPrefetch' || frame.method === 'claimPrefetchBatch')) {
       lookup = true
       lostReceiptBudget = frame.budgetMs
       return true // Simulate hung host prefetch claim.
@@ -95,7 +95,7 @@ test('automatic recall times out without interrupting the request', { timeout: D
   })
   await ask('照常回复这一条消息')
   assert.ok(admitted && lookup)
-  assert.ok(lostReceiptBudget !== undefined && lostReceiptBudget <= DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs + 50)
+  assert.ok(lostReceiptBudget !== undefined && lostReceiptBudget <= DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
   assert.equal(extraSessionReads, 0)
   assert.match(replies(events).join(''), /照常回复这一条消息/)
   assert.doesNotMatch(JSON.stringify(llm.requests), /injection-receipt-test/)
