@@ -2661,14 +2661,6 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
         }
         return defaultRead(workspace, filePath, signal)
       },
-      readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-        if (noBatch && armCheckpointR && filePath === 'digest/wiki/doc-r.md') {
-          armCheckpointR = false
-          fs.renameSync(d1RAbs, d1RBackup)
-          ineligibleR.add(d0RSourceId)
-        }
-        return defaultRead(workspace, filePath)
-      },
     })
     const d0R = hR.addDailyNote([{ text: `旧摘要来源：宁波机房配置 (${noBatch})` }], { session: `s-r15-r0-${noBatch}`, day: '2026-11-15' })
     d0RSourceId = d0R.sources[0]!.id
@@ -2687,6 +2679,18 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
     d1RPath = d1R.path
     d1RAbs = path.join(hR.store.fileRoot, d1R.workspace, d1R.path)
     d1RBackup = `${d1RAbs}.moved`
+    if (noBatch) {
+      // Trigger move + dependency ineligibility at the very start of checkpointTargets (BEFORE classifyObservedRefs checks eligibility!).
+      const origNoteRegR = hR.notes.noteRegistration
+      hR.notes.noteRegistration = key => {
+        if (armCheckpointR && key === d1R.key) {
+          armCheckpointR = false
+          fs.renameSync(d1RAbs, d1RBackup)
+          ineligibleR.add(d0RSourceId)
+        }
+        return origNoteRegR(key)
+      }
+    }
     let modelCallsR = 0
     hR.setModel(async request => {
       modelCallsR++
