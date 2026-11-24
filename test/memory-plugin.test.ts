@@ -130,7 +130,8 @@ test('trusted source aliases retain exact user evidence and refuse reused operat
 })
 
 test('memory_remember saves exact current user evidence directly into a file', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { call, ask, events } = await setupMemory(t)
+  const { call, ask, events, llm } = await setupMemory(t)
+  await call('setProfile', { args: [{ role: 'profile-across-tool-steps' }, randomUUID()] })
   const text = '周报每周五提交，客户故障时另行确认。'
   await ask(`记住：${text}`)
   const files = await call('listFiles', { args: [{ kind: 'digest' }] })
@@ -139,6 +140,13 @@ test('memory_remember saves exact current user evidence directly into a file', {
   const detail = await call('readFile', { args: [saved.identity] })
   assert.ok(detail)
   assert.ok(detail.markdown.includes(text))
+  const continuation = (llm.requests as ModelRequest[]).find(request =>
+    request.messages.some(message => JSON.stringify(message.content).includes('tool_result'))
+    && request.messages.some(message => JSON.stringify(message.content).includes('profile-across-tool-steps')))
+  assert.ok(continuation, 'the model continued after executing the memory tool')
+  const latestContext = continuation.messages.findLast(message => JSON.stringify(message.content).includes('current session')
+    || JSON.stringify(message.content).includes('Current runtime context: none'))
+  assert.match(JSON.stringify(latestContext), /profile-across-tool-steps/)
   assert.equal(detail.sources.length, 1)
   assert.equal(detail.sources[0]?.namespace, 'canonical')
 })

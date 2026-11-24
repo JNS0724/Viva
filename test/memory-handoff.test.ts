@@ -1,3 +1,5 @@
+import { ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
+import { objectOf } from '../src/shared/unknown-value.ts'
 import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -1426,6 +1428,27 @@ test('schedule assertions find the matching result before a trailing runtime not
 })
 
 test('a generated task brief stays derived while the answer keeps its task scope and history identity', { timeout: 30_000 }, async t => {
+  let answerRequest: string | undefined
+  let withheldReceipt = false
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
+        const frame = ownerRpcFrame(raw)
+        if (frame?.kind === 'request' && frame.method === 'host' && objectOf(frame.input)?.method === 'acceptQuestionAnswer') {
+          answerRequest = frame.id
+        }
+        return Reflect.apply(send, this, [raw, ...rest]) as boolean
+      })
+    }
+    const frame = event === 'message' ? ownerRpcFrame(args[0]) : null
+    if (frame?.kind === 'result' && frame.id === answerRequest && frame.ok) {
+      withheldReceipt = true
+      return true
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
   const brief = '确认工作城市后整理背景任务'
   const app = await setup(t, request => {
     if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
@@ -1447,6 +1470,7 @@ test('a generated task brief stays derived while the answer keeps its task scope
     assert.equal(memory.prepare("SELECT 1 FROM memory_sources WHERE author='user' AND session=? AND text=?").get(event.taskId, brief), undefined)
     const source = await eventually(() => memory.prepare("SELECT id,conversation,context FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer)))
     assert.ok(source, 'The canonical answer identity survives automatic source compaction')
+    assert.ok(withheldReceipt, 'the task completed and the answer was stored without a host receipt')
     assert.deepEqual(JSON.parse(String(source.context)), { kind: 'task', id: event.taskId })
     assert.equal(history.prepare('SELECT text FROM messages WHERE conversation_id=? AND source_id=?').get(source.conversation, source.id)?.text, answer)
   } finally { memory.close(); history.close() }

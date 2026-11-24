@@ -232,6 +232,28 @@ test('a replacement owner cannot drop a persisted host binding to bypass cleanup
 
 
 
+test('a live miss leaves the authenticated original available to durable replay', async t => {
+  const { owner, root } = fixture(t, 'viva')
+  await owner.recover()
+  const text = '我的周报每周三交', wireText = '[request]' + text
+  const input = source({ text: wireText }), session = input.sessionId, sourceId = randomUUID()
+  assert.equal((await owner.receiveSource({ ...input, live: true })).handledIntent, true)
+  assert.equal(owner.intakeQuery(session, undefined, [{ id: input.messageId, text: wireText }]), '')
+  await owner.handleHost('sourceAlias', { session, conversation: session, text, wireText, operationId: randomUUID(), sourceId })
+  assert.equal(owner.intakeQuery(session, undefined, [{ id: input.messageId, text: wireText }]), text)
+  for (let i = 0; i < 2; i++) assert.equal((await owner.receiveSource({ ...input, live: false })).sourceId, sourceId)
+  const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true })
+  try {
+    assert.equal(db.prepare('SELECT text FROM memory_sources WHERE id=?').get(sourceId)?.text, text)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_aliases').get()?.n, 0)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_skip_assistant').get()?.n, 0)
+    const other = source({ sessionId: session, text: 'unverified wire text', live: false })
+    assert.equal((await owner.receiveSource(other)).handledIntent, true)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_sources').get()?.n, 1)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_skip_assistant').get()?.n, 1)
+  } finally { db.close() }
+})
+
 test('credential-bearing originals and undelivered aliases never persist plaintext in owner receipts', async t => {
   const { owner, root } = fixture(t); await owner.recover()
   const secret = 'password: dummy-review-secret'

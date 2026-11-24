@@ -8,12 +8,18 @@ export function lockMemoryRoot(input: string) {
   const root = realpathSync(input)
   for (const name of ['owner.lock.sqlite', 'memory.db', 'memory-files']) {
     const file = path.join(root, name)
-    if (existsSync(file) && lstatSync(file).isSymbolicLink()) throw new Error('Memory storage cannot be a symlink')
+    if (existsSync(file) && lstatSync(file).isSymbolicLink()) throw Object.assign(new Error('Memory storage cannot be a symlink'), { code: 'denied' })
   }
   const db = new DatabaseSync(path.join(root, 'owner.lock.sqlite'))
   try {
     db.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=DELETE; CREATE TABLE IF NOT EXISTS owner (id INTEGER PRIMARY KEY); BEGIN IMMEDIATE')
-  } catch (error) { db.close(); throw new Error('Memory root already has an active owner', { cause: error }) }
+  } catch (error) {
+    db.close()
+    if (error instanceof Error && 'errcode' in error && typeof error.errcode === 'number' && [5, 6].includes(error.errcode & 255)) {
+      throw Object.assign(new Error('Memory root already has an active owner', { cause: error }), { code: 'busy' })
+    }
+    throw error
+  }
   let closed = false
   return { root, close() { if (!closed) { closed = true; db.exec('ROLLBACK'); db.close() } } }
 }

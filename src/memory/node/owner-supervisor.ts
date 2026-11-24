@@ -65,6 +65,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
   let restartTimer: ReturnType<typeof setTimeout> | undefined
   let closePromise: Promise<void> | undefined
   let startFailures = 0
+  let terminalFailure: Error | undefined
   let previousEpoch: string | undefined
   let preserveActiveTurns = false
 
@@ -80,7 +81,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
   }
 
   function scheduleRestart() {
-    if (closing || !started || restartTimer) return
+    if (closing || !started || restartTimer || terminalFailure) return
     const delay = Math.min(5_000, 250 * 2 ** Math.min(startFailures, 5))
     emitDiagnostic({ event: 'retry.scheduled', operation: 'memory.owner', stage: 'recovering', reason: 'process_exited',
       identities: { ownerEpoch: previousEpoch }, metrics: { retryDelayMs: delay } })
@@ -100,6 +101,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
   let launching: Promise<void> | undefined
   function start(): Promise<void> {
     if (closing) return Promise.reject(new Error('Memory owner supervisor is closed'))
+    if (terminalFailure) return Promise.reject(terminalFailure)
     started = true
     if (restartTimer) { clearTimeout(restartTimer); restartTimer = undefined }
     if (launching) return launching
@@ -111,6 +113,11 @@ export function createMemoryOwnerSupervisor(options: Options) {
         const instance = spawn()
         await instance.ready
       } catch (error) {
+        const reason = safeDiagnosticReason(error)
+        if (error instanceof Error && ['unknown_version', 'denied', 'invalid_record', 'EACCES', 'EPERM', 'ENOTDIR', 'EISDIR'].includes(reason)) {
+          terminalFailure = error
+        }
+        emitDiagnostic({ event: 'health', operation: 'memory.owner', stage: 'unavailable', reason })
         startFailures++
         scheduleRestart()
         throw error
@@ -215,7 +222,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
       emitDiagnostic({ event: 'process.exit', operation: 'memory.owner',
         reason: closing ? 'normal' : 'process_exited', identities: { ownerEpoch: instance.epoch } })
       reaped()
-      scheduleRestart()
+      if (!launching) scheduleRestart()
     })
     return instance
   }
@@ -271,7 +278,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
       if (snapshot) listener(snapshot)
       return () => { listeners.delete(listener) }
     },
-    status: () => snapshot?.state ?? 'recovering',
+    status: () => terminalFailure ? 'unavailable' as const : snapshot?.state ?? 'recovering',
     epoch: () => snapshot?.epoch,
     pid: () => current?.child.pid,
     state: () => snapshot,

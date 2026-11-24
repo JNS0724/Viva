@@ -43,7 +43,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   const expectedColumns = ['id', 'workspace', 'path', 'revision', 'usage_version', 'enabled', 'forgotten', 'sources']
   if ((version !== 0 && version !== MEMORY_CONTRACT)
     || (existingColumns.length > 0 && !isDeepStrictEqual(existingColumns, expectedColumns))) {
-    throw new Error('memory.db has an incompatible contract version')
+    throw Object.assign(new Error('memory.db has an incompatible contract version'), { code: 'unknown_version' })
   }
   db.exec(`PRAGMA secure_delete=ON;
     CREATE TABLE IF NOT EXISTS memory_documents (

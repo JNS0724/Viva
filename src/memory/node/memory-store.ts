@@ -39,7 +39,7 @@ export function openMemoryStore(file: string, now = Date.now) {
   try {
     const version = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
     if (version !== MEMORY_CONTRACT && (version !== 0 || db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table'").get())) {
-      throw new Error('memory.db has an incompatible contract version')
+      throw Object.assign(new Error('memory.db has an incompatible contract version'), { code: 'unknown_version' })
     }
     db.exec(APP_DB_PRAGMAS)
     if (version === 0) transaction(db, () => {

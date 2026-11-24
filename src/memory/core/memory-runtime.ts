@@ -731,7 +731,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (fileRetrieval && request.op === 'context') {
       if (!current()) return ''
       if (!request.question.trim() || looksSecret(request.question)) return fileContext(request, null)
-      const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs, signal)
+      const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticSearchBudgetMs, signal)
       const batch = filePolicy?.readBatch(budget.signal)
       return budget.run(() => fileRetrieval.search({
         query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128,

@@ -62,7 +62,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const diagnostics = guardDiagnosticPort(options.diagnostics)
   const db = store.db
   const boundHost = store.meta('owner.host')
-  if (boundHost && boundHost !== options.hostNamespace) throw new Error('Memory root belongs to a different host binding')
+  if (boundHost && boundHost !== options.hostNamespace) throw Object.assign(new Error('Memory root belongs to a different host binding'), { code: 'denied' })
   if (options.hostNamespace && !boundHost) store.setMeta('owner.host', options.hostNamespace)
   const hash = (value: unknown) => createHmac('sha256', store.meta('secret')!).update(JSON.stringify(value)).digest('hex')
   db.exec(`
@@ -230,6 +230,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const sourceId = known ? String(known.source) : mapped?.sourceId ?? message
       const ignored = !scoped || Boolean(options.hostNamespace && !mapped)
       const kind = known?.kind ?? (ignored ? 'ignored' : mapped?.origin === 'derived' || input.derived ? 'derived' : 'original')
+      // The durable session replay gets a second chance to match an authenticated host mapping.
+      if (input.live === true && !known && scoped && options.hostNamespace && !mapped) {
+        return { sourceId, text: '', handledIntent: true }
+      }
       if ((!scoped || kind !== 'original') && input.turn > 0) {
         db.prepare('INSERT OR IGNORE INTO owner_skip_assistant VALUES (?,?)').run(session, input.turn)
       }
