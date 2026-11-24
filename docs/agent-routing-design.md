@@ -27,7 +27,7 @@ Requests often need different destinations. "Make today's briefing, then analyze
 
 | Not done | Why |
 | --- | --- |
-| A separate index or database for routing items | Chat search, memory retrieval, and compaction already supply context. The [memory system](memory-design.md) owns its local semantic index |
+| A separate index or database for routing items | Chat search, memory retrieval, and compaction already supply context. The [memory system](memory-owner-isolation.md) owns its local semantic index |
 | Task queues and automatic dependencies | At most 5 tasks run at once; when all are taken, the user is told |
 | Interrupting the current answer for an interjection | DSH can only cancel a whole turn, and output from the next turn never reaches the window; the fast lane already shows where an interjection went within seconds |
 | Withdrawing a sent addition, rolling back a task's changes, task snapshots | These need new DSH or task interfaces; damage is limited by visible handovers, stops, and corrections (9.5) |

@@ -4,8 +4,6 @@ English | [简体中文](system-design.zh-CN.md)
 
 **Memory availability.** Memory runs in a supervised sidecar. Foreground conversations, background tasks, their reports, and schedules can continue when memory is unavailable. Deleting or editing chat history changes only the local timeline. See [memory owner isolation](memory-owner-isolation.md).
 
-> The process split is based on PR #132 (`82a5bf3`, 2026-11-10); memory responsibilities, storage and plugin boundaries were checked against local commit `3085bad` on 2026-11-17. This is a local implementation snapshot: this round's PR CI has not run, and the snapshot does not imply a merge or completion of all delivery acceptance. The split's plan and implementation notes remain in git history; the later module-by-module work is recorded in the [architecture cleanup](architecture-health.md).
-
 ## 1. Overview
 
 Viva is a desktop AI assistant: an Electron app whose conversations are driven by embedded dsh (DeepSeek Harness) over ACP. The 2026-11 refactor split it into two processes, so the backend can evolve on its own and later move to the cloud.
@@ -260,7 +258,7 @@ The tests that keep these boundaries:
 - `test/backend-wire.test.ts`, `test/backend-keeper.test.ts`: call order, the token, answers waiting for pushes, backend restart and giving up.
 - The memory smoke group kills the backend process, then checks that a new backend is up, the conversation is still there, and the next question is answered. The packaged app runs this group too.
 
-`npm test` discovers the full test collection; CI runs unit tests and full smoke on macOS and Windows. For quick feedback while changing one part, `npm run test:feature -- <group>` runs that part's tests (`conversation`, `runtime`, `tasks`, `architecture`; `--list` shows the files); the full suite stays the gate. The [architecture cleanup](architecture-health.md) records the 2026-11-06 responsibility audit and the modules taken out of `compose.ts` and `app.ts` since.
+Run the full suite with `npm test`, or select a group with `npm run test:feature -- <group>`. The [development guide](development.md#tests) lists the checks for pull requests, daily builds, and releases.
 
 ## 10. Known limits and direction
 
