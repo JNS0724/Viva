@@ -73,8 +73,12 @@ export function createMemoryPrefetchManager({
   let latestProfile: MemoryProfileSnapshot | undefined
   const entries = new Map<string, PrefetchEntry>()
   const deliveryTerminals = new Map<string, DeliveryTerminal>()
+  const refreshable = new Map<string, PrefetchEntry>()
 
   function cleanupExpired(at = now()) {
+    for (const [key, entry] of refreshable) {
+      if (entry.deadlineAt <= at) refreshable.delete(key)
+    }
     for (const [key, entry] of entries) {
       if (entry.settled && entry.expiresAt <= at) {
         const status = entry.result?.status
@@ -368,8 +372,29 @@ export function createMemoryPrefetchManager({
     sessionId: string
     signal?: AbortSignal
   }): Promise<ClaimPrefetchResult> {
-    const { claim } = await claimSingleInternal(requestId, sessionId, signal)
+    const { claim, entry } = await claimSingleInternal(requestId, sessionId, signal)
+    if (claim.found && claim.result.status === 'hit' && entry && !entry.requeried && entry.deadlineAt > now()) {
+      refreshable.set(entry.key, entry)
+    }
     return claim
+  }
+
+  /** Perform at most one bounded refresh on the host using the original verified query/scope/deadline. */
+  async function refreshPrefetch({ requestId, sessionId, signal }: {
+    requestId: string
+    sessionId: string
+    signal?: AbortSignal
+  }): Promise<ClaimPrefetchResult> {
+    const key = prefetchKey(sessionId, requestId)
+    const entry = refreshable.get(key)
+    refreshable.delete(key)
+    if (!entry || entry.requeried || signal?.aborted) {
+      return { found: true, result: { status: 'timeout' } }
+    }
+    const remaining = entry.deadlineAt - now()
+    if (remaining <= 0) return { found: true, result: { status: 'timeout' } }
+    const retried = await runRequeryOnce(entry, remaining, signal)
+    return { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }
   }
 
   /** Claim multiple messages in the same step in parallel and verify every hit against live version before adoption. */
@@ -409,6 +434,7 @@ export function createMemoryPrefetchManager({
       entries.delete(key)
     }
     deliveryTerminals.delete(key)
+    refreshable.delete(key)
   }
 
   function clearSession(sessionId: string) {
@@ -423,6 +449,9 @@ export function createMemoryPrefetchManager({
     for (const key of deliveryTerminals.keys()) {
       if (key.startsWith(prefix)) deliveryTerminals.delete(key)
     }
+    for (const key of refreshable.keys()) {
+      if (key.startsWith(prefix)) refreshable.delete(key)
+    }
   }
 
   function close() {
@@ -432,13 +461,14 @@ export function createMemoryPrefetchManager({
     }
     entries.clear()
     deliveryTerminals.clear()
+    refreshable.clear()
   }
 
   return {
     onState, onChange, onProfile, onUnavailable,
     acceptProfile,
     profile: (): MemoryProfileSnapshot | undefined => latestProfile,
-    startPrefetch, claimPrefetch, claimPrefetchBatch, cancelPrefetch, clearSession, cleanupExpired, close,
+    startPrefetch, claimPrefetch, claimPrefetchBatch, refreshPrefetch, cancelPrefetch, clearSession, cleanupExpired, close,
   }
 }
 export type MemoryPrefetchManager = ReturnType<typeof createMemoryPrefetchManager>

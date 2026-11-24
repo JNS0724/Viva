@@ -1504,13 +1504,15 @@ test('pre-deletion question with clock rollback is blocked by profile_deletion_g
   assert.equal(owner.runtime.profileDeletionGeneration(), 1)
   assert.equal(Number(store.meta('profile_deleted_at')), TODAY_MS + 5_000)
 
-  // User answers three questions AFTER deletion (all get seq > deletedSeq and at > watermark, with questionCurrent: true & empty deps!):
+  // User answers four questions AFTER deletion (all get seq > deletedSeq and at > watermark, with questionCurrent: true & empty deps!):
   // 1) old generation (gen=0 < 1, questionAt > watermark due to rollback) -> MUST BE BLOCKED
   // 2) missing generation (gen=undefined, questionAt > watermark due to rollback) -> MUST BE BLOCKED (fail closed)
-  // 3) current generation (gen=1 >= 1) -> MUST BE ALLOWED
+  // 3) current generation (gen=1 >= 1) with questionAt = watermark - 1 -> MUST BE BLOCKED (R5 P1-1)
+  // 4) current generation (gen=1 >= 1) with questionAt > watermark -> MUST BE ALLOWED
   clock = TODAY_MS + 6_000
   const oldGenId = randomUUID()
   const missingGenId = randomUUID()
+  const preWatermarkCurrentGenId = randomUUID()
   const currentGenId = randomUUID()
   owner.runtime.accept(
     '旧代回答：我喜欢要点回复',
@@ -1527,32 +1529,41 @@ test('pre-deletion question with clock rollback is blocked by profile_deletion_g
     { deferAutomatic: true, at: clock + 1, timezone: 'UTC' },
   )
   owner.runtime.accept(
+    '当前代但时间早于水位回答：请优先给代码',
+    { conversation: session, session, scope: { kind: 'user' }, context: { kind: 'user' } },
+    preWatermarkCurrentGenId,
+    { question: '早于删除水位1ms的问题（gen=1）', requestId: 'req-q2b', questionId: 'q2b', custom: true, questionAt: TODAY_MS + 5_000 - 1, questionProfileGen: 1 },
+    { deferAutomatic: true, at: clock + 2, timezone: 'UTC' },
+  )
+  owner.runtime.accept(
     '当前代回答：请用简洁专业口吻',
     { conversation: session, session, scope: { kind: 'user' }, context: { kind: 'user' } },
     currentGenId,
-    { question: '删除后的新问题（gen=1）', requestId: 'req-q3', questionId: 'q3', custom: true, questionAt: clock + 2, questionProfileGen: 1 },
-    { deferAutomatic: true, at: clock + 2, timezone: 'UTC' },
+    { question: '删除后的新问题（gen=1）', requestId: 'req-q3', questionId: 'q3', custom: true, questionAt: clock + 3, questionProfileGen: 1 },
+    { deferAutomatic: true, at: clock + 3, timezone: 'UTC' },
   )
   const oldGenRow = store.readSource(oldGenId)!
   const missingGenRow = store.readSource(missingGenId)!
+  const preWatermarkCurrentGenRow = store.readSource(preWatermarkCurrentGenId)!
   const currentGenRow = store.readSource(currentGenId)!
   assert.equal(oldGenRow.questionProfileGen, 0)
   assert.equal(missingGenRow.questionProfileGen, null)
+  assert.equal(preWatermarkCurrentGenRow.questionProfileGen, 1)
   assert.equal(currentGenRow.questionProfileGen, 1)
 
   const notes = openMemoryNotes(store, () => true)
   const noteKey = notes.add(
-    session, '2026-11-16', [oldGenRow, missingGenRow, currentGenRow], '好的', oldGenId, [], '好的',
+    session, '2026-11-16', [oldGenRow, missingGenRow, preWatermarkCurrentGenRow, currentGenRow], '好的', oldGenId, [], '好的',
     { questionSources: [], questionCurrent: true },
   )!
   const rows = notes.pending(noteKey, 10)
-  assert.equal(notes.commit(noteKey, rows, { status: 'write', title: 'Answer Note', markdown: '回答汇总' }, 1, clock + 2, notes.snapshot([oldGenId, missingGenId, currentGenId]), undefined), true)
-  const effects = createEffects({ db: store.db, now: () => clock + 2 })
+  assert.equal(notes.commit(noteKey, rows, { status: 'write', title: 'Answer Note', markdown: '回答汇总' }, 1, clock + 3, notes.snapshot([oldGenId, missingGenId, preWatermarkCurrentGenId, currentGenId]), undefined), true)
+  const effects = createEffects({ db: store.db, now: () => clock + 3 })
   defer(() => effects.close())
 
   const seen = new Map<string, { question: string | null, questionUnavailable: boolean }>()
   const jobs = createMemoryDreamJobs({
-    store, notes, documents, effects, now: () => clock + 2, transaction: store.tx,
+    store, notes, documents, effects, now: () => clock + 3, transaction: store.tx,
     identity: { newId: randomUUID, hash: memoryHash },
     readable: () => true, eligible: () => true,
     source: id => store.readSource(id) ?? undefined,
@@ -1573,7 +1584,8 @@ test('pre-deletion question with clock rollback is blocked by profile_deletion_g
   await effects.wake()
   assert.deepEqual(seen.get(oldGenId), { question: null, questionUnavailable: true }, 'old generation (0 < 1) must be blocked even with questionCurrent:true and clock rollback')
   assert.deepEqual(seen.get(missingGenId), { question: null, questionUnavailable: true }, 'missing generation must fail closed after deletion even when questionAt > watermark')
-  assert.deepEqual(seen.get(currentGenId), { question: '删除后的新问题（gen=1）', questionUnavailable: false }, 'current generation (1 >= 1) with questionCurrent:true must reach profile planner')
+  assert.deepEqual(seen.get(preWatermarkCurrentGenId), { question: null, questionUnavailable: true }, 'current generation with questionAt <= profile_deleted_at must be blocked (R5 P1-1)')
+  assert.deepEqual(seen.get(currentGenId), { question: '删除后的新问题（gen=1）', questionUnavailable: false }, 'current generation (1 >= 1) with questionAt > watermark must reach profile planner')
 })
 
 test('repeated Dream REFINE preserves multi-paragraph confirmed section, link defs, and wikilink subheadings verbatim near 800-char limit (R3 P1-3, R4 P1-3)', () => {
@@ -1647,6 +1659,54 @@ test('mixed Dream plan does not discard independent digest with inline-code prof
   assert.equal(h.documents.read(d1.workspace, 'digest/wiki/yaml-dependent.md'), null, 'dependent digest with leading --- YAML-shaped block linking stripped profile draft must be stripped')
   const guide = h.documents.read(d1.workspace, 'digest/wiki/table-guide.md')
   assert.ok(guide, 'independent digest with inline-code wikilink inside Markdown table must NOT be stripped')
+
+  // R5 P2-1: REFINE with edits[] replacing BASE inside [[BASE]] -> [[digest/personal/profile.MD]] must also be stripped!
+  const hRefine = dreamHarness(t, { initialNow: TODAY_MS })
+  const d0R = hRefine.addDailyNote([{ text: '初始词条' }], { session: 's-r5-p2-1-0', day: '2026-11-15' })
+  hRefine.documents.commit({
+    operationId: randomUUID(),
+    workspace: d0R.workspace,
+    path: 'digest/wiki/base-link.md',
+    expectedRevision: null,
+    action: 'CREATE',
+    markdown: '---\nname: Base Link\ndescription: Has placeholder link\n---\n\n参考 [[BASE]] 词条。',
+    sources: [{ id: d0R.sources[0]!.id, token: memorySourceToken(d0R.sources[0]!) }],
+    reads: [],
+  })
+  hRefine.notes.markProcessed(d0R.key, d0R.note.revision)
+  const d1R = hRefine.addDailyNote([{ text: '更新占位符链接到保留路径' }], { session: 's-r5-p2-1-1', day: '2026-11-16' })
+  hRefine.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
+    await request.tools!.executeTool({ callId: 'c1', name: 'node_search', input: { query: 'Base Link' } })
+    const readRes = await request.tools!.executeTool({ callId: 'c2', name: 'read', input: { path: 'digest/wiki/base-link.md' } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({
+      operations: [
+        {
+          action: 'CREATE',
+          path: 'digest/personal/profile.MD',
+          name: 'Bad Profile',
+          description: 'Reserved draft to strip',
+          body: '- bad profile draft',
+          dailyPaths: [d1R.path],
+          sourceIds: [d1R.sources[0]!.id],
+        },
+        {
+          action: 'REFINE',
+          path: 'digest/wiki/base-link.md',
+          name: 'Base Link',
+          description: 'Introduces link to stripped profile draft via fragment edit',
+          edits: [{ oldText: 'BASE', newText: 'digest/personal/profile.MD' }],
+          dailyPaths: [d1R.path],
+          sourceIds: [d1R.sources[0]!.id],
+        },
+      ],
+    })
+  })
+  await hRefine.run()
+  const baseAfter = hRefine.documents.read(d0R.workspace, 'digest/wiki/base-link.md')!
+  assert.ok(!baseAfter.markdown.includes('digest/personal/profile.MD'), 'REFINE replacing BASE inside [[BASE]] with stripped profile draft must be stripped (R5 P2-1)')
+  assert.ok(baseAfter.markdown.includes('[[BASE]]'))
 })
 
 test('out-of-batch observed source becoming ineligible blocks digest commit, and NOOP checkpoint rejects observed note mutating during checkpoint load (R4 P1-2)', async t => {
@@ -1681,27 +1741,41 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   assert.equal(hA.documents.read(d0A.workspace, 'digest/wiki/beijing-ops.md'), null, 'digest must NOT commit when out-of-batch observed source became ineligible')
   assert.equal(hA.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'd1A checkpoint must NOT advance when observed source became ineligible')
 
-  // Part B: NOOP consolidate reads d0B, and d0B mutates DURING the final checkpoint load -> checkpoint must NOT advance!
-  let mutateDuringNextLoad = false
+  // Part B (R5 P1-2a): Hold target d1B's final checkpoint read open while observed d0B finishes reading,
+  // edit d0B on disk BEFORE d1B's read releases -> live-disk revalidation inside checkpoint transaction must reject stale checkpoint!
+  let armInterleave = false
   let d0BAbsPath = ''
+  let d1BPath = ''
+  let d0BPath = ''
+  let d0BReadDone!: () => void
+  const d0BReadDonePromise = new Promise<void>(resolve => { d0BReadDone = resolve })
   const hB = dreamHarness(t, {
     initialNow: TODAY_MS,
     async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
-      if (mutateDuringNextLoad && d0BAbsPath) {
-        mutateDuringNextLoad = false
-        fs.writeFileSync(d0BAbsPath, `${fs.readFileSync(d0BAbsPath, 'utf8')}\n<!-- mutated during final checkpoint load -->`)
+      if (armInterleave && filePath === d0BPath) {
+        const res = await defaultRead(workspace, filePath, signal)
+        d0BReadDone()
+        return res
+      }
+      if (armInterleave && filePath === d1BPath) {
+        const res = await defaultRead(workspace, filePath, signal)
+        await d0BReadDonePromise
+        armInterleave = false
+        fs.writeFileSync(d0BAbsPath, `${fs.readFileSync(d0BAbsPath, 'utf8')}\n<!-- interleaved edit after d0B read finished -->`)
+        return res
       }
       return defaultRead(workspace, filePath, signal)
     },
   })
   const d0B = hB.addDailyNote([{ text: '旧日记：广州机房配置' }], { session: 's-r4-b0', day: '2026-11-15' })
+  d0BPath = d0B.path
   d0BAbsPath = path.join(hB.store.fileRoot, d0B.workspace, d0B.path)
   hB.notes.markProcessed(d0B.key, d0B.note.revision)
   const d1B = hB.addDailyNote([{ text: '今天一切正常，无需新建摘要' }], { session: 's-r4-b1', day: '2026-11-16' })
+  d1BPath = d1B.path
   hB.setModel(async request => {
     if (request.system === DREAM_PROFILE_SYSTEM) {
-      // Arm mutation right before checkpointTargets calls loadFiles!
-      mutateDuringNextLoad = true
+      armInterleave = true
       return JSON.stringify({ action: 'NOOP' })
     }
     const readRes = await request.tools!.executeTool({ callId: 'c-d0b', name: 'read', input: { path: d0B.path } })
@@ -1710,5 +1784,57 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
     return JSON.stringify({ operations: [] })
   })
   await hB.run()
-  assert.equal(hB.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'NOOP must NOT advance d1B checkpoint when observed d0B mutated during final checkpoint load')
+  assert.equal(hB.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'NOOP must NOT advance d1B checkpoint when observed d0B was edited on disk after its loadFiles read finished (R5 P1-2)')
+
+  // Part C (R5 P1-2b): Deferred target A retried while its observed source is temporarily ineligible must stay in
+  // deferredCheckpoints AND NOT block independent target B or manual Dream completion!
+  const ineligibleC = new Set<string>()
+  let hideD0C = false
+  let d0CPath = ''
+  const hC = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    eligible: src => !ineligibleC.has(src.id),
+    async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+      if (hideD0C && filePath === d0CPath) return null
+      return defaultRead(workspace, filePath, signal)
+    },
+  })
+  const d0C = hC.addDailyNote([{ text: '旧日记：深圳机房配置' }], { session: 's-r5-c0', day: '2026-11-15' })
+  d0CPath = d0C.path
+  hC.notes.markProcessed(d0C.key, d0C.note.revision)
+  const dAC = hC.addDailyNote([{ text: '目标 A 无新建摘要' }], { session: 's-r5-ca', day: '2026-11-16' })
+  hC.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      // Make d0C unreadable right before checkpointTargets so A is deferred!
+      hideD0C = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0c', name: 'read', input: { path: d0C.path } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  await hC.run()
+  // A is now persisted in deferredCheckpoints! Restore d0C on disk, make d0C's source temporarily ineligible,
+  // and add an independent healthy target B with a manual Dream request!
+  hideD0C = false
+  ineligibleC.add(d0C.sources[0]!.id)
+  const dBC = hC.addDailyNote([{ text: '独立目标 B 正常整理完成' }], { session: 's-r5-cb', day: '2026-11-16' })
+  hC.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
+    return JSON.stringify({ operations: [] })
+  })
+  const manualOpId = randomUUID()
+  hC.jobs.request(manualOpId)
+  await hC.retryNow()
+  const manualStatus = hC.jobs.status(manualOpId)
+  assert.ok(manualStatus.completedAt !== null, 'manual Dream request must complete for independent target B even when deferred target A waits on admission (R5 P1-2)')
+  assert.ok(hC.notes.changedFiles('2026-11-15', '2026-11-16').every(f => f.key !== dBC.key), 'independent target B must be processed')
+  assert.ok(hC.notes.changedFiles('2026-11-15', '2026-11-16').some(f => f.key === dAC.key), 'deferred target A must still be unprocessed while waiting')
+  // Verify A's deferred checkpoint was NOT dropped: once d0C becomes eligible again, retry advances A with 0 new consolidate calls!
+  ineligibleC.clear()
+  let extraModelCalls = 0
+  hC.setModel(async () => { extraModelCalls++; return JSON.stringify({ operations: [] }) })
+  await hC.retryNow()
+  assert.equal(hC.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'deferred target A must advance once its observed source becomes eligible again')
+  assert.equal(extraModelCalls, 0, 'preserved deferred checkpoint A must finish without re-running consolidate model')
 })

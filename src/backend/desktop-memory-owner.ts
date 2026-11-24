@@ -89,6 +89,19 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
           signal: lifetime ? AbortSignal.any([signal, lifetime]) : signal,
         })
       }
+      if (method === 'refreshPrefetch') {
+        if (!link.attached || adapter !== link || !data
+          || typeof data.requestId !== 'string' || typeof data.sessionId !== 'string') {
+          return { found: true, result: { status: 'timeout' } }
+        }
+        const lifetime = foregroundSignal(data.sessionId)
+        if (lifetime?.aborted) return { found: true, result: { status: 'unavailable' } }
+        return prefetch.refreshPrefetch({
+          requestId: data.requestId,
+          sessionId: data.sessionId,
+          signal: lifetime ? AbortSignal.any([signal, lifetime]) : signal,
+        })
+      }
       if (method === 'claimPrefetchBatch') {
         if (!link.attached || adapter !== link || !data
           || !Array.isArray(data.requestIds) || typeof data.sessionId !== 'string'

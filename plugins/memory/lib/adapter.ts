@@ -229,7 +229,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const items = messages.map(msg => ({ msg, requestId: extractCorrelationRequestId(msg.text) }))
     type ResolvedItem = {
       msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult,
-      epoch?: string, revision?: number, deadlineAt?: number, retried?: boolean,
+      epoch?: string, revision?: number, deadlineAt?: number, retried?: boolean, fromHostClaim?: boolean,
     }
 
     // Resolve every message concurrently: each message with a correlation ID claims independently so a
@@ -247,7 +247,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
             return {
               msg, requestId, result: claim.result,
               epoch: claim.epoch, revision: claim.revision,
-              deadlineAt: claim.deadlineAt, retried: claim.retried,
+              deadlineAt: claim.deadlineAt, retried: claim.retried, fromHostClaim: true,
             }
           }
         } catch (error) {
@@ -262,6 +262,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     }))
 
     // If a hit was invalidated while siblings settled, allow at most one bounded refresh within its original deadline.
+    // Host-claimed hits refresh via the host so the original verified query, scope, deadline, and 1-retry limit survive.
     const checkEpoch = owner.epoch
     const checkRevision = currentRevision
     const refreshed = await Promise.all(initial.map(async (item): Promise<ResolvedItem> => {
@@ -272,7 +273,26 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       if (!epochStale && !revStale) return item
       if (!item.retried && !signal.aborted) {
         const refreshDeadline = item.deadlineAt !== undefined ? Math.min(stepDeadlineAt, item.deadlineAt) : stepDeadlineAt
-        if (refreshDeadline - Date.now() > 0) {
+        const left = refreshDeadline - Date.now()
+        if (left > 0) {
+          if (item.fromHostClaim && item.requestId && connection.refreshPrefetch) {
+            try {
+              const retryClaim = await connection.refreshPrefetch({ requestId: item.requestId, sessionId }, { signal, budgetMs: left })
+              if (retryClaim?.found) {
+                return {
+                  msg: item.msg, requestId: item.requestId, result: retryClaim.result,
+                  epoch: retryClaim.epoch, revision: retryClaim.revision,
+                  deadlineAt: retryClaim.deadlineAt ?? refreshDeadline, retried: true, fromHostClaim: true,
+                }
+              }
+            } catch (error) {
+              const fallbackStatus: AutomaticRecallResult = signal.aborted
+                ? { status: 'timeout' }
+                : !available() ? { status: 'unavailable' } : { status: 'timeout' }
+              if (!signal.aborted && available()) report(error)
+              return { ...item, result: fallbackStatus, retried: true }
+            }
+          }
           const retryResult = await resolveFallbackRecall(sessionId, cwd, turn, item.msg, item.requestId, refreshDeadline, signal)
           return { ...retryResult, deadlineAt: refreshDeadline, retried: true }
         }

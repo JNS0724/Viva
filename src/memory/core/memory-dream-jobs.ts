@@ -385,12 +385,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   ): boolean => {
     if (!item.question) return true
     if (watermark === null && delGen === 0) return true
-    // Once a profile deletion has occurred, require a recorded generation >= current deletion generation.
-    // Missing generation fails closed instead of falling back to mutable wall-clock time.
+    // Once a profile deletion has occurred, require BOTH a current deletion generation AND questionAt > watermark.
     if (delGen > 0) {
-      return typeof item.questionProfileGen === 'number' && item.questionProfileGen >= delGen
+      if (typeof item.questionProfileGen !== 'number' || item.questionProfileGen < delGen) return false
     }
-    return watermark !== null && typeof item.questionAt === 'number' && item.questionAt > watermark
+    return watermark === null || (typeof item.questionAt === 'number' && item.questionAt > watermark)
   }
   const profileSourcesAllowedByWatermark = (
     sources: readonly DocumentSourceRef[],
@@ -692,9 +691,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             const obsRev = batch.observedRevision(workspace, row.path)
             if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
             if (obsRev !== ref.revision) return 'stale'
-            const doc = documents.read(workspace, row.path, { physical: batch.physical(workspace, row.path) })
-            if (!doc || doc.id !== ref.id || doc.revision !== ref.revision || doc.usageVersion !== ref.usageVersion) return 'stale'
           }
+          const doc = documents.read(workspace, row.path, batch ? { physical: batch.physical(workspace, row.path) } : undefined)
+          if (!doc || doc.id !== ref.id || doc.revision !== ref.revision || doc.usageVersion !== ref.usageVersion) return 'stale'
         }
       }
       for (const obsNote of observedNotes ?? []) {
@@ -709,11 +708,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const obsRev = batch.observedRevision(workspace, obsNote.path)
           if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
           if (obsRev !== obsNote.revision) return 'stale'
-          const latest = notes.read(obsNote.key, batch.physical(workspace, obsNote.path))
-          if (!latest || !latest.enabled || latest.workspace !== workspace || latest.path !== obsNote.path
-            || latest.revision !== obsNote.checkpoint || latest.fileRevision !== obsNote.revision) {
-            return 'stale'
-          }
+        }
+        const latest = notes.read(obsNote.key, batch ? batch.physical(workspace, obsNote.path) : undefined)
+        if (!latest || !latest.enabled || latest.workspace !== workspace || latest.path !== obsNote.path
+          || latest.revision !== obsNote.checkpoint || latest.fileRevision !== obsNote.revision) {
+          return 'stale'
         }
       }
       if (hasWait) return 'wait'
@@ -757,17 +756,35 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               const obsState = classifyObservedRefs(target.workspace, target.observedReads, target.observedNotes, checkpointBatch)
               if (obsState === 'stale') {
                 progress(job, 'source_changed', 'consolidate')
-                scanRetry = true
+                if (!options.isDeferredRetry) scanRetry = true
                 continue
               }
               if (obsState === 'wait') {
-                waitingForAdmission = true
+                if (options.isDeferredRetry) unresolved.push(target)
+                else waitingForAdmission = true
                 continue
               }
               if (obsState === 'unverifiable') {
                 unresolved.push(target)
                 continue
               }
+              // Synchronous live-disk revalidation inside the checkpoint transaction closes interleaving edits during loadFiles.
+              const liveObsState = classifyObservedRefs(target.workspace, target.observedReads, target.observedNotes)
+              if (liveObsState === 'stale') {
+                progress(job, 'source_changed', 'consolidate')
+                if (!options.isDeferredRetry) scanRetry = true
+                continue
+              }
+              if (liveObsState === 'wait') {
+                if (options.isDeferredRetry) unresolved.push(target)
+                else waitingForAdmission = true
+                continue
+              }
+            }
+            if (classifyNoteFile(target.file) !== 'current') {
+              progress(job, 'source_changed', 'consolidate')
+              if (!options.isDeferredRetry) scanRetry = true
+              continue
             }
             if (notes.markProcessed(target.file.key, target.file.checkpoint)) {
               if (target.oversized) oversizedAny = true
@@ -1301,13 +1318,27 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                         continue
                       }
                       const rawBody = typeof opRecord.body === 'string' ? opRecord.body : ''
-                      const rawEdits = Array.isArray(opRecord.edits)
+                      const parsedEdits: DreamEdit[] = Array.isArray(opRecord.edits)
                         ? opRecord.edits.flatMap(edit =>
-                            edit && typeof edit === 'object' && typeof (edit as { newText?: unknown }).newText === 'string'
-                              ? [(edit as { newText: string }).newText] : [])
-                            .join('\n')
-                        : ''
-                      const draftText = rawBody ? stripAccidentalFrontmatter(rawBody) : rawEdits
+                            edit && typeof edit === 'object'
+                            && typeof (edit as { oldText?: unknown }).oldText === 'string'
+                            && typeof (edit as { newText?: unknown }).newText === 'string'
+                              ? [{ oldText: (edit as { oldText: string }).oldText, newText: (edit as { newText: string }).newText }]
+                              : [])
+                        : []
+                      let draftText = rawBody ? stripAccidentalFrontmatter(rawBody) : ''
+                      if (!draftText && parsedEdits.length > 0) {
+                        const existingBefore = rawPath ? tools.observed(rawPath) : undefined
+                        if (existingBefore) {
+                          try {
+                            draftText = stripAccidentalFrontmatter(applyRefineEdits(parseMemoryDocument(existingBefore.markdown).body, parsedEdits))
+                          } catch {
+                            draftText = parsedEdits.map(edit => edit.newText).join('\n')
+                          }
+                        } else {
+                          draftText = parsedEdits.map(edit => edit.newText).join('\n')
+                        }
+                      }
                       const draftLinks = draftText ? rawWikilinkTargets(formatMemoryDocument({ metadata: {}, body: draftText })) : []
                       if (draftLinks.some(link => strippedDraftPaths.has(link.toLowerCase()))) {
                         if (rawPath) strippedDraftPaths.add(rawPath.toLowerCase())

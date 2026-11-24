@@ -766,7 +766,7 @@ test('multi-steer starts live fallback immediately for missing-ID sibling while 
   assert.equal(contextUsedReports.length, 1, 'committed turn with continuation step must emit reportContextUsed exactly once')
 })
 
-test('multi-steer refreshes hit A once within its original deadline if revision changes while sibling B is pending (R4 P2-4)', async t => {
+test('multi-steer refreshes hit A once on the host via refreshPrefetch preserving verified query/scope/deadline when revision changes while sibling B is pending (R4 P2-4, R5 P2-4)', async t => {
   const { dir } = scratch(t, 'memory-r4-adapter-refresh-')
   const root = path.join(dir, 'memory')
   const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
@@ -774,8 +774,28 @@ test('multi-steer refreshes hit A once within its original deadline if revision 
 
   const reqA = randomUUID()
   const reqB = randomUUID()
-  const slowClaimB = deferred<{ found: boolean, result?: AutomaticRecallResult, epoch?: string, revision?: number }>()
-  let refreshCount = 0
+  const slowPrefetchB = deferred<PrefetchReply>()
+  const hostQueries: Array<{ query: string, session: string }> = []
+  let refreshRpcCalls = 0
+  let fallbackAdapterCalls = 0
+
+  const hostPrefetch = createMemoryPrefetchManager({
+    defaultBudgetMs: 180,
+    async callPrefetch(input) {
+      hostQueries.push({ query: input.query, session: input.session })
+      if (input.query === '任务 A 的原始已验证查询') {
+        if (hostQueries.filter(q => q.query === input.query).length === 1) {
+          return { epoch: 'e-ref', revision: 1, result: { status: 'hit', text: 'OLD_REV1_A', partial: false, hits: [{ text: 'OLD_REV1_A', names: ['a'] }] } }
+        }
+        return { epoch: 'e-ref', revision: 2, result: { status: 'hit', text: 'FRESH_REV2_A', partial: false, hits: [{ text: 'FRESH_REV2_A', names: ['a2'] }] } }
+      }
+      return slowPrefetchB.promise
+    },
+  })
+  t.after(() => hostPrefetch.close())
+  hostPrefetch.onState(ownerState('e-ref', 1))
+  hostPrefetch.startPrefetch({ requestId: reqA, sessionId: 'sess-ref', queryText: '任务 A 的原始已验证查询' })
+  hostPrefetch.startPrefetch({ requestId: reqB, sessionId: 'sess-ref', queryText: '任务 B 查询' })
 
   port.send = (raw, cb) => {
     cb?.()
@@ -792,32 +812,28 @@ test('multi-steer refreshes hit A once within its original deadline if revision 
     }
     if (frame.method === 'claimPrefetch') {
       const input = frame.input as { requestId: string, sessionId: string }
-      if (input.requestId === reqA) {
-        // Hit A arrives immediately at revision 1 with 115ms remaining on its original deadline
-        queueMicrotask(() => {
-          port.emit('message', {
-            type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
-            result: {
-              found: true, epoch: 'e-ref', revision: 1, deadlineAt: Date.now() + 115, retried: false,
-              result: { status: 'hit', text: 'OLD_REV1_A', partial: false, hits: [{ text: 'OLD_REV1_A', names: ['a'] }] },
-            },
-          })
-        })
-      } else {
-        void slowClaimB.promise.then(res => {
-          port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: res })
-        })
-      }
+      void hostPrefetch.claimPrefetch(input).then(res => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: res })
+      })
+      return true
+    }
+    if (frame.method === 'refreshPrefetch') {
+      refreshRpcCalls++
+      const input = frame.input as { requestId: string, sessionId: string }
+      void hostPrefetch.refreshPrefetch(input).then(res => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: res })
+      })
       return true
     }
     if (frame.method === 'adapter') {
       const { method } = frame.input as { method: string }
       if (method === 'automaticRecall') {
-        refreshCount++
+        // Simulate task message with no native sourceAlias -> adapter automaticRecall would return skipped!
+        fallbackAdapterCalls++
         queueMicrotask(() => {
           port.emit('message', {
             type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
-            result: { status: 'hit', text: 'FRESH_REV2_A', partial: false, hits: [{ text: 'FRESH_REV2_A', names: ['a2'] }] },
+            result: { status: 'skipped' },
           })
         })
         return true
@@ -849,8 +865,8 @@ test('multi-steer refreshes hit A once within its original deadline if revision 
   await new Promise(resolve => setTimeout(resolve, 30))
   assert.equal(owner.ready(), true)
 
-  const msgA = createUserMessage({ content: [{ type: 'text', text: withRequestSource('问题 A', reqA, '问题 A').text }], source: { kind: 'user' } })
-  const msgB = createUserMessage({ content: [{ type: 'text', text: withRequestSource('问题 B', reqB, '问题 B').text }], source: { kind: 'user' } })
+  const msgA = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('任务 A 的原始已验证查询', reqA).text }], source: { kind: 'user' } })
+  const msgB = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('任务 B 查询', reqB).text }], source: { kind: 'user' } })
   const fakeSession = { id: 'sess-ref', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
   const preStep = preStepHandlers[0]!
 
@@ -861,22 +877,27 @@ test('multi-steer refreshes hit A once within its original deadline if revision 
     modelSelection: { provider: 'test', model: 'm' },
   }, async () => ({ kind: 'enter', messages: [msgA, msgB] }))
 
-  // Let A settle at rev 1 while B is still pending, then bump revision to 2 before B resolves!
+  // Let A settle at rev 1 while B is still pending, then bump revision to 2 on BOTH host & adapter before B resolves!
   await new Promise(resolve => setTimeout(resolve, 15))
-  port.emit('message', {
-    type: MEMORY_OWNER_RPC, kind: 'event',
-    event: { type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e-ref', revision: 2 },
-  })
-  slowClaimB.resolve({
-    found: true, epoch: 'e-ref', revision: 2,
+  const changeEv = { type: 'memory_owner_change' as const, protocol: MEMORY_HOST_PROTOCOL as 4, epoch: 'e-ref', revision: 2 }
+  hostPrefetch.onChange(changeEv)
+  port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'event', event: changeEv })
+  slowPrefetchB.resolve({
+    epoch: 'e-ref', revision: 2,
     result: { status: 'hit', text: 'REV2_B', partial: false, hits: [{ text: 'REV2_B', names: ['b'] }] },
   })
 
   const decision = await decisionPromise
-  assert.equal(refreshCount, 1, 'stale hit A must refresh once within its remaining original deadline')
+  assert.equal(refreshRpcCalls, 1, 'stale host-claimed hit A must refresh via host refreshPrefetch')
+  assert.equal(fallbackAdapterCalls, 0, 'host refresh must NOT fall back to alias-dependent adapter automaticRecall')
+  assert.deepEqual(
+    hostQueries.filter(q => q.query === '任务 A 的原始已验证查询').length,
+    2,
+    'host refreshPrefetch must reuse original verified queryText on the host',
+  )
   const appendedRecall = decision.messages.slice(2)
   assert.equal(appendedRecall.length, 2)
-  assert.match(appendedRecall[0].content[0].text, /FRESH_REV2_A/, 'refreshed hit A must carry rev 2 evidence')
+  assert.match(appendedRecall[0].content[0].text, /FRESH_REV2_A/, 'refreshed hit A must carry rev 2 evidence (never skipped)')
   assert.match(appendedRecall[1].content[0].text, /REV2_B/)
 })
 
