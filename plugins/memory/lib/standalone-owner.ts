@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { RequestTimeout } from '../../../src/shared/request-budget.ts'
-import { MEMORY_HOST_PROTOCOL, memoryOwnerState, type MemoryOwnerState } from '../../../src/memory/contracts/host.ts'
+import { MEMORY_HOST_PROTOCOL, memoryOwnerProfile, memoryOwnerState, type MemoryOwnerProfile, type MemoryOwnerState, type MemoryProfileSnapshot } from '../../../src/memory/contracts/host.ts'
 import { createOwnerRpcPeer } from '../../../src/memory/node/owner-rpc-peer.ts'
 import { createMemoryOwnerSupervisor } from '../../../src/memory/node/owner-supervisor.ts'
 import type { MemoryOwnerConnection } from './remote-owner.ts'
@@ -44,6 +44,8 @@ function standaloneOwner(initial: OwnerOptions) {
       // Persistence can finish boot before Cordis activates the dsh adapter.
       const snapshot = supervisor.state()
       if (snapshot) listener(snapshot)
+      const profile = supervisor.profile()
+      if (profile && (!snapshot || profile.epoch === snapshot.epoch)) listener(profile)
       return () => { listeners.delete(listener) }
     }
     let retiring: Promise<void> | undefined
@@ -114,10 +116,18 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
   const { callbacks } = options
   const listeners = new Set<(event: unknown) => void>()
   let current: MemoryOwnerState | undefined, starting: Promise<void> | undefined
+  let currentProfile: MemoryOwnerProfile | undefined
   const lifetime = new AbortController()
   function onEvent(event: unknown) {
     const state = memoryOwnerState.safeParse(event)
     if (state.success) current = state.data
+    else {
+      const profile = memoryOwnerProfile.safeParse(event)
+      if (profile.success) {
+        if (currentProfile && currentProfile.epoch === profile.data.epoch && profile.data.revision < currentProfile.revision) return
+        currentProfile = profile.data
+      }
+    }
     for (const listener of listeners) listener(event)
   }
   const peer = createOwnerRpcPeer({
@@ -144,13 +154,22 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
   port.once('disconnect', disconnect)
   async function attach() {
     // Repeated attachment authenticates the same parent link and returns its
-    // current state. Retry only missing acknowledgements, within startup time.
+    // current state and cached L2 profile snapshot. Retry only missing acknowledgements, within startup time.
     for (let attempt = 0; ; attempt++) {
       const before = current
       try {
-        const state = await peer.call<MemoryOwnerState | undefined>('attach',
+        const reply = await peer.call<{ state?: MemoryOwnerState, profile?: MemoryProfileSnapshot } | MemoryOwnerState | undefined>('attach',
           { protocol: MEMORY_HOST_PROTOCOL, root: options.root, hostNamespace: options.hostNamespace }, { signal: lifetime.signal })
-        if (state && current === before) onEvent(state)
+        if (reply && typeof reply === 'object') {
+          if ('type' in reply) {
+            if (current === before) onEvent(reply)
+          } else {
+            if (reply.state && current === before) onEvent(reply.state)
+            if (reply.profile) {
+              onEvent({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, ...reply.profile })
+            }
+          }
+        }
         return
       } catch (error) {
         if (!(error instanceof RequestTimeout) || lifetime.signal.aborted || attempt >= 2) throw error
@@ -170,9 +189,15 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
       listeners.clear()
     },
     reconciled(epoch, ready) { peer.notify({ type: 'memory_adapter_ready', epoch, ready }) },
+    claimPrefetch: (input, opts) => peer.call('claimPrefetch', input, opts),
     callAdapter: (method, args, opts) => peer.call('adapter', { method, args, epoch: current?.epoch }, opts),
     callHost: () => Promise.reject(new Error('The Viva memory adapter has no host capabilities')),
-    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
+    subscribe(listener) {
+      listeners.add(listener)
+      if (current) listener(current)
+      if (currentProfile && (!current || currentProfile.epoch === current.epoch)) listener(currentProfile)
+      return () => { listeners.delete(listener) }
+    },
     status: () => current?.state ?? 'unavailable',
     epoch: () => current?.epoch,
   }

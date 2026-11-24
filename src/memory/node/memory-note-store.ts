@@ -245,6 +245,15 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     fileRegistry: () => (db.prepare(`SELECT key,day,workspace,path,revision,updated_at AS updatedAt,file_revision AS fileRevision,enabled
       FROM memory_daily_notes WHERE file_revision IS NOT NULL`).all() as unknown as Array<Omit<DailyFileRegistration, 'enabled'> & { enabled: number }>)
       .map(row => ({ ...row, enabled: Boolean(row.enabled) })),
+    noteRegistration(key: string) {
+      const isDeleted = deleted(key)
+      const row = rawNote(key)
+      if (!row) return isDeleted ? { key, workspace: '', path: '', revision: 0, processed: 0, fileRevision: null, enabled: false, deleted: true } : null
+      return {
+        key: row.key, workspace: row.workspace, path: row.path, revision: row.revision, processed: row.processed,
+        fileRevision: row.file_revision, enabled: Boolean(row.enabled), deleted: isDeleted,
+      }
+    },
     setEnabled: (key: string, revision: number, enabled: boolean) => db.prepare(`UPDATE memory_daily_notes SET enabled=?,revision=revision+1
       WHERE key=? AND revision=? AND enabled<>?`).run(Number(enabled), key, revision, Number(enabled)).changes === 1,
     deleteFile,

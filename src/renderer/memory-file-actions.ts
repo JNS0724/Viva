@@ -174,8 +174,14 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
         : await api.createMemoryFile(command)
       if (result.status === 'rejected') {
         const conflict = result.code === 'revision.conflict' && editor.kind === 'edit'
+        const details = result.details
+        const errorText = conflict
+          ? t('memory-files.editor.conflict')
+          : result.code === 'profile.confirmed_too_long'
+            ? t('main.memory.profile.confirmed_too_long', details ?? { limit: 800, actual: 0 })
+            : t(`main.memory.${result.code}`)
         if (editorCurrent(id)) setEditor({ ...pending, retry: result.code === 'change.pending' ? command : undefined, conflict,
-          error: t(conflict ? 'memory-files.editor.conflict' : `main.memory.${result.code}`) })
+          error: errorText })
         refresh = conflict
         return false
       }
@@ -212,7 +218,6 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
         || detail.version.policyToken !== request.version.policyToken) return false
     }
     cancelReads()
-    dispatch({ type: 'memory_summaries_stale' })
     dispatch({ type: 'memory_file_forget_started', id })
     dispatch({ type: 'memory_file_write_busy', busy: true })
     const current = () => active() && state().forget?.id === id
@@ -222,7 +227,11 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       if (result.status === 'rejected') {
         if (current()) dispatch({ type: 'memory_file_forget', forget: { id, request,
           phase: result.code === 'change.pending' ? 'unconfirmed' : 'conflict',
-          error: t(result.code === 'revision.conflict' ? 'memory-files.forget.conflict' : `main.memory.${result.code}`) } })
+          error: result.code === 'revision.conflict'
+            ? t('memory-files.forget.conflict')
+            : result.code === 'profile.confirmed_too_long'
+              ? t('main.memory.profile.confirmed_too_long', result.details ?? { limit: 800, actual: 0 })
+              : t(`main.memory.${result.code}`) } })
         refresh = result.code !== 'change.pending'
         return false
       }

@@ -34,7 +34,7 @@ import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defa
 import { SQLITE_BUSY_TIMEOUT_MS } from '../src/memory/node/sqlite.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
-import type { MemoryFileDetail, MemoryFileListResult, MemoryFileProfile } from '../src/memory/contracts/file-management.ts'
+import type { MemoryFileDetail, MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
 import { openMemoryFileIndex } from '../src/memory/node/memory-file-index.ts'
 import type { AgentInfo } from '../src/shared/agent-info.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
@@ -925,13 +925,12 @@ test('global memory crosses work folders while native session and schedule bound
     assert.ok(switched.ok)
     const sourceId = randomUUID()
     await step(`${label}:remember`, () => app.call('agent:prompt', text, [], sourceId))
-    const summary = await step(`${label}:file-profile`, () => eventually(async () => {
-      const { fileProfile } = await app.call<Promise<{ fileProfile: { user: { identity: MemoryFileDetail['identity'], text: string }[], project: null } }>>('memory:get')
-      assert.equal(fileProfile.project, null)
-      return fileProfile.user.find(item => item.text.includes(text.slice('记住：'.length)))
+    const saved = await step(`${label}:saved-file`, () => eventually(async () => {
+      const files = await app.files()
+      return files.find(item => item.markdown.includes(text.slice('记住：'.length)))
     }))
-    assert.ok(summary)
-    const detail = await step(`${label}:read-file`, () => app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', summary.identity))
+    assert.ok(saved)
+    const detail = await step(`${label}:read-file`, () => app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', saved.identity))
     assert.ok(detail?.sources.some(source => source.link))
     return switched.info
   }
@@ -943,10 +942,15 @@ test('global memory crosses work folders while native session and schedule bound
     await step(`${label}:search-history`, () => app.ask(history))
     const scopedMessages = app.model.requests.slice(count, beforeHistory).map(raw => (raw as Request).messages)
     const historyMessages = app.model.requests.slice(beforeHistory).map(raw => (raw as Request).messages)
+    const trailingUsers = (rows: Request['messages']) => {
+      let start = rows.length
+      while (start > 0 && rows[start - 1]?.role === 'user') start -= 1
+      return JSON.stringify(rows.slice(start))
+    }
     assert.ok(scopedMessages.some(rows => {
-      const last = JSON.stringify(rows.at(-1))
-      return last.includes('<about-user>') && last.includes('File memory evidence') && last.includes(present)
-    }))
+      const last = trailingUsers(rows)
+      return last.includes('<memory-recall') && last.includes('File memory evidence') && last.includes(present)
+    }), JSON.stringify({ label, present, tails: scopedMessages.map(rows => rows.slice(-2)) }))
     assert.ok(scopedMessages.some(rows =>
       modelToolResults({ messages: rows }, 'memory_recall').some(result => JSON.stringify(result).includes(present))),
     JSON.stringify({ name: 'memory_recall', results: scopedMessages.flatMap(rows => modelToolResults({ messages: rows }, 'memory_recall')) }))
@@ -1015,8 +1019,10 @@ test('global memory crosses work folders while native session and schedule bound
   const afterSwitchBeforeHistory = app.model.requests.slice(beforeSwitch, beforeProjectBHistory) as Request[]
   assert.ok(afterSwitchBeforeHistory.some(request => questionOf(request.messages) === secondFact && JSON.stringify(request.system).includes('个人工作助手')))
   assert.ok(afterSwitchBeforeHistory.some(request => {
-    const last = JSON.stringify(request.messages.at(-1))
-    return last.includes('<about-user>') && last.includes('File memory evidence') && last.includes(firstMarker)
+    let start = request.messages.length
+    while (start > 0 && request.messages[start - 1]?.role === 'user') start -= 1
+    const last = JSON.stringify(request.messages.slice(start))
+    return last.includes('<memory-recall') && last.includes('File memory evidence') && last.includes(firstMarker)
   }), 'memory from the other folder is automatically available')
 
   // A picture-only conversation still has a native history boundary.
@@ -1092,13 +1098,12 @@ test('deleting a memory file preserves the original chat and the task and report
 test('an explicit save completes in a foreground session that already received file evidence', { timeout: 30_000 }, async t => {
   const app = await setup(t, () => null)
   await app.recallOld()
-  const profile = await app.call<Promise<{ fileProfile: MemoryFileProfile }>>('memory:get')
-  assert.ok(profile.fileProfile.user.some(item => item.text.includes(oldValue)), 'a natural remembered original belongs to the file-backed user profile')
+  assert.ok((await app.files()).some(item => item.markdown.includes(oldValue)), 'a natural remembered original belongs to the managed memory files')
   await app.newTopic()
   const offset = app.model.requests.length
   await app.ask('核对下周报提交邮箱背景资料')
   assert.ok((app.model.requests.slice(offset) as Request[]).some(request =>
-    JSON.stringify(request.messages).includes('File memory evidence')
+    JSON.stringify(request.messages).includes('memory-recall')
       && JSON.stringify(request.messages).includes(oldValue)), JSON.stringify(app.model.requests.slice(offset)))
   const preference = '我以后使用紫罗兰色图标'
   const count = app.model.requests.length

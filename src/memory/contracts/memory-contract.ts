@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { MAX_MESSAGE_CHARS } from './text-limits.ts'
 
-export const MEMORY_CONTRACT = 12
+export const MEMORY_CONTRACT = 13
 export const operationId = z.uuid()
 export const memoryScope = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('user') }),
@@ -45,3 +45,17 @@ export const memoryComputeUsage = z.object({
   reasoningTokens: z.int().nonnegative().optional(),
 })
 export type MemoryComputeUsage = z.infer<typeof memoryComputeUsage>
+
+export const automaticRecallResult = z.discriminatedUnion('status', [
+  z.strictObject({
+    status: z.literal('hit'),
+    text: z.string(),
+    partial: z.boolean(),
+    hits: z.array(z.strictObject({ text: z.string(), names: z.array(z.string()) })),
+  }),
+  z.strictObject({ status: z.literal('empty') }),
+  z.strictObject({ status: z.literal('skipped') }),
+  z.strictObject({ status: z.literal('timeout') }),
+  z.strictObject({ status: z.literal('unavailable') }),
+])
+export type AutomaticRecallResult = z.infer<typeof automaticRecallResult>

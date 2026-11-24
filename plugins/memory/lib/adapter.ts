@@ -1,16 +1,21 @@
 import { homedir } from 'node:os'
 import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-log-deepseek'
-import type { MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
+import type { AutomaticRecallResult, MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
 import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-daily-defaults.ts'
 import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
-import { memoryOwnerState } from '../../../src/memory/contracts/host.ts'
+import { memoryOwnerProfile, memoryOwnerState, type MemoryProfileSnapshot } from '../../../src/memory/contracts/host.ts'
+import { dateLine, formatAutomaticRecallMessage, formatMemoryRulesSection, formatProfileContext } from '../../../src/memory/core/memory-context.ts'
+import { looksSecret } from '../../../src/memory/core/memory-sensitive.ts'
 import { resolveMemoryProject } from '../../../src/memory/node/project-scope.ts'
 import { createRequestBudget, APP_WRITE_TIMEOUT_MS, MEMORY_READ_BUDGET_MS } from '../../../src/shared/request-budget.ts'
+import { requestsIn, withoutHeaders } from '../../../src/shared/request-routing/header.ts'
+import { taskRequestsIn, withoutTaskHeaders } from '../../../src/shared/request-routing/task-header.ts'
 import { createManagedDiagnostics } from '../../../src/diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../../../src/diagnostics/node/hub.ts'
 import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort } from '../../../src/diagnostics/node/context.ts'
@@ -23,6 +28,15 @@ import { registerMemoryTools } from './tools.ts'
 import { registerMemoryFileCommands } from './file-commands.ts'
 import { observeDshDiagnostics } from './diagnostics.ts'
 import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
+import type {} from './source.ts'
+
+function extractCorrelationRequestId(text: string): string | undefined {
+  const routed = requestsIn(text)
+  if (routed.length > 0) return routed[routed.length - 1]!.id
+  const task = taskRequestsIn(text)
+  if (task.length > 0) return task[task.length - 1]!.id
+  return undefined
+}
 
 export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}, port = process) {
   const lifetime = new AbortController()
@@ -66,9 +80,26 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   const owner = createRemoteMemoryOwner(connection)
   const available = () => !lifetime.signal.aborted && owner.ready()
   const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session))
-  const context = new WeakMap<object, { epoch: string | undefined, turn: number, text: string }>()
+  let cachedProfile: MemoryProfileSnapshot | undefined
+  const pendingContextConfirmations = new Map<string, { session: string, turn: number, pushed: Array<{ text: string, names: string[] }> }>()
   let route: { provider: string, model: string } | null = null
   let published: { epoch: string | undefined, provider: string, model: string } | undefined
+
+  function acceptProfile(next: MemoryProfileSnapshot) {
+    if (cachedProfile && cachedProfile.epoch === next.epoch && next.revision < cachedProfile.revision) return
+    cachedProfile = { epoch: next.epoch, revision: next.revision, text: next.text }
+  }
+  function currentProfileText(): string {
+    if (!cachedProfile) return ''
+    if (owner.epoch && cachedProfile.epoch !== owner.epoch) return ''
+    return cachedProfile.text
+  }
+  function clearPendingForSession(sessionId: string) {
+    for (const [messageId, entry] of pendingContextConfirmations) {
+      if (entry.session === sessionId) pendingContextConfirmations.delete(messageId)
+    }
+  }
+
   function publishRoute() {
     if (!available()) return
     const selected = route ?? ctx.agents.list().map(agent => agent.model.current()).find(value => value !== undefined)
@@ -86,8 +117,14 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   }
   let readyEpoch: string | undefined
   const unsubscribe = connection.subscribe(raw => {
+    if (lifetime.signal.aborted) return
+    const profileMsg = memoryOwnerProfile.safeParse(raw)
+    if (profileMsg.success) {
+      acceptProfile({ epoch: profileMsg.data.epoch, revision: profileMsg.data.revision, text: profileMsg.data.text })
+      return
+    }
     const message = memoryOwnerState.safeParse(raw)
-    if (!message.success || lifetime.signal.aborted) return
+    if (!message.success) return
     const { epoch, state } = message.data
     if (state !== 'ready') {
       readyEpoch = undefined
@@ -102,45 +139,116 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   })
 
   ctx.on('session/created', observe)
-  ctx.on('session/disposed', session => intake.release(session))
+  ctx.on('session/disposed', session => {
+    clearPendingForSession(String(session.id))
+    intake.release(session)
+  })
   ctx.on('session/event', (session, event) => {
     if (event.type === 'model/selection') {
       route = { provider: event.data.provider, model: event.data.model }
       publishRoute()
     }
-    if (event.type === 'turn/end') observe(session)
+    if (event.type === 'user/message' && event.data.source.kind === 'viva-memory') {
+      const pending = pendingContextConfirmations.get(String(event.data.id))
+      if (pending) {
+        pendingContextConfirmations.delete(String(event.data.id))
+        if (available()) void owner.call('reportContextUsed', [pending]).catch(report)
+      }
+    }
+    if (event.type === 'turn/end') {
+      clearPendingForSession(String(session.id))
+      observe(session)
+    }
   })
 
+  // L1 static rules (0ms, KV-cache stable) and L2 cached resident profile (0ms, independent of L3).
   ctx.inject(['systemPrompt'], scoped => {
-    scoped.systemPrompt.context({ name: 'viva-memory', order: 80, interpolate: false, text: ({ scope }) => {
-      const entry = scope && context.get(scope)
-      return available() && entry && entry.epoch === owner.epoch ? entry.text : ''
-    } })
+    scoped.systemPrompt.section({ name: 'viva-memory-rules', order: 20, interpolate: false, text: formatMemoryRulesSection() })
+    scoped.systemPrompt.context({ name: 'viva-profile', order: 80, interpolate: false, text: () =>
+      formatProfileContext({ text: currentProfileText(), today: dateLine() }),
+    })
   })
+
+  async function resolveRecallForMessage(
+    sessionId: string,
+    cwd: string | null | undefined,
+    turn: number,
+    msg: { id: string, text: string },
+    stepDeadlineAt: number,
+    signal: AbortSignal,
+  ): Promise<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult }> {
+    const requestId = extractCorrelationRequestId(msg.text)
+    const remaining = () => Math.max(0, stepDeadlineAt - Date.now())
+
+    // Step 1: Claim host prefetch by exact (requestId, sessionId) when running under Viva host.
+    if (connection.claimPrefetch && requestId) {
+      try {
+        const claimBudget = Math.max(1, remaining() + 50)
+        const claimed = await connection.claimPrefetch({ requestId, sessionId }, { signal, budgetMs: claimBudget })
+        if (claimed.found) return { msg, requestId, result: claimed.result }
+      } catch (error) {
+        if (signal.aborted) return { msg, requestId, result: { status: 'timeout' } }
+        if (!available()) return { msg, requestId, result: { status: 'unavailable' } }
+        report(error)
+      }
+    }
+
+    // Step 2: Fallback live short-budget recall (standalone DSH or genuinely un-prefetched delivery).
+    if (!available()) return { msg, requestId, result: { status: 'unavailable' } }
+    const cleanQuery = withoutTaskHeaders(withoutHeaders(msg.text))
+    if (!config.host && (!cleanQuery.trim() || looksSecret(cleanQuery))) {
+      return { msg, requestId, result: { status: 'skipped' } }
+    }
+    const left = remaining()
+    if (left <= 0) return { msg, requestId, result: { status: 'timeout' } }
+    const budget = createRequestBudget(left, signal)
+    try {
+      const result = await budget.run(() => owner.call('automaticRecall', [
+        { session: sessionId, turn, question: config.host ? '' : cleanQuery },
+        cwd,
+        config.host ? [msg] : undefined,
+      ], { signal: budget.signal, budgetMs: budget.remainingMs() }))
+      return { msg, requestId, result }
+    } catch (error) {
+      if (signal.aborted) return { msg, requestId, result: { status: 'timeout' } }
+      if (!available()) return { msg, requestId, result: { status: 'unavailable' } }
+      if (!budget.signal.aborted) report(error)
+      return { msg, requestId, result: { status: 'timeout' } }
+    } finally { budget.close() }
+  }
+
   ctx.on('agent/pre-step', async ({ agent, turn, signal, modelSelection }, next) => {
     const decision = await next()
-    if (context.get(agent)?.turn !== turn) context.delete(agent)
-    if (decision.kind === 'reject' || signal.aborted || !available()) {
-      context.delete(agent)
-      return decision
-    }
+    if (decision.kind === 'reject' || signal.aborted) return decision
     route = { provider: modelSelection.provider, model: modelSelection.model }
     publishRoute()
     const messages = humanMessages(decision.messages)
+    // Ordinary tool continuation steps keep the adopted snapshot frozen (no re-query, no deletion).
     if (!messages.length) return decision
-    context.delete(agent)
-    void intake.receive(agent.session, decision.messages, turn).catch(report)
-    const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs, signal)
-    try {
-      const epoch = owner.epoch
-      const request: MemoryRequest = { op: 'context', session: String(agent.session.id), turn, question: '' }
-      const text = await budget.run(() => owner.call('sidecarRequest', [request, agent.session.header.cwd, messages],
-        { signal: budget.signal, budgetMs: budget.remainingMs() }))
-      if (text && !signal.aborted && available() && owner.epoch === epoch) context.set(agent, { epoch, turn, text })
-    } catch (error) {
-      if (!budget.signal.aborted && available()) report(error)
-    } finally { budget.close() }
-    return decision
+    if (available()) void intake.receive(agent.session, decision.messages, turn).catch(report)
+
+    const sessionId = String(agent.session.id)
+    const stepDeadlineAt = Date.now() + DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs
+    const resolved = await Promise.all(
+      messages.map(msg => resolveRecallForMessage(sessionId, agent.session.header.cwd, turn, msg, stepDeadlineAt, signal)),
+    )
+    if (signal.aborted) return decision
+
+    // Append L3 recall messages in original message order [A, B, ...] without modifying prior turns' nodes.
+    const appended = [...decision.messages]
+    for (const { msg, requestId, result } of resolved) {
+      const recallText = formatAutomaticRecallMessage({ turn, ref: requestId ?? msg.id, result })
+      if (!recallText) continue
+      const recallMessage = createUserMessage({
+        content: [{ type: 'text', text: recallText }],
+        source: { kind: 'viva-memory', form: 'recall' },
+      })
+      appended.push(recallMessage)
+      if (result.status === 'hit' && result.hits.length > 0) {
+        pendingContextConfirmations.set(String(recallMessage.id), { session: sessionId, turn, pushed: result.hits })
+      }
+    }
+    return appended.length === decision.messages.length ? decision : { ...decision, messages: appended }
   })
 
   registerMemoryTools(ctx, async (request, agent, signal) => {

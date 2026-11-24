@@ -1,6 +1,6 @@
 import type { MemoryCompute } from '../../src/memory/contracts/memory-contract.ts'
 import type { MemoryComputeTools } from '../../src/memory/contracts/compute.ts'
-import { DREAM_CONSOLIDATE_SYSTEM } from '../../src/memory/core/memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM, DREAM_PROFILE_SYSTEM } from '../../src/memory/core/memory-dream-prompts.ts'
 
 /** Deterministic Dream test provider exercising read-only node_search/read tools before outputting JSON operations. */
 export async function dreamModelStep(
@@ -8,6 +8,7 @@ export async function dreamModelStep(
   options: { empty?: boolean, name?: string, bucket?: 'personal' | 'procedure' | 'wiki', summary?: string, body?: string, evidenceId?: string, path?: string } = {},
   tools?: MemoryComputeTools,
 ) {
+  if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
   if (job.system !== DREAM_CONSOLIDATE_SYSTEM) throw new Error(`Unexpected dream fixture system for stage: ${job.stage}`)
   const input = JSON.parse(job.input) as {
     existingDigestCount?: number

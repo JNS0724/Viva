@@ -218,8 +218,6 @@ test('a stalled verification leaves independent recall, injection and direct rea
   assert.deepEqual(nodes.nodes.map((node: { id: string }) => node.id), [quick.documentId])
   const list = await f.memory.listFilesAsync({})
   assert.deepEqual(list.items.map(item => item.identity.id), [quick.documentId])
-  const profile = await f.memory.fileProfileAsync()
-  assert.deepEqual(profile.user.map(item => item.identity.id), [quick.documentId])
   const cancellation = new AbortController()
   const ongoing = request({ op: 'file_read', session, id: slow.documentId }, cancellation.signal)
   cancellation.abort()
@@ -387,9 +385,8 @@ test('model lookups omit changed, missing and unreadable files while unrelated v
   assert.equal(f.documents.registered(workspace).find(row => row.id === missing.documentId)?.path, missing.path)
 })
 
-test('a stalled automatic file read returns the profile within the outer context budget', async t => {
+test('a stalled automatic file read returns timeout within the outer context budget', async t => {
   const f = fixture(t), id = randomUUID()
-  f.memory.setProfile({ role: 'profile-on-timeout' })
   f.memory.accept('Archive invoices', origin, id)
   const { workspace, reference } = f.ref(id)
   f.documents.commit({ operationId: 'timeout', workspace, path: 'digest/wiki/invoices.md', action: 'CREATE',
@@ -405,10 +402,10 @@ test('a stalled automatic file read returns the profile within the outer context
   const outer = new AbortController()
   const timer = setTimeout(() => outer.abort(), DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
   try {
-    const response = f.memory.handleModelRequest({ op: 'context', session: origin.session, turn: 1, question: 'Archive invoices' }, origin, () => !outer.signal.aborted, outer.signal)
+    const response = f.memory.automaticRecall({ session: origin.session, turn: 1, question: 'Archive invoices' }, origin, () => !outer.signal.aborted, outer.signal)
     await reading
     t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticSearchBudgetMs)
-    assert.match(await response, /profile-on-timeout/)
+    assert.deepEqual(await response, { status: 'timeout' })
     assert.equal(outer.signal.aborted, false)
   } finally { clearTimeout(timer); t.mock.timers.reset() }
 })

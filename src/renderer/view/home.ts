@@ -1,7 +1,6 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { initializationNotice } from './initialization.ts'
 import { feedCount, feedGroups } from '../feed-state.ts'
-import { isProfileEmpty } from '../personal-state.ts'
 import { catMood, greeting, setupView, statusView } from '../selectors.ts'
 import { maidFor, maidMood } from './maid.ts'
 import type { MaidMood, MaidSlots } from './maid.ts'
@@ -72,20 +71,9 @@ function setupCard(setup: NonNullable<ReturnType<typeof setupView>>, handlers: H
     setup.action ? h('button', { class: 'btn btn-accent setup-action', type: 'button', text: setup.action, onClick: handlers.openSettings }) : null)
 }
 
-/** First launches only: a light invitation to the intro, until it is done or put off. */
-const introCard = (handlers: Handlers) => h('section', { class: 'home-card tile-intro', 'aria-label': t("home.let.the.assistant.get.to.know.you") },
-  h('div', { class: 'home-card-copy' },
-    h('h2', { class: 'intro-title', text: t("home.introduce.yourself") }),
-    h('p', { class: 'setup-body', text: t("home.add.a.few.details.about.your.work") })),
-  h('div', { class: 'intro-actions' },
-    h('button', { class: 'btn btn-accent btn-small', type: 'button', id: 'start-intro', text: t("home.get.started"), onClick: () => handlers.openProfile('intro') }),
-    h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("home.maybe.later"), onClick: handlers.skipIntro })))
-
-const wantsIntro = (memory: State['memory']) => memory.loaded && memory.onboarding === 'pending' && isProfileEmpty(memory)
-
 /** Before the first message: the maid and a greeting, and a card only when something needs doing first. */
 export function renderHome(container: HTMLElement, state: State, handlers: Handlers, now: number) {
   const setup = setupView(state.info)
-  const card = initializationNotice(state, handlers) ?? (setup ? setupCard(setup, handlers) : wantsIntro(state.memory) ? introCard(handlers) : todayCard(state, handlers, now))
+  const card = initializationNotice(state, handlers) ?? (setup ? setupCard(setup, handlers) : todayCard(state, handlers, now))
   container.replaceChildren(h('div', { class: 'home-simple' }, hero(state, now), card))
 }

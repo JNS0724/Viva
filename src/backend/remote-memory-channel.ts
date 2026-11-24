@@ -1,6 +1,6 @@
 import type { OwnerCallOptions } from '../memory/node/owner-adapter.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../memory/contracts/memory-daily-defaults.ts'
-import { memoryDomainErrorCode, memoryHostFailure } from '../memory/contracts/domain-error.ts'
+import { memoryDomainErrorCode, memoryHostFailure, parseMemoryDomainErrorDetails } from '../memory/contracts/domain-error.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
 import { MEMORY_HOST_PROTOCOL, MEMORY_PAGE_READ_METHODS, memoryOwnerState, memoryOwnerChange, memoryOwnerContextUsed, parseHostMemoryCommand } from '../memory/contracts/host.ts'
@@ -12,7 +12,7 @@ import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import type { DiagnosticContext, DiagnosticFields, DiagnosticStage } from '../diagnostics/contracts.ts'
 
 // Protocol read labels only; they never affect admission, dispatch, or memory facts.
-const READ_STAGE: Partial<Record<HostMemoryMethod, DiagnosticStage>> = { profilePage: 'profile', profile: 'profile', onboarding: 'onboarding', cleanupPending: 'cleanup', revision: 'revision', fileProfile: 'file-profile' }
+const READ_STAGE: Partial<Record<HostMemoryMethod, DiagnosticStage>> = { profilePage: 'profile', cleanupPending: 'cleanup', revision: 'revision' }
 
 export class MemoryOwnerUnavailable extends Error {
   readonly code = 'unavailable'
@@ -34,9 +34,18 @@ export interface MemoryChannelEvents {
 
 function channelError(failure: Record<string, unknown>) {
   const domain = memoryDomainErrorCode.safeParse(failure.domainCode)
-  const error = new Error(domain.success ? t(`main.memory.${domain.data}`) : typeof failure.reason === 'string' ? failure.reason : 'Memory owner request failed')
-  return Object.assign(error, { code: typeof failure.code === 'string' ? failure.code : 'unavailable',
-    ...(domain.success ? { domainCode: domain.data } : {}) })
+  const details = parseMemoryDomainErrorDetails(failure.domainDetails)
+  const message = !domain.success
+    ? (typeof failure.reason === 'string' ? failure.reason : 'Memory owner request failed')
+    : domain.data === 'profile.confirmed_too_long'
+      ? t('main.memory.profile.confirmed_too_long', details ?? { limit: 800, actual: 0 })
+      : t(`main.memory.${domain.data}`)
+  const error = new Error(message)
+  return Object.assign(error, {
+    code: typeof failure.code === 'string' ? failure.code : 'unavailable',
+    ...(domain.success ? { domainCode: domain.data } : {}),
+    ...(details ? { details } : {}),
+  })
 }
 
 /** The desktop supervisor owns its RPC transport. Only the native dsh channel sends legacy host frames. */

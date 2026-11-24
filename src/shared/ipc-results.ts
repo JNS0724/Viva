@@ -1,5 +1,5 @@
 import type { MemoryDreamStatus } from '../memory/contracts/dream-status.ts'
-import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult, MemoryFileForgetResult } from '../memory/contracts/file-management.ts'
+import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult, MemoryFileForgetResult, MemoryManagedFileIdentity } from '../memory/contracts/file-management.ts'
 
 export type MemoryFileSourceView = MemoryFileDetail['sources'][number] & { link: string | null }
 export type MemoryFileDetailView = Omit<MemoryFileDetail, 'sources'> & {
@@ -100,6 +100,7 @@ export interface IpcResults {
   'task:close': void
   'task:stop': void
   'task:resume': { ok: boolean, problem?: string }
+  'memory:get': { cleanupPending: number, revision: number, residentProfile: MemoryManagedFileIdentity | null, habits: { text: string, samples: number } }
   'memory:dream-status': MemoryDreamStatus
   'memory:run-dream': MemoryDreamStatus
   'memory:list-files': MemoryFileListResult

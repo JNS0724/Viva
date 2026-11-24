@@ -22,7 +22,7 @@ let retired = false
 try {
   await configureFakeProvider(running, model)
   await expect.poll(() => running.page.evaluate(async () => {
-    try { return Boolean((await window.agent.getMemory()).profile) } catch { return false }
+    try { return typeof (await window.agent.getMemory()).revision === 'number' } catch { return false }
   }), { timeout: 15_000 }).toBe(true)
   const owner = await running.hooks.memoryOwnerPid(), dsh = await running.hooks.agentPid()
   assert.ok(owner && dsh && owner !== dsh)
@@ -69,7 +69,7 @@ try {
     const replacement = await running.hooks.memoryOwnerPid()
     return Boolean(replacement && replacement !== owner)
   }, { timeout: 15_000 }).toBe(true)
-  await expect.poll(() => running.page.evaluate(() => window.agent.getMemory().then(memory => !!memory.profile, () => false)),
+  await expect.poll(() => running.page.evaluate(() => window.agent.getMemory().then(memory => typeof memory.revision === 'number', () => false)),
     { timeout: 10_000 }).toBe(true)
   assert.equal(await running.hooks.agentPid(), dsh)
   const retry = running.page.locator('#profile-root .form-error').getByRole('button', { name: /重新加载|Reload/, exact: true })

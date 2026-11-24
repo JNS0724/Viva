@@ -7,7 +7,7 @@ export function diagnosticOperationForChannel(channel: string): DiagnosticOperat
     case 'memory:forget-file': return 'memory.forget'
     case 'memory:undo-file': return 'memory.undo'
     case 'memory:rebuild-indexes': return 'memory.index'
-    case 'memory:create-file': case 'memory:edit-file': case 'memory:set-profile': case 'memory:set-file-enabled': return 'memory.write'
+    case 'memory:create-file': case 'memory:edit-file': case 'memory:set-file-enabled': return 'memory.write'
     case 'agent:prompt': return 'conversation.send'
     case 'agent:cancel': case 'agent:steer': return 'conversation.cancel'
     case 'history:resume-topic': return 'conversation.resume'

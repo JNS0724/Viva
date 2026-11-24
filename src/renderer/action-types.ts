@@ -128,20 +128,15 @@ export interface ActionPayloads extends ConversationPayloads {
   models_discovery_pick: { id: string }
   models_discovery_close: {}
   models_adopt: { rows: readonly ModelRow[] }
-  memory_loaded: { data: Pick<State['memory'], 'profile' | 'onboarding' | 'habits'> & { cleanupPending?: number, fileProfile?: State['memory']['fileProfile'] } }
+  memory_loaded: { data: Pick<State['memory'], 'habits'> & { cleanupPending?: number, residentProfile?: State['memory']['residentProfile'] } }
   memory_load_failed: { message: string }
   memory_open: { view?: string }
   memory_close: {}
-  memory_edit: { key: string | null }
   memory_busy: {}
   memory_failed: { message: string }
-  memory_profile_saved: { profile: State['memory']['profile'] }
-  memory_summaries_stale: {}
   memory_dream_status: { status: State['memory']['dream'] }
   memory_dream_requesting: { busy: boolean }
   memory_index_rebuild: { busy: boolean }
-  memory_onboarding: { status: State['memory']['onboarding'] }
-  memory_docs_added: { docs: State['memory']['docs'] }
   memory_files_query: { query: string }
   memory_files_invalidated: {}
   memory_files_loading: {}

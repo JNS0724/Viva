@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { parseMemoryDomainErrorDetails } from '../contracts/domain-error.ts'
 import {
   MEMORY_OWNER_RPC, OWNER_RPC_DEFAULT_BUDGET_MS, OWNER_RPC_MAX_ACTIVE, OWNER_RPC_MAX_BUDGET_MS, ownerRpcFrame,
   type OwnerRpcFrame,
@@ -67,7 +68,12 @@ export function createOwnerRpcPeer(options: PeerOptions) {
           cleanup()
           if (frame.ok) resolve(frame.result as T)
           else if (frame.error.code === 'timeout') reject(new RequestTimeout())
-          else reject(Object.assign(new Error(frame.error.message), { code: frame.error.code, reason: frame.error.reason }))
+          else {
+            const details = parseMemoryDomainErrorDetails(frame.error.details)
+            reject(Object.assign(new Error(frame.error.message), {
+              code: frame.error.code, reason: frame.error.reason, ...(details ? { details } : {}),
+            }))
+          }
         },
         disconnect(error) { cleanup(); reject(error) },
       })
@@ -84,9 +90,13 @@ export function createOwnerRpcPeer(options: PeerOptions) {
       if (ok) options.send({ ...base, ok: true, result })
       else {
         const error = result instanceof Error ? result : new Error('Memory owner operation failed')
+        const details = parseMemoryDomainErrorDetails(
+          'details' in error ? error.details : 'domainDetails' in error ? error.domainDetails : undefined,
+        )
         options.send({ ...base, ok: false, error: { message: error.message.slice(0, 2_048),
           ...('code' in error && typeof error.code === 'string' ? { code: error.code } : {}),
           ...('reason' in error && typeof error.reason === 'string' ? { reason: error.reason } : {}),
+          ...(details ? { details } : {}),
         } })
       }
     } catch { /* Disconnect handles orphaned requests. */ }

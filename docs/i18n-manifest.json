@@ -121,6 +121,12 @@
       "zh": "docs/logging-design.zh-CN.md",
       "enHash": "595befb1447c010c922c26616858b0923aa6463a701a288dcda4264756a2fc1a",
       "zhHash": "005be20dcbd9e442c28346df9c85cd0b8f9fcddf194d3256b693f1a7555d40e9"
+    },
+    {
+      "en": "docs/memory-runtime-decoupling.md",
+      "zh": "docs/memory-runtime-decoupling.zh-CN.md",
+      "enHash": "8f970f1e512d395da6954c4ac0a26c7a2a10b2d8247f0dc5b31eab8e7f94d2b9",
+      "zhHash": "f3d5f2e4a168d61602455930ff37bb5f6bf7ac394eef73ea6dbe4919bd49b648"
     }
   ],
   "bilingual": [

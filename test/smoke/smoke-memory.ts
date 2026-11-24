@@ -15,7 +15,6 @@ import type { MemoryManagedFileIdentity } from '../../src/memory/contracts/file-
  * a model provider added in settings answering once picked, and the app bringing dsh back after it is killed.
  */
 const POLL_MS = 200
-const ROLE = '支付平台部的后端负责人'
 export const REPORT_MEMORY = '周报每周五下班前交给张三'
 export const REPORT_TITLE = '周报提交约定'
 const DELETE_MEMORY = '青竹项目的验收清单由陈工维护'
@@ -73,8 +72,7 @@ function readsFileMemory(request: object, identity: MemoryManagedFileIdentity, t
   const { messages } = request as { messages?: Array<{ content?: string | Array<{ type?: string, text?: string }> }> }
   const blocks = messages?.flatMap(({ content }) => typeof content === 'string' ? [content]
     : content?.flatMap(block => block.type === 'text' && block.text ? [block.text] : []) ?? []) ?? []
-  const snapshot = blocks.findLast(block => block.includes('<system-reminder>')
-    && (block.includes('describes your current session') || block.includes('Current runtime context: none')))
+  const snapshot = blocks.findLast(block => block.includes('<memory-recall') && block.includes(FILE_EVIDENCE))
   const packet = snapshot?.split(FILE_EVIDENCE)[1]?.split('\n')[0]
   if (!packet) return false
   const { notes } = JSON.parse(packet) as { notes: Array<{ id: string, workspace: string, markdown: string }> }
@@ -152,28 +150,10 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   await newTopic(win)
   await finishTurn(win)
   await wait(UI_WAIT_MS)
-  expect(await run(win, `Boolean(document.getElementById('start-intro'))`), 'a fresh profile should offer the intro on the home page')
+  expect(!(await run(win, `Boolean(document.getElementById('start-intro'))`)), 'a fresh profile skips manual onboarding and starts directly on the home page')
   await capture(win, outDir, 'memory-home')
-
-  await run(win, `document.getElementById('start-intro').click()`)
-  await wait(UI_WAIT_MS)
-  await run(win, `(() => {
-    const field = (name) => document.querySelector('[name="' + name + '"]')
-    field('intro-role').value = ${JSON.stringify(ROLE)}
-    field('intro-projects').value = 'Q4 对账系统重构'
-    field('intro-analyze').checked = false
-  })()`)
-  await capture(win, outDir, 'memory-intro')
-  await run(win, `document.querySelector('.intro-form').requestSubmit()`)
-  // Saving the profile and marking onboarding done are separate IPCs. The tile can disappear before the form closes.
-  const afterIntro = await until(win, `(() => {
-    const state = { panel: Boolean(document.querySelector('.profile')), intro: Boolean(document.getElementById('start-intro')),
-      error: document.querySelector('.intro-form [role="alert"]')?.textContent ?? '' }
-    return state.error || (!state.panel && !state.intro) ? state : null
-  })()`, 'the intro save and onboarding to finish')
-  expect(!afterIntro.error && !afterIntro.panel && !afterIntro.intro, 'saving the intro should close it and retire the home tile', afterIntro)
-  const keptIntro = await run(win, `window.agent.getMemory().then(({ profile, onboarding }) => ({ role: profile.role?.value, onboarding }))`)
-  expect(keptIntro.role === ROLE && keptIntro.onboarding === 'done', 'the intro role and completed onboarding should both be persisted', keptIntro)
+  const freshMemory = await run(win, `window.agent.getMemory()`)
+  expect(typeof freshMemory.revision === 'number' && freshMemory.residentProfile === null, 'a fresh memory store starts without a pre-populated resident profile', freshMemory)
 
   await run(win, `document.getElementById('open-profile').click()`)
   await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
@@ -182,18 +162,17 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   await run(win, `document.querySelector('${runDream}').click()`)
   await until(win, `document.querySelector('[data-dream-state="idle"]')?.textContent.includes('无新日记')`, 'Dream completed its first empty check')
   await run(win, `document.querySelector('${runDream}').scrollIntoView({ block: 'center' })`)
-  await until(win, `!document.querySelector('.toast')`, 'intro feedback dismissed before capturing the Dream controls')
+  await until(win, `!document.querySelector('.toast')`, 'feedback dismissed before capturing the Dream controls')
   await capture(win, outDir, 'memory-dream-status')
   await closeProfile(win)
 
   const note = await writeDailyMemory(win, REPORT_MEMORY, REPORT_TITLE)
   await openDailyMemory(win, note.identity)
   const page = await run(win, `({
-    role: document.querySelector('[data-field="role"] .profile-value')?.textContent ?? '',
     detail: document.querySelector('[data-memory-files-view="detail"] article')?.textContent ?? '',
     sources: [...document.querySelectorAll('[data-memory-files-view="detail"] button')].map(button => button.textContent),
   })`)
-  expect(page.role === ROLE && page.detail.includes(REPORT_MEMORY), 'About You shows the manual profile and its separately stored note', page)
+  expect(page.detail.includes(REPORT_MEMORY), 'About You shows the separately stored daily note', page)
   expect(page.sources.some((label: string) => label.startsWith('查看原文')), 'the note offers verified original links', page.sources)
   await capture(win, outDir, 'memory-profile')
   await run(win, `document.querySelector('[name="memory-rebuild-indexes"]').click()`)

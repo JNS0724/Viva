@@ -125,9 +125,7 @@ export const IPC_ARGS = Object.freeze({
   'memory:create-file': z.tuple([memoryFileCreateRequest]),
   'memory:edit-file': z.tuple([memoryFileEditRequest]),
   'memory:forget-file': z.tuple([memoryFileForgetRequest]),
-  'memory:set-profile': z.tuple([z.record(z.string(), z.unknown()), operationId.optional()]),
   'memory:rebuild-indexes': none,
-  'memory:onboarding': z.tuple([id]),
   'memory:add-docs': none,
 
   'files:list': read(z.tuple([path])),

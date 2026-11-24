@@ -92,3 +92,35 @@ export function parseDreamOperations(
 ): DreamOperation[] {
   return parseDreamPlan(value, allowedDailyPaths, allowedSourceIds, maxOperations).operations
 }
+
+const dreamProfilePlanSchema = z.discriminatedUnion('action', [
+  z.strictObject({ action: z.literal('NOOP') }),
+  z.strictObject({
+    action: z.literal('CREATE'),
+    body: z.string().trim().min(1),
+    sourceIds: z.array(z.string().min(1)).min(1),
+  }),
+  z.strictObject({
+    action: z.literal('REFINE'),
+    body: z.string().trim().min(1),
+    sourceIds: z.array(z.string().min(1)).min(1),
+  }),
+])
+
+export type DreamProfilePlan =
+  | { action: 'NOOP' }
+  | { action: 'CREATE' | 'REFINE', body: string, sourceIds: string[] }
+
+/** Validate the dedicated lightweight profile planner output against allowed pure-user sources. */
+export function parseDreamProfilePlan(
+  value: unknown,
+  allowedSourceIds: ReadonlySet<string>,
+  expectedAction: 'CREATE' | 'REFINE',
+): DreamProfilePlan {
+  const parsed = dreamProfilePlanSchema.parse(value)
+  if (parsed.action === 'NOOP') return parsed
+  if (parsed.action !== expectedAction) throw new Error('dream-profile-action-mismatch')
+  const sourceIds = [...new Set(parsed.sourceIds)]
+  if (sourceIds.some(id => !allowedSourceIds.has(id))) throw new Error('unknown-dream-source')
+  return { action: parsed.action, body: parsed.body, sourceIds }
+}

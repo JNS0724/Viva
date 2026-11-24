@@ -205,9 +205,10 @@ export async function checkRuntime(embedder: MemoryEmbedder) {
     const profileTimes: number[] = []
     for (let i = 0; i < 100; i++) {
       const started = performance.now()
-      const profile = memory.fileProfile()
+      const page = await memory.listFilesAsync({ kind: 'digest', state: 'enabled' })
       profileTimes.push(performance.now() - started)
-      assert.equal(profile.user.length, 6, 'measure authorized personal files rather than the removed numeric profile')
+      assert.equal(page.status, 'ok')
+      assert.equal(page.items.filter(item => item.path.startsWith('digest/personal/')).length, 6, 'measure authorized personal files rather than the removed numeric profile')
     }
     const cases: RuntimeCase[] = []
     for (const [index, item] of queries.entries()) {

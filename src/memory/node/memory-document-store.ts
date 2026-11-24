@@ -11,6 +11,7 @@ import { memoryFileRevision } from './memory-file-store.ts'
 import { fileErasure, openMemoryFileJournal } from './memory-file-journal.ts'
 import type { FileCheckpoint } from './memory-file-journal.ts'
 import { documentSourceProofCurrent } from '../core/memory-source-proof.ts'
+import { isReservedProfilePath, RESIDENT_PROFILE_PATH, userWorkspaceId } from '../core/resident-profile.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { transaction, truncateMemoryJournal } from './sqlite.ts'
 
@@ -49,8 +50,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     CREATE TABLE IF NOT EXISTS memory_documents (
       id TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL,
       usage_version INTEGER NOT NULL, enabled INTEGER NOT NULL, forgotten INTEGER NOT NULL DEFAULT 0,
-      sources TEXT NOT NULL, UNIQUE(workspace,path)
+      sources TEXT NOT NULL
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_documents_active_path ON memory_documents(workspace,path) WHERE forgotten=0;
     CREATE TABLE IF NOT EXISTS memory_document_revisions (
       operation TEXT PRIMARY KEY, document TEXT NOT NULL, before TEXT, after TEXT, at INTEGER NOT NULL
     );
@@ -70,7 +72,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     return db.prepare('SELECT * FROM memory_documents WHERE id=?').get(id) as Row | undefined
   }
   function rowByPath(scope: string, path: string): Row | undefined {
-    return db.prepare('SELECT * FROM memory_documents WHERE workspace=? AND path=?').get(scope, path) as Row | undefined
+    return db.prepare('SELECT * FROM memory_documents WHERE workspace=? AND path=? AND forgotten=0').get(scope, path) as Row | undefined
   }
   function currentSources(scope: string, refs: readonly DocumentSourceRef[], staged?: MemorySource) {
     return refs.length > 0 && new Set(refs.map(ref => ref.id)).size === refs.length && refs.every(ref => {
@@ -159,9 +161,16 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (!file || file.path !== path || file.revision !== row.revision) return null
     return { id: row.id, workspace: scope, path, revision: row.revision, usageVersion: row.usage_version, markdown: file.markdown, sources: refsOf(row), enabled: Boolean(row.enabled) }
   }
+  const userWorkspace = userWorkspaceId(memoryFileRevision)
+  function checkReservedProfilePath(scope: string, filePath: string) {
+    if (!isReservedProfilePath(filePath)) return
+    if (scope !== userWorkspace || filePath !== RESIDENT_PROFILE_PATH) {
+      throw new Error('memory-reserved-profile-path')
+    }
+  }
   function list(scope: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[] {
     workspace(scope)
-    return (db.prepare('SELECT path FROM memory_documents WHERE workspace=? ORDER BY path').all(scope) as Array<{ path: string }>)
+    return (db.prepare('SELECT path FROM memory_documents WHERE workspace=? AND forgotten=0 ORDER BY path').all(scope) as Array<{ path: string }>)
       .flatMap(row => read(scope, row.path, options) ?? [])
   }
   function apply(input: unknown, before: DocumentSnapshot | null, after: DocumentSnapshot | null, receipt: DocumentReceipt, sources: DocumentSourceRef[], reads: DocumentReadRef[], files: Array<{ path: string, revision: string }> = [], management?: DocumentManagementGuard, manualSource?: MemorySource) {
@@ -185,11 +194,16 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const prior = replay(input.operationId, input)
     if (prior) return prior
     digestPath.parse(input.path)
+    checkReservedProfilePath(input.workspace, input.path)
     parseMemoryDocument(input.markdown)
     const before = read(input.workspace, input.path)
     if (rowByPath(input.workspace, input.path) && !before) throw new Error('memory-document-unavailable')
     if ((before?.revision ?? null) !== input.expectedRevision) throw new Error('memory-document-version')
     if ((input.action === 'CREATE') !== !before) throw new Error('memory-document-action')
+    if (input.action === 'CREATE') {
+      const pendingPathPurges = purges().filter(p => p.workspace === input.workspace && p.path === input.path)
+      if (pendingPathPurges.length) applyPurges(pendingPathPurges)
+    }
     if (before && before.sources.some(ref => !input.sources.some(next => next.id === ref.id && next.token === ref.token && (!next.spans || ref.spans && ref.spans.every(part => next.spans!.some(span => span.start <= part.start && span.end >= part.end)))))) throw new Error('memory-document-source-loss')
     if (!currentSources(input.workspace, input.sources) || !currentReads(input.workspace, input.reads)) throw new Error('memory-document-source-version')
     const id = before?.id ?? randomUUID(), revision = memoryFileRevision(input.markdown), usageVersion = (before?.usageVersion ?? 0) + 1
@@ -203,6 +217,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (prior) return prior
     if (!manual) throw new MemoryDomainError('not.found')
     digestPath.parse(input.path)
+    checkReservedProfilePath(input.workspace, input.path)
     parseMemoryDocument(input.markdown)
     const before = read(input.workspace, input.path)
     const expected = input.expected
@@ -290,6 +305,12 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   function applyPurges(rows: ReturnType<typeof purges>) {
     for (const purge of rows) {
       try {
+        const active = rowByPath(purge.workspace, purge.path)
+        if (active && active.id !== purge.document) {
+          // A newer active document now owns this path; retire the old tombstone's purge entry without touching disk.
+          journal.commit(`purge:${purge.document}`, hash(purge), () => ({ workspace: purge.workspace, changes: [], data: { ...purge, kind: 'purge' } }))
+          continue
+        }
         const before = journal.files(purge.workspace).read(purge.path)
         // A prepared CREATE has no accepted ownership of unrelated on-disk bytes.
         // Keep cleanup pending if its physical state cannot be verified.

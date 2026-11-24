@@ -3,11 +3,12 @@ import path from 'node:path'
 import { emitDiagnosticFailure } from '../diagnostics/node/context.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../memory/contracts/memory-daily-defaults.ts'
 import { isDailyMemoryStage } from '../memory/contracts/memory-contract.ts'
-import { MEMORY_HOST_PROTOCOL } from '../memory/contracts/host.ts'
+import { MEMORY_HOST_PROTOCOL, memoryOwnerChange, memoryOwnerProfile, memoryOwnerState } from '../memory/contracts/host.ts'
 import type { OwnerAdapterApi } from '../memory/node/owner-adapter.ts'
 import { createOwnerRpcPeer } from '../memory/node/owner-rpc-peer.ts'
 import { createMemoryOwnerSupervisor } from '../memory/node/owner-supervisor.ts'
 import { objectOf } from '../shared/unknown-value.ts'
+import { createMemoryPrefetchManager, type PrefetchStartInput } from './memory-prefetch.ts'
 import { createRemoteMemoryChannel, MemoryOwnerUnavailable, type MemoryChannelEvents } from './remote-memory-channel.ts'
 
 type Supervisor = ReturnType<typeof createMemoryOwnerSupervisor>
@@ -18,7 +19,7 @@ const MODEL_CALLBACK_MS = 130_000
 function requestSession(method: string, args: unknown[]) {
   switch (method) {
     case 'receiveSource': case 'completeTurn': return objectOf(args[0])?.sessionId
-    case 'sidecarRequest': return objectOf(args[0])?.session
+    case 'sidecarRequest': case 'automaticRecall': case 'reportContextUsed': return objectOf(args[0])?.session
     case 'bindIntakeSession': case 'intakeWatermark': case 'advanceIntake':
     case 'rememberStandaloneFile': case 'forgetStandaloneFile': return args[0]
   }
@@ -35,6 +36,12 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     if (!owner) throw new MemoryOwnerUnavailable()
     return owner.callHost(method, input, options)
   } })
+  const prefetch = createMemoryPrefetchManager({
+    callPrefetch(input, options) {
+      if (!owner) return Promise.reject(new MemoryOwnerUnavailable())
+      return owner.callHost('prefetchRecall', input, options)
+    },
+  })
 
   function adapterCall<T>(method: string, input: object, signal: AbortSignal, budgetMs: number): Promise<T> {
     if (!adapter?.attached) return Promise.reject(new MemoryOwnerUnavailable('Memory adapter is unavailable'))
@@ -66,7 +73,20 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
         signal.throwIfAborted()
         if (adapter !== link) throw new MemoryOwnerUnavailable()
         link.attached = true
-        return channel.state()
+        return { state: channel.state(), profile: prefetch.profile() }
+      }
+      if (method === 'claimPrefetch') {
+        if (!link.attached || adapter !== link || !data
+          || typeof data.requestId !== 'string' || typeof data.sessionId !== 'string') {
+          return { found: false }
+        }
+        const lifetime = foregroundSignal(data.sessionId)
+        if (lifetime?.aborted) return { found: true, result: { status: 'unavailable' } }
+        return prefetch.claimPrefetch({
+          requestId: data.requestId,
+          sessionId: data.sessionId,
+          signal: lifetime ? AbortSignal.any([signal, lifetime]) : signal,
+        })
       }
       if (method !== 'adapter' || !link.attached || adapter !== link || !owner
         || typeof data?.method !== 'string' || !Array.isArray(data.args) || !data.epoch || data.epoch !== owner.epoch()) {
@@ -116,9 +136,20 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     ...settings, hostNamespace: 'viva',
     onEvent(event) {
       if (closing) return
+      let forward = true
+      const state = memoryOwnerState.safeParse(event)
+      if (state.success) prefetch.onState(state.data)
+      else {
+        const change = memoryOwnerChange.safeParse(event)
+        if (change.success) prefetch.onChange(change.data)
+        else {
+          const profile = memoryOwnerProfile.safeParse(event)
+          if (profile.success) forward = prefetch.onProfile(profile.data)
+        }
+      }
       try { channel.receive(event) }
       finally {
-        if (adapter?.attached) {
+        if (forward && adapter?.attached) {
           try { adapter.peer.notify(event) } catch { /* dsh is exiting */ }
         }
       }
@@ -135,12 +166,16 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     await current.close()
     if (owner === current) {
       owner = undefined
+      prefetch.onUnavailable()
       channel.processExited()
     }
   }
 
   return {
     channel, bindDsh,
+    prefetch,
+    startPrefetch: (input: PrefetchStartInput) => prefetch.startPrefetch(input),
+    profile: () => prefetch.profile(),
     pid: () => owner?.pid() ?? null,
     async prepare() {
       if (closing) throw new MemoryOwnerUnavailable()
@@ -149,6 +184,7 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     },
     close() {
       closing = true
+      prefetch.close()
       channel.close()
       return release()
     },

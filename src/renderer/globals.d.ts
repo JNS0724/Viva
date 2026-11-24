@@ -237,9 +237,7 @@ interface AgentApi extends DraftApi {
   createMemoryFile: Invoke<'memory:create-file'>
   editMemoryFile: Invoke<'memory:edit-file'>
   forgetMemoryFile: Invoke<'memory:forget-file'>
-  saveProfile: Invoke<'memory:set-profile'>
   rebuildMemoryIndexes: Invoke<'memory:rebuild-indexes'>
-  setOnboarding: Invoke<'memory:onboarding'>
   addDocs: Invoke<'memory:add-docs'>
   listFiles: Invoke<'files:list'>
   previewFile: Invoke<'files:preview'>

@@ -32,7 +32,12 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
   const memory = path.join(compiledRoot, 'src/memory')
   const diagnostics = path.join(compiledRoot, 'src/diagnostics')
   const shared = path.join(compiledRoot, 'src/shared')
-  const sharedFiles = ['request-budget.js', 'node/tool-call-budget.js'].map(file => path.join(shared, file))
+  const sharedFiles = [
+    'request-budget.js',
+    'node/tool-call-budget.js',
+    'request-routing/header.js',
+    'request-routing/task-header.js',
+  ].map(file => path.join(shared, file))
   if (!existsSync(path.join(plugin, 'index.js')) || !existsSync(path.join(memory, 'node/index.js'))) throw new Error('Compile memory and its plugin before assembly')
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Manifest
   const declared = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})])
@@ -101,7 +106,7 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
     'Use `/memory-remember <text>` to save an entry and `/memory-forget <id>` to forget an entry by its saved or recalled ID.',
     'DSH Web 0.2.2-rc.2 shows command receipts once a conversation has a normal turn. The receipt reports when removal of the selected file and its index is still pending.',
     '',
-    'The plugin opens a v12 memory database. If the existing database is incompatible, memory is unavailable and the existing files stay in place.',
+    'The plugin opens a v13 memory database. If the existing database is incompatible, memory is unavailable and the existing files stay in place.',
     '',
     'Local embedding assets are optional external resources supplied by modelRoot/runtimeRoot configuration; this package never downloads models on startup.',
     'Dedicated Web management pages are a separate later phase.', '',

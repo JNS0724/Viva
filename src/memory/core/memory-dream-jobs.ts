@@ -3,7 +3,7 @@ import type { DiagnosticPort, DiagnosticReason, DiagnosticStage } from '../../di
 import { MemoryComputeError } from '../contracts/compute.ts'
 import type { MemoryComputeTools } from '../contracts/compute.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
-import { dailyPath, parseDreamPlan } from '../contracts/memory-file-contract.ts'
+import { dailyPath, parseDreamPlan, parseDreamProfilePlan } from '../contracts/memory-file-contract.ts'
 import type { DreamEdit, DreamOperation } from '../contracts/memory-file-contract.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryIdentity } from './ports/runtime.ts'
@@ -21,9 +21,16 @@ import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
 import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources } from './memory-document-read-policy.ts'
 import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryDocumentReadBatch, MemoryDocumentView } from './memory-document-read-policy.ts'
-import { DREAM_CONSOLIDATE_SYSTEM } from './memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM, DREAM_PROFILE_SYSTEM } from './memory-dream-prompts.ts'
 import { createMemoryDreamTools, dreamNodeMetadata, memoryDocumentLinks, MemoryDreamStaleError } from './memory-dream-tools.ts'
 import type { DreamSearchPage } from './memory-dream-tools.ts'
+import {
+  assembleDreamProfileBody,
+  isReservedProfilePath,
+  parseProfileSections,
+  RESIDENT_PROFILE_PATH,
+  userWorkspaceId,
+} from './resident-profile.ts'
 
 export { MemoryDreamStaleError } from './memory-dream-tools.ts'
 
@@ -70,17 +77,31 @@ type PersistedBatch = {
   fileRefs: FileRef[]
   operations: PersistedOperation[]
   checkpointPaths: string[]
+  oversized?: boolean
+}
+type DeferredCheckpoint = {
+  workspace: string
+  file: FileRef
+  operationIds: string[]
+  oversized?: boolean
+}
+type JobPayload = {
+  pendingBatch?: PersistedBatch
+  deferredCheckpoints?: DeferredCheckpoint[]
 }
 
 const DAILY = 'daily'
 const MANUAL_JOB = 'dream.manualJob'
 const MANUAL_FOLLOWUP = 'dream.manualFollowup'
+const PROFILE_DELETED_AT = 'profile_deleted_at'
 const requestKey = (id: string) => `dream.request:${id}`
 const receiptKey = (id: string) => `dream.receipt:${id}`
 const DAY_MS = 86_400_000
 const unique = <T>(values: readonly T[]) => [...new Set(values)]
 const parse = (text: string) => JSON.parse(text) as unknown
 const isModelTimeout = (error: unknown) => error instanceof MemoryComputeError && error.reason === 'timeout'
+const isPureUserSource = (item: MemorySource) =>
+  item.scope.kind === 'user' && item.context?.kind === 'user' && (item.project ?? null) === null
 const STALE_COMMIT_ERRORS = new Set([
   'memory-document-version',
   'memory-document-source-version',
@@ -89,6 +110,10 @@ const STALE_COMMIT_ERRORS = new Set([
 ])
 const isStaleCommitError = (error: unknown) =>
   error instanceof MemoryDreamStaleError || (error instanceof Error && STALE_COMMIT_ERRORS.has(error.message))
+
+class DreamDiskUnverifiableError extends Error {
+  constructor() { super('dream-disk-unverifiable') }
+}
 
 function pendingBatchOf(payload: unknown): PersistedBatch | null {
   if (!payload || typeof payload !== 'object' || !('pendingBatch' in payload)) return null
@@ -99,7 +124,33 @@ function pendingBatchOf(payload: unknown): PersistedBatch | null {
     || !Array.isArray(batch.operations) || !Array.isArray(batch.checkpointPaths)) {
     return null
   }
+  if (batch.oversized !== undefined && typeof batch.oversized !== 'boolean') return null
   return batch as PersistedBatch
+}
+
+function deferredCheckpointsOf(payload: unknown): DeferredCheckpoint[] {
+  if (!payload || typeof payload !== 'object' || !('deferredCheckpoints' in payload)) return []
+  const candidate = (payload as { deferredCheckpoints?: unknown }).deferredCheckpoints
+  if (!Array.isArray(candidate)) return []
+  return candidate.filter((item): item is DeferredCheckpoint => {
+    if (!item || typeof item !== 'object') return false
+    const entry = item as Partial<DeferredCheckpoint>
+    return typeof entry.workspace === 'string'
+      && Boolean(entry.file && typeof entry.file === 'object' && typeof entry.file.key === 'string')
+      && Array.isArray(entry.operationIds)
+      && (entry.oversized === undefined || typeof entry.oversized === 'boolean')
+  })
+}
+
+function buildJobPayload(
+  pendingBatch: PersistedBatch | null,
+  deferredCheckpoints: readonly DeferredCheckpoint[],
+): JobPayload | null {
+  if (!pendingBatch && deferredCheckpoints.length === 0) return null
+  return {
+    ...(pendingBatch ? { pendingBatch } : {}),
+    ...(deferredCheckpoints.length ? { deferredCheckpoints: [...deferredCheckpoints] } : {}),
+  }
 }
 
 function applyRefineEdits(beforeBody: string, edits: readonly DreamEdit[]): string {
@@ -154,6 +205,52 @@ function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentV
   })
 }
 
+function formatProfileMarkdown(
+  action: 'CREATE' | 'REFINE',
+  autoSummaryBody: string,
+  dailyPaths: readonly string[],
+  before: MemoryDocumentView | null,
+) {
+  const beforeParsed = before ? parseMemoryDocument(before.markdown) : null
+  const draftAuto = stripAccidentalFrontmatter(autoSummaryBody)
+  const assembledBody = assembleDreamProfileBody({
+    existingBody: beforeParsed ? beforeParsed.body : null,
+    autoSummaryBody: draftAuto,
+    action,
+  })
+  const existingLinks = before ? memoryDocumentLinks(before.markdown) : []
+  const bodyLinks = memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: assembledBody }))
+  const beforeLinkPaths = new Set(existingLinks.map(link => link.split('#')[0]!))
+  for (const link of bodyLinks) {
+    const targetPath = link.split('#')[0]!
+    if (!dailyPaths.includes(targetPath) && !beforeLinkPaths.has(targetPath)) {
+      throw new Error('dream-ungrounded-link')
+    }
+  }
+  const presentExact = new Set(bodyLinks)
+  const presentPaths = new Set(bodyLinks.map(link => link.split('#')[0]!))
+  const missingExisting = existingLinks.filter(link => !presentExact.has(link))
+  for (const link of missingExisting) presentPaths.add(link.split('#')[0]!)
+  const missingDaily = dailyPaths.filter(path => !presentPaths.has(path))
+  const missing = unique([...missingExisting, ...missingDaily])
+  let body = assembledBody.trimEnd()
+  if (missing.length) {
+    const lines = missing.map(link => `- [[${link}]]`).join('\n')
+    body = `${body}\n\n## Sources\n${lines}`
+  }
+  const previousMetadata = beforeParsed ? beforeParsed.metadata : {}
+  const name = typeof previousMetadata.name === 'string' && previousMetadata.name.trim()
+    ? previousMetadata.name
+    : 'Personal Profile'
+  const description = typeof previousMetadata.description === 'string' && previousMetadata.description.trim()
+    ? previousMetadata.description
+    : 'Resident user profile maintained by Dream'
+  return formatMemoryDocument({
+    metadata: { ...previousMetadata, name, description },
+    body,
+  })
+}
+
 function retryHintFor(reason: string): string {
   switch (reason) {
     case 'dream-search-required':
@@ -164,6 +261,12 @@ function retryHintFor(reason: string): string {
       return 'Each REFINE edits[].oldText must match exactly once in the existing digest body; fix oldText or supply body instead.'
     case 'dream-ungrounded-link':
       return 'Only link paths from dailyPaths, inspected digests from node_search/read, or prior links already in the target digest.'
+    case 'dream-profile-reserved-heading':
+      return 'Do NOT include "## 用户确认", "## User Confirmed", "## 自动整理", or "## Auto Summary" headings in the profile body. Return only concise auto-summary lines.'
+    case 'dream-profile-empty-auto':
+      return 'Profile body must contain non-empty auto-summary lines, or return {"action":"NOOP"}.'
+    case 'dream-profile-action-mismatch':
+      return 'Use the exact action requested by actionMode ("CREATE" or "REFINE"), or return {"action":"NOOP"}.'
     default:
       return 'The prior JSON had an invalid shape, target path, budget, or source reference. Correct it using only the supplied inputs.'
   }
@@ -230,16 +333,35 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   }
   const { timezone, dreamTime, scanDays, dreamUnits, dreamBatchBytes } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(scanDays) || scanDays < 1 || !Number.isSafeInteger(dreamUnits) || dreamUnits < 1) throw new Error('invalid-dream-settings')
-  const schedule = () => effects.queue(DREAM, DAILY, null, nextDreamAt(now(), timezone, dreamTime))
+  const userWorkspace = userWorkspaceId(identity.hash)
+  const profileDeletedAt = (): number | null => {
+    const raw = store.meta(PROFILE_DELETED_AT)
+    if (!raw) return null
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  const profileSourcesAllowedByWatermark = (sources: readonly DocumentSourceRef[]): boolean => {
+    const watermark = profileDeletedAt()
+    if (watermark === null) return true
+    return sources.every(ref => {
+      const item = source(ref.id)
+      return Boolean(item && item.at > watermark)
+    })
+  }
+  const schedule = (payload: JobPayload | null = null) => effects.queue(DREAM, DAILY, payload, nextDreamAt(now(), timezone, dreamTime))
   let active = false
   let waitingGeneration: number | null = null
   const status = (operationId?: string): MemoryDreamStatus => {
-    const receipt = operationId && store.command(requestKey(operationId))
+    const receipt = operationId ? store.command(requestKey(operationId)) : undefined
+    if (receipt) {
+      const saved = store.meta(receiptKey(receipt.payload))
+      if (saved) return JSON.parse(saved) as MemoryDreamStatus
+    }
     const scheduled = effects.timing(DREAM, DAILY)
     return {
       state: active ? 'running' : scheduled?.generation === waitingGeneration ? 'waiting'
         : scheduled && scheduled.dueAt <= now() ? 'queued' : scheduled?.attempts ? 'retry' : 'idle',
-      ...dreamHistory(store), ...(receipt && { jobId: receipt.payload }),
+      ...dreamHistory(store), ...(receipt && { jobId: receipt.payload, completedAt: null }),
     }
   }
   const { refsCurrent, materialAllowed } = createMemoryDocumentEvidence({ notes, documents, hash: identity.hash, source, readable, allowsText })
@@ -275,7 +397,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
 
   const scopedDocuments = (workspace: string) => {
     const unpublished = new Map<string, { revision: string, path: string, name: string, terms: string[] }>()
-    const activeEntries = () => documents.fileRegistry(workspace).filter(row => row.state === 'active')
+    const activeEntries = () => documents.fileRegistry(workspace)
+      .filter(row => row.state === 'active' && !isReservedProfilePath(row.path))
     async function candidates(query: string, limit: number, hybridOffset: number, signal?: AbortSignal) {
       const terms = new Set(memorySearchTokens(query, false))
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
@@ -444,29 +567,79 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     })
     const today = todayAt(now(), timezone)
     const from = new Date(Date.parse(today) - (scanDays - 1) * DAY_MS).toISOString().slice(0, 10)
-    let retry = false
+    let scanRetry = false
+    let deferredRetry = false
     let waitingForAdmission = false
     let processedAny = false
     let oversizedAny = false
     let operationsUsed = 0
-    const clearPendingBatch = () => {
-      if (effects.holds(job)) effects.amend(job, {})
+    let activePendingBatch: PersistedBatch | null = pendingBatchOf(job.payload)
+    let activeDeferred: DeferredCheckpoint[] = deferredCheckpointsOf(job.payload)
+
+    const saveJobState = (nextPending: PersistedBatch | null, nextDeferred: readonly DeferredCheckpoint[]) => {
+      if (!effects.holds(job)) return false
+      const payload = buildJobPayload(nextPending, nextDeferred)
+      const ok = effects.amend(job, payload ?? {})
+      if (ok) {
+        activePendingBatch = nextPending
+        activeDeferred = [...nextDeferred]
+      }
+      return ok
     }
-    const checkpointFiles = async (fileRefs: readonly FileRef[]) => {
-      const checkpointBatch = await loadFiles([...fileRefs], undefined, true)
+    const clearPendingBatch = () => {
+      saveJobState(null, activeDeferred)
+    }
+
+    const classifyNoteFile = (file: FileRef, batch?: MemoryDocumentReadBatch): 'current' | 'already_processed' | 'unverifiable' | 'stale' => {
+      const reg = notes.noteRegistration(file.key)
+      if (!reg || reg.deleted || !reg.enabled || reg.workspace !== file.workspace || reg.path !== file.path
+        || reg.revision !== file.checkpoint || reg.fileRevision !== file.revision) {
+        return 'stale'
+      }
+      if (reg.processed >= file.checkpoint) return 'already_processed'
+      if (!refsCurrent(file.sources)) return 'stale'
+      if (batch) {
+        const obsRev = batch.observedRevision(file.workspace, file.path)
+        if (obsRev === undefined || obsRev === null) return 'unverifiable'
+        if (obsRev !== file.revision) return 'stale'
+        return fileCurrent(file, batch) ? 'current' : 'stale'
+      }
+      return fileCurrent(file) ? 'current' : 'stale'
+    }
+
+    const checkpointTargets = async (
+      targets: readonly DeferredCheckpoint[],
+      options: { clearPending: boolean, isDeferredRetry: boolean },
+    ) => {
+      const checkpointBatch = await loadFiles(targets.map(target => target.file), undefined, true)
       if (!effects.holds(job)) return
-      if (checkpointBatch && fileRefs.some(file => checkpointBatch.readObservation(file.workspace, file.path) === undefined)) retry = true
       transaction(() => {
         const at = now()
         let advanced = false
-        for (const file of fileRefs) {
-          const unreadable = checkpointBatch && checkpointBatch.readObservation(file.workspace, file.path) === undefined
-          if (!unreadable && fileCurrent(file, checkpointBatch) && notes.markProcessed(file.key, file.checkpoint)) {
-            advanced = true
-            processedAny = true
+        const unresolved: DeferredCheckpoint[] = []
+        for (const target of targets) {
+          const state = classifyNoteFile(target.file, checkpointBatch)
+          if (state === 'unverifiable') {
+            unresolved.push(target)
+          } else if (state === 'current') {
+            if (notes.markProcessed(target.file.key, target.file.checkpoint)) {
+              if (target.oversized) oversizedAny = true
+              if (!target.oversized || target.operationIds.length > 0) {
+                advanced = true
+                processedAny = true
+              }
+            }
           }
         }
         if (advanced) store.setMeta('dream.lastProcessedAt', String(at))
+        const nextDeferred = options.isDeferredRetry
+          ? unresolved
+          : [
+              ...activeDeferred.filter(existing => !unresolved.some(item => item.file.key === existing.file.key)),
+              ...unresolved,
+            ]
+        saveJobState(options.clearPending ? null : activePendingBatch, nextDeferred)
+        if (unresolved.length > 0) deferredRetry = true
       })
     }
 
@@ -529,6 +702,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           })
         } catch (error) {
           if (!effects.holds(job)) return 'cancelled'
+          if (error instanceof DreamDiskUnverifiableError) return 'retry'
           if (isStaleCommitError(error)) {
             clearPendingBatch()
             progress(job, 'source_changed', 'consolidate')
@@ -541,18 +715,60 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       return 'done'
     }
 
-    const pendingBatch = pendingBatchOf(job.payload)
-    if (pendingBatch) {
-      const workspace = pendingBatch.workspace
+    const createBatchCommitHandlers = (
+      batch: PersistedBatch,
+      extra?: {
+        onCommittedPath?(path: string): void
+        extraDbCurrent?(): boolean
+      },
+    ) => {
+      const workspace = batch.workspace
       const opSourcesValid = (op: PersistedOperation, requireEligible: boolean) => {
+        if (isReservedProfilePath(op.path)) {
+          if (workspace !== userWorkspace || op.path !== RESIDENT_PROFILE_PATH) return false
+          if (!profileSourcesAllowedByWatermark(op.sources)) return false
+          if (!op.sources.every(ref => { const item = source(ref.id); return Boolean(item && isPureUserSource(item)) })) return false
+        }
         return refsCurrent(op.sources)
           && (!requireEligible || op.sources.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) }))
           && materialAllowed(op.markdown, op.sources)
       }
+      const dbCheckOp = (op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>): 'ok' | 'wait' | 'stale' | 'cancelled' => {
+        if (!effects.holds(job)) return 'cancelled'
+        if (extra?.extraDbCurrent && !extra.extraDbCurrent()) return 'stale'
+        for (const file of batch.fileRefs) {
+          const reg = notes.noteRegistration(file.key)
+          if (!reg || reg.deleted || !reg.enabled || reg.workspace !== file.workspace || reg.path !== file.path
+            || reg.revision !== file.checkpoint || reg.fileRevision !== file.revision) {
+            return 'stale'
+          }
+          if (!refsCurrent(file.sources)) return 'stale'
+          if (file.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) return 'wait'
+        }
+        if (!opSourcesValid(op, false)) return 'stale'
+        if (op.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) return 'wait'
+        const registry = documents.fileRegistry(workspace)
+        const regById = new Map(registry.map(row => [row.id, row]))
+        for (const ref of opReads) {
+          const row = regById.get(ref.id)
+          if (!row || row.state !== 'active' || row.revision !== ref.revision || row.usageVersion !== ref.usageVersion) {
+            return 'stale'
+          }
+        }
+        if (op.action === 'CREATE') {
+          const collision = registry.find(row => row.path === op.path
+            || (isReservedProfilePath(op.path) && isReservedProfilePath(row.path)))
+          if (collision) return 'stale'
+        } else {
+          const target = registry.find(row => row.path === op.path)
+          if (!target || target.state !== 'active' || target.revision !== op.expectedRevision) return 'stale'
+        }
+        return 'ok'
+      }
       const makeOpCurrent = (op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>) =>
         (observed?: MemoryDocumentReadBatch) => {
           if (!effects.holds(job)
-            || !pendingBatch.fileRefs.every(ref => fileCurrent(ref, observed))
+            || !batch.fileRefs.every(ref => fileCurrent(ref, observed))
             || !opSourcesValid(op, true)) return false
           if (!opReads.every(ref => {
             const target = documents.indexFile(workspace, ref.id)
@@ -567,58 +783,139 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const target = documents.read(workspace, op.path, { physical })
           return target !== null && target.revision === op.expectedRevision
         }
-      const resumeOutcome = await commitBatchOperations(workspace, pendingBatch.operations, {
-        async verifyOp(op, opReads) {
-          const opLocations = (): Location[] => [
-            ...pendingBatch.fileRefs,
+      return {
+        async verifyOp(op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>): Promise<'ready' | 'wait' | 'stale' | 'retry' | 'cancelled'> {
+          const dbState = dbCheckOp(op, opReads)
+          if (dbState === 'cancelled') return 'cancelled'
+          if (dbState === 'wait') return 'wait'
+          if (dbState === 'stale') {
+            clearPendingBatch()
+            progress(job, 'source_changed', 'consolidate')
+            return 'stale'
+          }
+          const registry = documents.fileRegistry(workspace)
+          const regById = new Map(registry.map(row => [row.id, row]))
+          const opLocations: Location[] = [
+            ...batch.fileRefs,
             { workspace, path: op.path },
             ...opReads.flatMap(ref => {
-              const target = documents.indexFile(workspace, ref.id)
+              const target = regById.get(ref.id)
               return target ? [{ workspace, path: target.path }] : []
             }),
           ]
-          let currentReady = false
+          let observed: MemoryDocumentReadBatch | undefined
           try {
-            currentReady = await verified(observeReadset(opLocations, makeOpCurrent(op, opReads)))
+            observed = await loadFiles(opLocations, undefined, true)
           } catch (error) {
             if (!(error instanceof RequestTimeout)) throw error
             return 'retry'
           }
-          if (currentReady) return 'ready'
           if (!effects.holds(job)) return 'cancelled'
-          if (opSourcesValid(op, false) && op.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) {
-            return 'wait'
+          if (observed) {
+            for (const file of batch.fileRefs) {
+              const fileState = classifyNoteFile(file, observed)
+              if (fileState === 'unverifiable') return 'retry'
+              if (fileState === 'stale') {
+                clearPendingBatch()
+                progress(job, 'source_changed', 'consolidate')
+                return 'stale'
+              }
+            }
+            for (const ref of opReads) {
+              const target = regById.get(ref.id)
+              if (!target) {
+                clearPendingBatch()
+                progress(job, 'source_changed', 'consolidate')
+                return 'stale'
+              }
+              const obsRev = observed.observedRevision(workspace, target.path)
+              if (obsRev === undefined || obsRev === null) return 'retry'
+              if (obsRev !== ref.revision) {
+                clearPendingBatch()
+                progress(job, 'source_changed', 'consolidate')
+                return 'stale'
+              }
+            }
+            const targetObsRev = observed.observedRevision(workspace, op.path)
+            if (op.action === 'CREATE') {
+              if (targetObsRev === undefined) return 'retry'
+              if (targetObsRev !== null) {
+                clearPendingBatch()
+                progress(job, 'source_changed', 'consolidate')
+                return 'stale'
+              }
+            } else {
+              if (targetObsRev === undefined || targetObsRev === null) return 'retry'
+              if (targetObsRev !== op.expectedRevision) {
+                clearPendingBatch()
+                progress(job, 'source_changed', 'consolidate')
+                return 'stale'
+              }
+            }
           }
+          if (makeOpCurrent(op, opReads)(observed)) return 'ready'
+          if (!effects.holds(job)) return 'cancelled'
           clearPendingBatch()
           progress(job, 'source_changed', 'consolidate')
           return 'stale'
         },
-        assertMutateCurrent(op, opReads) {
-          if (!makeOpCurrent(op, opReads)()) throw new MemoryDreamStaleError()
+        assertMutateCurrent(op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>) {
+          if (dbCheckOp(op, opReads) !== 'ok') throw new MemoryDreamStaleError()
+          if (!makeOpCurrent(op, opReads)()) throw new DreamDiskUnverifiableError()
         },
-      })
+        onCommittedPath: extra?.onCommittedPath,
+      }
+    }
 
+    // 1. Retry deferred checkpoints first without blocking independent healthy notes.
+    if (activeDeferred.length > 0) {
+      await checkpointTargets(activeDeferred, { clearPending: false, isDeferredRetry: true })
+      if (!effects.holds(job)) return 'done'
+    }
+
+    // 2. Resume any persisted pendingBatch (covers mid-commit crash & post-receipt pre-checkpoint crash).
+    if (activePendingBatch) {
+      const pending = activePendingBatch
+      if (pending.oversized) oversizedAny = true
+      const resumeOutcome = await commitBatchOperations(pending.workspace, pending.operations, createBatchCommitHandlers(pending))
       if (resumeOutcome === 'cancelled') return 'done'
       if (resumeOutcome === 'wait') return 'wait'
       if (resumeOutcome === 'retry') return 'retry'
       if (resumeOutcome === 'done') {
-        clearPendingBatch()
-        const toCheckpoint = pendingBatch.fileRefs.filter(file => pendingBatch.checkpointPaths.includes(file.path))
-        if (toCheckpoint.length) await checkpointFiles(toCheckpoint)
+        const toCheckpoint = pending.fileRefs.filter(file => pending.checkpointPaths.includes(file.path))
+        if (toCheckpoint.length) {
+          const operationIds = pending.operations.map(op => op.operationId)
+          await checkpointTargets(
+            toCheckpoint.map(file => ({ workspace: pending.workspace, file, operationIds, ...(pending.oversized ? { oversized: true } : {}) })),
+            { clearPending: true, isDeferredRetry: false },
+          )
+        } else {
+          clearPendingBatch()
+        }
       }
+      if (!effects.holds(job)) return 'done'
     }
 
+    // 3. Scan changed daily notes, skipping exact (key, checkpoint, fileRevision) pairs already in deferredCheckpoints.
+    const deferredByKey = new Map(activeDeferred.map(item => [item.file.key, item.file]))
     const available: Note[] = []
     const initialViews = new Map<string, MemoryDocumentView>()
     for (const file of notes.changedFiles(from, today)) {
       if (!effects.holds(job)) return 'done'
+      const deferred = deferredByKey.get(file.key)
+      if (deferred) {
+        const reg = notes.noteRegistration(file.key)
+        if (reg && !reg.deleted && reg.enabled && reg.revision === deferred.checkpoint && reg.fileRevision === deferred.revision) {
+          continue
+        }
+      }
       let check: MemoryDocumentReadBatch | undefined
       try {
         check = await loadFiles([file])
         if (check?.incomplete()) throw new RequestTimeout()
       } catch (error) {
         if (!(error instanceof RequestTimeout)) throw error
-        retry = true
+        scanRetry = true
         continue
       }
       if (!effects.holds(job)) return 'done'
@@ -647,7 +944,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
 
       const consume = async (batch: Note[]): Promise<void> => {
         if (stopPass || !effects.holds(job)) return
-        if (operationsUsed >= dreamUnits) { retry = true; return }
+        if (operationsUsed >= dreamUnits) { scanRetry = true; return }
         const seen = batch.map(note => initialViews.get(note.key)!)
         const fileRefs: FileRef[] = batch.map((note, index) => {
           const view = seen[index]!
@@ -668,7 +965,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         }> = []
         for (const ref of batchSourceMap.values()) {
           const original = source(ref.id)
-          if (!original?.text) { progress(job, 'source_changed', 'consolidate'); retry = true; return }
+          if (!original?.text) { progress(job, 'source_changed', 'consolidate'); scanRetry = true; return }
           const context = notes.sourceQuestionContext(ref.id)
           const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
           const questionAllowed = Boolean(original.question) && wholeSource && context.current
@@ -732,7 +1029,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             return false
           }
         }
-        if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate'); retry = true; return }
+        if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate'); scanRetry = true; return }
 
         const split = async () => {
           const middle = Math.floor(batch.length / 2)
@@ -746,6 +1043,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const remainingAtStart = dreamUnits - operationsUsed
         let prepared: { operations: PreparedOperation[], hasMore: boolean } | undefined
         let retryHint: string | undefined
+        let batchOversized = false
 
         for (let attempt = 0; attempt < 2 && !prepared; attempt++) {
           const tools = newTools()
@@ -779,14 +1077,33 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               sourceIds: () => [...readSources.keys()], current, observe,
               tools: { tools: tools.tools, executeTool: tools.executeTool },
             })
-            if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; retry = true; return }
-            if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); retry = true; return }
+            if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; scanRetry = true; return }
+            if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
             try {
               const plan = parseDreamPlan(parse(raw), changedPaths, allowedSourceIds, remainingAtStart)
-              const operations = plan.operations
+              // Pre-persistence sanitization: strip reserved profile paths (case-insensitive) and ops depending on them.
+              const strippedDraftPaths = new Set<string>()
+              const retainedOperations: DreamOperation[] = []
+              for (const operation of plan.operations) {
+                if (isReservedProfilePath(operation.path)) {
+                  strippedDraftPaths.add(operation.path.toLowerCase())
+                  continue
+                }
+                const draftText = operation.action === 'CREATE'
+                  ? operation.body
+                  : operation.body ?? operation.edits?.map(edit => edit.newText).join('\n') ?? ''
+                const draftLinks = memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: draftText }))
+                if (draftLinks.some(link => strippedDraftPaths.has(link.split('#')[0]!.toLowerCase()))) {
+                  strippedDraftPaths.add(operation.path.toLowerCase())
+                  continue
+                }
+                retainedOperations.push(operation)
+              }
+              const effectiveHasMore = plan.hasMore && retainedOperations.length > 0
+
               const validated: PreparedOperation[] = []
               const plannedByPath = new Map<string, { evidence: DocumentSourceRef[], reads: Array<{ id: string, revision: string, usageVersion: number }> }>()
-              for (const operation of operations) {
+              for (const operation of retainedOperations) {
                 const opFiles = operation.dailyPaths.map(path => noteByPath.get(path)!)
                 const opFileSourceMap = new Map(mergeDocumentSources(opFiles.flatMap(file => file.sources)).map(ref => [ref.id, ref]))
                 const opRefs = operation.sourceIds.map(id => {
@@ -854,46 +1171,43 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
                 })
               }
-              prepared = { operations: validated, hasMore: plan.hasMore }
+              prepared = { operations: validated, hasMore: effectiveHasMore }
             } catch (error) {
               const reason = error instanceof Error ? error.message : 'invalid-output'
-              if (reason === 'dream-search-incomplete') { retry = true; return }
+              if (reason === 'dream-search-incomplete') { scanRetry = true; return }
               retryHint = retryHintFor(reason)
               progress(job, 'validation_failed', 'consolidate', attempt)
             }
           } catch (error) {
             if (error instanceof MemoryComputeError && error.reason === 'context-window-exceeded' && await inputsCurrent()) {
               progress(job, 'oversized', 'consolidate', attempt)
-              if (batch.length > 1) await split()
-              else {
-                oversizedAny = true
-                transaction(() => {
-                  const file = fileRefs[0]!
-                  if (fileCurrent(file)) notes.markProcessed(file.key, file.checkpoint)
-                })
+              if (batch.length > 1) {
+                await split()
+                return
               }
-              return
+              // Single oversized note: record size-limit diagnostic, but do NOT bypass the dedicated profile pass.
+              oversizedAny = true
+              batchOversized = true
+              prepared = { operations: [], hasMore: false }
+              break
             }
-            if (error instanceof RequestTimeout) { retry = true; return }
-            if (error instanceof MemoryDreamStaleError) { progress(job, 'source_changed', 'consolidate', attempt); retry = true; return }
+            if (error instanceof RequestTimeout) { scanRetry = true; return }
+            if (error instanceof MemoryDreamStaleError) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
             if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'consolidate', attempt)
             stopPass = true
-            retry = true
+            scanRetry = true
             return
           }
         }
 
         if (!prepared || !await inputsCurrent()) {
           stopPass = !prepared
-          retry = true
+          scanRetry = true
           return
         }
 
         const hitLimit = prepared.operations.length > 0 && prepared.operations.length >= remainingAtStart
         const coveredPaths = new Set(prepared.operations.flatMap(item => item.operation.dailyPaths))
-        // Explicit hasMore defers the entire batch (including a single multi-topic daily note).
-        // Without hasMore, an exact-cap pass checkpoints covered files so it cannot loop forever,
-        // while keeping any unreferenced files in a multi-file batch pending for retry.
         const checkpointRefs = prepared.hasMore
           ? []
           : hitLimit
@@ -901,62 +1215,295 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             : fileRefs
         const checkpointPaths = checkpointRefs.map(file => file.path)
         const deferRetry = prepared.hasMore || checkpointRefs.length < fileRefs.length
-        const persistedOps: PersistedOperation[] = prepared.operations.map(item => ({
-          operationId: `dream:${identity.newId()}`,
-          action: item.operation.action,
-          path: item.operation.path,
-          expectedRevision: item.before?.revision ?? null,
-          markdown: item.markdown,
-          sources: item.evidence,
-          reads: item.reads,
-          linkedPaths: item.linkedPaths,
-          files: item.files,
-        }))
+
+        // Dedicated lightweight profile pass (restricted input, zero cross-document tools).
+        let profilePersistedOp: PersistedOperation | null = null
+        if (workspace === userWorkspace && checkpointRefs.length > 0) {
+          const existingProfileRow = documents.fileRegistry(userWorkspace).find(row => isReservedProfilePath(row.path))
+          if (!existingProfileRow || existingProfileRow.state === 'active') {
+            const watermark = profileDeletedAt()
+            const profileSourceMap = new Map<string, DocumentSourceRef>()
+            for (const ref of mergeDocumentSources(checkpointRefs.flatMap(file => file.sources))) {
+              const original = source(ref.id)
+              if (!original?.text) continue
+              if (!isPureUserSource(original)) continue
+              if (watermark !== null && original.at <= watermark) continue
+              profileSourceMap.set(ref.id, ref)
+            }
+            if (profileSourceMap.size > 0) {
+              let existingProfileView: MemoryDocumentView | null = null
+              if (existingProfileRow) {
+                let profileBatch: MemoryDocumentReadBatch | undefined
+                try {
+                  profileBatch = await loadFiles([{ workspace: userWorkspace, path: existingProfileRow.path }])
+                  if (profileBatch?.incomplete()) throw new RequestTimeout()
+                } catch (error) {
+                  if (!(error instanceof RequestTimeout)) throw error
+                  scanRetry = true
+                  return
+                }
+                existingProfileView = (profileBatch ?? policy).read(userWorkspace, existingProfileRow.path)
+                if (!existingProfileView || !existingProfileView.backing) {
+                  scanRetry = true
+                  return
+                }
+              }
+              const expectedAction: 'CREATE' | 'REFINE' = existingProfileView ? 'REFINE' : 'CREATE'
+              const profileQuestionContexts = new Map<string, DocumentSourceRef[]>()
+              const profileCanonicalSources: Array<{
+                sourceId: string, author: MemorySource['author'], text: string,
+                question: string | null, questionUnavailable: boolean, at: number, timezone: string,
+              }> = []
+              for (const ref of profileSourceMap.values()) {
+                const original = source(ref.id)
+                if (!original?.text) { progress(job, 'source_changed', 'consolidate'); scanRetry = true; return }
+                const context = notes.sourceQuestionContext(ref.id)
+                const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
+                const questionAllowed = Boolean(original.question) && wholeSource && context.current
+                  && (!context.refs.length || refsCurrent(context.refs))
+                  && allowsText(original.question!, original)
+                  && context.refs.every(dep => {
+                    const item = source(dep.id)
+                    return Boolean(item?.text && allowsText(item.text, item) && isPureUserSource(item)
+                      && (watermark === null || item.at > watermark))
+                  })
+                if (questionAllowed) profileQuestionContexts.set(ref.id, context.refs)
+                profileCanonicalSources.push({
+                  sourceId: original.id, author: original.author,
+                  text: original.text,
+                  question: questionAllowed ? original.question! : null,
+                  questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed,
+                  at: original.at, timezone: original.timezone,
+                })
+              }
+
+              const profileReadRefs = mergeDocumentSources([
+                ...profileSourceMap.values(),
+                ...[...profileQuestionContexts.values()].flat(),
+                ...(existingProfileView ? existingProfileView.sourceTokens : []),
+              ])
+              const profileCurrent = (observed?: MemoryDocumentReadBatch) => {
+                if (!effects.holds(job)) return false
+                if (profileDeletedAt() !== watermark) return false
+                if (!checkpointRefs.every(ref => fileCurrent(ref, observed))) return false
+                if (!refsCurrent(profileReadRefs)) return false
+                if (!profileReadRefs.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) })) return false
+                if (![...profileQuestionContexts].every(([id, expected]) => {
+                  const latest = notes.sourceQuestionContext(id)
+                  return latest.current && JSON.stringify(latest.refs) === JSON.stringify(expected)
+                })) return false
+                if (existingProfileView?.backing) {
+                  const latest = documents.read(userWorkspace, RESIDENT_PROFILE_PATH, { physical: observed?.physical(userWorkspace, RESIDENT_PROFILE_PATH) })
+                  return latest?.id === existingProfileView.backing.id
+                    && latest.revision === existingProfileView.backing.revision
+                    && latest.usageVersion === existingProfileView.backing.usageVersion
+                }
+                return documents.read(userWorkspace, RESIDENT_PROFILE_PATH, { includeDisabled: true, physical: observed?.physical(userWorkspace, RESIDENT_PROFILE_PATH) }) === null
+              }
+              const profileLocations = () => [
+                ...checkpointRefs,
+                { workspace: userWorkspace, path: RESIDENT_PROFILE_PATH },
+              ]
+              const profileObserve = observeReadset(profileLocations, profileCurrent)
+              const profileInputsCurrent = async () => {
+                try { return await verified(profileObserve) }
+                catch (error) {
+                  if (!(error instanceof RequestTimeout)) throw error
+                  return false
+                }
+              }
+              if (!await profileInputsCurrent()) { progress(job, 'source_changed', 'consolidate'); scanRetry = true; return }
+
+              const existingParsed = existingProfileView
+                ? parseProfileSections(parseMemoryDocument(existingProfileView.markdown).body)
+                : null
+              const allowedProfileSourceIds = new Set(profileSourceMap.keys())
+              let profileResolved = false
+              let profileRetryHint: string | undefined
+
+              for (let attempt = 0; attempt < 2 && !profileResolved; attempt++) {
+                const profileInput = {
+                  actionMode: expectedAction,
+                  existingProfile: existingParsed
+                    ? {
+                        exists: true,
+                        confirmed: existingParsed.confirmedLines.join('\n'),
+                        autoSummary: existingParsed.autoLines.join('\n'),
+                      }
+                    : { exists: false },
+                  canonicalSources: profileCanonicalSources,
+                  ...(profileRetryHint ? { retry: profileRetryHint } : {}),
+                }
+                try {
+                  const raw = await calculateStage({
+                    job, stage: 'consolidate', system: DREAM_PROFILE_SYSTEM, input: profileInput,
+                    sourceIds: () => profileReadRefs.map(ref => ref.id),
+                    current: profileCurrent, observe: profileObserve,
+                  })
+                  if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; scanRetry = true; return }
+                  if (!await profileInputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
+                  try {
+                    const profilePlan = parseDreamProfilePlan(parse(raw), allowedProfileSourceIds, expectedAction)
+                    if (profilePlan.action === 'NOOP') {
+                      profilePersistedOp = null
+                      profileResolved = true
+                    } else {
+                      const selectedSet = new Set(profilePlan.sourceIds)
+                      const opFiles = checkpointRefs.filter(file => file.sources.some(ref => selectedSet.has(ref.id)))
+                      if (!opFiles.length) throw new Error('dream-source-outside-daily')
+                      const opRefs = profilePlan.sourceIds.map(id => {
+                        const ref = profileSourceMap.get(id)
+                        if (!ref) throw new Error('unknown-dream-source')
+                        return ref
+                      })
+                      const markdown = formatProfileMarkdown(
+                        profilePlan.action,
+                        profilePlan.body,
+                        opFiles.map(file => file.path),
+                        existingProfileView,
+                      )
+                      const evidence = mergeDocumentSources([
+                        ...(existingProfileView ? existingProfileView.sourceTokens : []),
+                        ...opRefs,
+                        ...opRefs.flatMap(ref => profileQuestionContexts.get(ref.id) ?? []),
+                      ])
+                      if (!evidence.length || !refsCurrent(evidence) || !materialAllowed(markdown, evidence)) {
+                        throw new Error('dream-material-rejected')
+                      }
+                      if (!profileSourcesAllowedByWatermark(evidence)) {
+                        throw new Error('dream-profile-watermark')
+                      }
+                      if (!evidence.every(ref => { const item = source(ref.id); return Boolean(item && isPureUserSource(item)) })) {
+                        throw new Error('dream-profile-scope')
+                      }
+                      profilePersistedOp = {
+                        operationId: `dream:${identity.newId()}`,
+                        action: profilePlan.action,
+                        path: RESIDENT_PROFILE_PATH,
+                        expectedRevision: existingProfileView?.revision ?? null,
+                        markdown,
+                        sources: evidence,
+                        reads: existingProfileView?.backing
+                          ? [{
+                              id: existingProfileView.backing.id,
+                              revision: existingProfileView.backing.revision,
+                              usageVersion: existingProfileView.backing.usageVersion,
+                            }]
+                          : [],
+                        linkedPaths: [],
+                        files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
+                      }
+                      profileResolved = true
+                    }
+                  } catch (error) {
+                    const reason = error instanceof Error ? error.message : 'invalid-output'
+                    profileRetryHint = retryHintFor(reason)
+                    progress(job, 'validation_failed', 'consolidate', attempt)
+                  }
+                } catch (error) {
+                  if (error instanceof MemoryComputeError && error.reason === 'context-window-exceeded') {
+                    progress(job, 'oversized', 'consolidate', attempt)
+                    oversizedAny = true
+                    batchOversized = true
+                    profilePersistedOp = null
+                    profileResolved = true
+                    break
+                  }
+                  if (error instanceof RequestTimeout) { scanRetry = true; return }
+                  if (error instanceof MemoryDreamStaleError) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
+                  if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'consolidate', attempt)
+                  stopPass = true
+                  scanRetry = true
+                  return
+                }
+              }
+              if (!profileResolved) {
+                stopPass = true
+                scanRetry = true
+                return
+              }
+            }
+          }
+        }
+
+        const persistedOps: PersistedOperation[] = [
+          ...prepared.operations.map(item => ({
+            operationId: `dream:${identity.newId()}`,
+            action: item.operation.action,
+            path: item.operation.path,
+            expectedRevision: item.before?.revision ?? null,
+            markdown: item.markdown,
+            sources: item.evidence,
+            reads: item.reads,
+            linkedPaths: item.linkedPaths,
+            files: item.files,
+          })),
+          ...(profilePersistedOp ? [profilePersistedOp] : []),
+        ]
+
         if (persistedOps.length > 0) {
-          const nextPending: PersistedBatch = { workspace, fileRefs, operations: persistedOps, checkpointPaths }
-          if (!effects.amend(job, { pendingBatch: nextPending })) return
+          const nextPending: PersistedBatch = {
+            workspace, fileRefs, operations: persistedOps, checkpointPaths,
+            ...(batchOversized ? { oversized: true } : {}),
+          }
+          if (!saveJobState(nextPending, activeDeferred)) return
+
+          const commitOutcome = await commitBatchOperations(
+            workspace,
+            persistedOps,
+            createBatchCommitHandlers(nextPending, {
+              onCommittedPath(path) { committedPaths.add(path) },
+              extraDbCurrent: () => [...questionContexts].every(([id, expected]) => {
+                const latest = notes.sourceQuestionContext(id)
+                return latest.current && JSON.stringify(latest.refs) === JSON.stringify(expected)
+              }),
+            }),
+          )
+          if (commitOutcome === 'cancelled') return
+          if (commitOutcome === 'wait') { waitingForAdmission = true; stopPass = true; return }
+          if (commitOutcome !== 'done') {
+            if (commitOutcome === 'retry') stopPass = true
+            scanRetry = true
+            return
+          }
         }
 
-        const commitOutcome = await commitBatchOperations(workspace, persistedOps, {
-          async verifyOp() {
-            if (await inputsCurrent()) return 'ready'
-            clearPendingBatch()
-            progress(job, 'source_changed', 'consolidate')
-            return 'stale'
-          },
-          assertMutateCurrent() {
-            if (!current()) throw new MemoryDreamStaleError()
-          },
-          onCommittedPath(path) {
-            committedPaths.add(path)
-          },
-        })
-        if (commitOutcome === 'cancelled') return
-        if (commitOutcome !== 'done') {
-          if (commitOutcome === 'retry') stopPass = true
-          retry = true
-          return
+        if (deferRetry) scanRetry = true
+        if (checkpointRefs.length) {
+          const operationIds = persistedOps.map(op => op.operationId)
+          await checkpointTargets(
+            checkpointRefs.map(file => ({
+              workspace, file, operationIds,
+              ...(batchOversized ? { oversized: true } : {}),
+            })),
+            { clearPending: persistedOps.length > 0, isDeferredRetry: false },
+          )
+        } else if (persistedOps.length > 0) {
+          clearPendingBatch()
         }
-        if (persistedOps.length > 0) clearPendingBatch()
-
-        if (deferRetry) retry = true
-        if (checkpointRefs.length) await checkpointFiles(checkpointRefs)
       }
 
       for (const batch of batchDreamNotes(candidates, dreamBatchBytes)) await consume(batch)
     }
 
     if (!effects.holds(job)) return 'done'
-    if (retry) return 'retry'
+    if (waitingForAdmission) return 'wait'
+    if (scanRetry) return 'retry'
+    let followupQueued = false
     transaction(() => {
       const at = now()
-      store.setMeta('dream.lastCheckedAt', String(at))
-      store.setMeta('dream.lastCheckResult', oversizedAny ? 'size-limit' : processedAny ? 'processed' : 'empty')
       const jobId = store.meta(MANUAL_JOB)
-      if (jobId && store.meta(MANUAL_FOLLOWUP) === jobId) {
+      const hasFollowup = Boolean(jobId && store.meta(MANUAL_FOLLOWUP) === jobId)
+      const shouldUpdateHistory = Boolean(jobId || processedAny || oversizedAny || !deferredRetry)
+      if (shouldUpdateHistory) {
+        store.setMeta('dream.lastCheckedAt', String(at))
+        store.setMeta('dream.lastCheckResult', oversizedAny ? 'size-limit' : processedAny ? 'processed' : 'empty')
+      }
+      if (hasFollowup) {
         store.setMeta(MANUAL_FOLLOWUP, '')
-        effects.queue(DREAM, DAILY, null)
+        effects.queue(DREAM, DAILY, buildJobPayload(null, activeDeferred))
         void effects.wake()
+        followupQueued = true
         return
       }
       if (jobId) {
@@ -964,10 +1511,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         store.setMeta(receiptKey(jobId), JSON.stringify(receipt))
         store.setMeta(MANUAL_JOB, '')
       }
-      effects.finishGeneration(job)
-      schedule()
+      if (!deferredRetry) {
+        effects.finishGeneration(job)
+        schedule(buildJobPayload(null, activeDeferred))
+      }
     })
-    return 'done'
+    if (followupQueued) return 'done'
+    return deferredRetry ? 'retry' : 'done'
   }
 
   effects.runs(DREAM, async jobs => {

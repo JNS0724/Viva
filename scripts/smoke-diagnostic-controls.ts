@@ -23,7 +23,7 @@ let stopped: PausedProcess | undefined
 try {
   await configureFakeProvider(running, model)
   await expect.poll(() => running.page.evaluate(async () => {
-    try { return Boolean((await window.agent.getMemory()).profile) } catch { return false }
+    try { return typeof (await window.agent.getMemory()).revision === 'number' } catch { return false }
   }), { timeout: 15_000 }).toBe(true)
   const before = JSON.parse(await readFile(path.join(diagnostics, 'identity.json'), 'utf8')) as { runId: string, salt: string }
   const backend = await running.hooks.backendPid(), owner = await running.hooks.agentPid()
@@ -49,7 +49,7 @@ try {
   const after = JSON.parse(await readFile(path.join(diagnostics, 'identity.json'), 'utf8')) as { runId: string, salt: string }
   assert.notEqual(after.runId, before.runId); assert.notEqual(after.salt, before.salt)
   assert.equal(await running.hooks.backendPid(), backend); assert.equal(await running.hooks.agentPid(), owner)
-  assert.ok((await running.page.evaluate(() => window.agent.getMemory())).profile)
+  assert.equal(typeof (await running.page.evaluate(() => window.agent.getMemory())).revision, 'number')
   await running.page.screenshot({ path: path.join(output, 'after-clear.png') })
   const result = { platform: process.platform, supervisedBackendSilence: true, debugMetadataWritten: true, first, resumedClear: true, saltRotated: true,
     backendAndOwnerUnchanged: true, memoryGetAfterClear: true, localModelRequests: model.requests.length }

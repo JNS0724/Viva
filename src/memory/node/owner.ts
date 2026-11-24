@@ -19,8 +19,8 @@ import type { MemorySourceAlias, HostMemoryCommand, MemoryOwnerContextUsed, Memo
 import type { MemoryOperationOutcome } from '../contracts/service.ts'
 import type { MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
 import { memoryFileCreateRequest, memoryFileForgetRequest } from '../contracts/file-management.ts'
-import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
-import type { MemoryScope } from '../contracts/memory-contract.ts'
+import { parseMemoryDomainErrorDetails, type MemoryDomainErrorCode } from '../contracts/domain-error.ts'
+import type { AutomaticRecallResult, MemoryScope } from '../contracts/memory-contract.ts'
 import type { TextSpan } from '../contracts/text-spans.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
@@ -43,7 +43,7 @@ type Operation = { id: string, fingerprint: string, state: MemoryOperationOutcom
 function hostDiagnosticOperation(method: HostMemoryCommand['method']): DiagnosticOperation | undefined {
   switch (method) {
     case 'forgetFile': return 'memory.forget'
-    case 'createFile': case 'editFile': case 'setFileEnabled': case 'setProfile': case 'setOnboarding': case 'getOperation': return 'memory.write'
+    case 'createFile': case 'editFile': case 'setFileEnabled': case 'getOperation': return 'memory.write'
     case 'undoFile': return 'memory.undo'
     case 'rebuildIndexes': return 'memory.index'
     case 'sourceAlias': return 'memory.intake'
@@ -326,7 +326,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     replayingWrites = true
     try {
       for (const item of db.prepare("SELECT * FROM owner_operations WHERE state='running'").all() as Operation[]) {
-        const payload = JSON.parse(item.payload!) as WritePayload | FileWritePayload | ManualFilePending | RememberPayload
+        const payload = JSON.parse(item.payload!) as FileWritePayload | ManualFilePending | RememberPayload
         try {
           if ('remember' in payload) await completeRemember(item.id, payload.remember, () => !closed)
           else if ('manual' in payload) await completeManualFile(item.id, payload.manual)
@@ -335,30 +335,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         } catch (error) { if (operation(item.id)?.state !== 'failed') throw error }
       }
     } finally { replayingWrites = false }
-  }
-  type ProfileWriteCommand = Extract<HostMemoryCommand, { method: 'setProfile' }>
-  type WritePayload = { command: ProfileWriteCommand }
-  async function durableProfileWrite(input: ProfileWriteCommand) {
-    const [fields, requestedId] = input.input.args, id = requestedId ?? randomUUID()
-    const command: ProfileWriteCommand = { method: 'setProfile', input: { args: [fields, id] } }
-    const previous = operation(id), fingerprint = hash(command)
-    if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
-    if (previous?.state === 'failed') throw new Error('Memory operation previously failed')
-    if (previous?.state === 'completed') return runtime.profile()
-    if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?)").run(id, fingerprint, JSON.stringify({ command }))
-    const write = async () => {
-      try {
-        const result = await runtime.setProfile(fields, id)
-        db.prepare("UPDATE owner_operations SET state='completed',payload=NULL WHERE id=?").run(id)
-        return result
-      } catch (error) {
-        if (error instanceof MemoryDomainError && error.code !== 'change.pending') {
-          db.prepare("UPDATE owner_operations SET state='failed',payload=NULL WHERE id=?").run(id)
-        }
-        throw error
-      }
-    }
-    return write()
   }
   type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
   type FileWritePayload = { command: FileWriteCommand, standaloneSession?: string }
@@ -410,7 +386,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       return receipt
     } catch (error) {
       if (error instanceof MemoryDomainError && error.code !== 'change.pending' && operation(id)?.state !== 'completed') {
-        db.prepare("UPDATE owner_operations SET state='failed',payload=? WHERE id=?").run(JSON.stringify({ code: error.code }), id)
+        db.prepare("UPDATE owner_operations SET state='failed',payload=? WHERE id=?").run(
+          JSON.stringify({ code: error.code, ...(error.details ? { details: error.details } : {}) }), id,
+        )
       }
       throw error
     }
@@ -426,7 +404,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       diagnostics.emit({ event: 'operation.progress', operation: 'memory.write', stage: 'settled', reason: 'idempotent', identities: { requestId: id, ownerEpoch: epoch } })
       return runtime.searchableReceipt((JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result)
     }
-    if (previous?.state === 'failed') throw new MemoryDomainError((JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }).code)
+    if (previous?.state === 'failed') {
+      const failure = JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode, details?: unknown }
+      throw new MemoryDomainError(failure.code, undefined, parseMemoryDomainErrorDetails(failure.details))
+    }
     const plan = previous?.payload ? (JSON.parse(previous.payload) as ManualFilePending).manual : 'identity' in request
       ? { workspace: request.identity.workspace }
       : { workspace: runtime.manualFileWorkspace(project, context), context, ...(project ? { project } : {}) }
@@ -520,7 +501,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (!kind) return executeHost(command, signal, deadlineAt)
     const raw = 'args' in command.input ? command.input.args[0] : command.input
     const requestId = raw !== null && typeof raw === 'object' && 'operationId' in raw && typeof raw.operationId === 'string'
-      ? raw.operationId : command.method === 'setProfile' ? command.input.args[1] : undefined
+      ? raw.operationId : undefined
     return observeDiagnosticAsync(options.diagnostics, kind, () => executeHost(command, signal, deadlineAt), {
       identities: { methodId: command.method, ownerEpoch: epoch, ...(requestId ? { requestId } : {}) },
     })
@@ -564,35 +545,71 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         })
         return { sourceId }
       }
-      case 'profile': return runtime.profile(...command.input.args)
+      case 'prefetchRecall': {
+        const input = command.input
+        const resolved = resolveIntakeScope(input.cwd)
+        const origin = sessionContext(input.session)
+        const project = input.project ?? (resolved.status === 'project' ? resolved.project : undefined)
+        const scopeCurrent = scopeMatches(input.session, resolved)
+        const readScope = scopeCurrent
+          ? { ...origin, ...(input.context ? { context: input.context } : {}), project }
+          : { ...origin, project: undefined, context: input.context ?? { kind: 'user' as const } }
+        let startRevision = store.revision()
+        let result: AutomaticRecallResult = await runtime.automaticRecall(
+          { session: input.session, question: input.query }, readScope, () => state === 'ready' && !replayingWrites, signal,
+        )
+        let endRevision = store.revision()
+        if (result.status === 'hit' && startRevision !== endRevision) {
+          if (!signal?.aborted && state === 'ready' && !replayingWrites) {
+            startRevision = endRevision
+            result = await runtime.automaticRecall(
+              { session: input.session, question: input.query }, readScope, () => state === 'ready' && !replayingWrites, signal,
+            )
+            endRevision = store.revision()
+          }
+          if (result.status === 'hit' && startRevision !== endRevision) {
+            result = { status: 'timeout' }
+          }
+        }
+        return { epoch, revision: endRevision, result }
+      }
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)
       case 'cleanupPending': return runtime.cleanupPending()
       case 'profilePage': {
-        const fileProfile = await runtime.fileProfileAsync(command.input.args[0], signal)
-        return { profile: runtime.profile(), onboarding: runtime.onboarding(), cleanupPending: runtime.cleanupPending(),
-          revision: runtime.revision(), fileProfile }
+        return { cleanupPending: runtime.cleanupPending(), revision: runtime.revision(), residentProfile: runtime.residentProfileIdentity() }
       }
-      case 'onboarding': return runtime.onboarding(...command.input.args)
       case 'dreamStatus': return runtime.dreamStatus(...command.input.args)
       case 'requestDream': return runtime.requestDream(...command.input.args)
       case 'listFiles': return runtime.listFilesAsync(command.input.args[0], signal)
       case 'readFile': return runtime.readFileAsync(command.input.args[0], signal)
-      case 'fileProfile': return runtime.fileProfileAsync(command.input.args[0], signal)
       case 'createFile':
       case 'editFile': return durableManualFileWrite(command)
       case 'setFileEnabled':
       case 'forgetFile':
       case 'undoFile': return durableFileWrite(command)
-      case 'setOnboarding': return runtime.setOnboarding(...command.input.args)
       case 'rebuildIndexes': return runtime.rebuildIndexes(...command.input.args)
-      case 'setProfile': return durableProfileWrite(command)
     }
     throw new Error('Unsupported host operation')
+  }
+  function reportContextUsed(input: { session: string, turn: number, pushed: Array<{ text: string, names: string[] }> }) {
+    if (closed || !input.pushed.length) return
+    options.onContextUsed?.({
+      session: input.session,
+      turn: input.turn,
+      pushed: input.pushed,
+      revision: store.revision(),
+      conversation: sessionContext(input.session).conversation ?? null,
+      at: Date.now(),
+    })
+  }
+  function profileSnapshot() {
+    return { epoch, revision: store.revision(), text: runtime.residentProfileText() }
   }
   const tempCleanup = new AbortController()
   void removeAbandonedMemoryTemps(store.fileRoot, tempCleanup.signal)
   return { runtime, bindIntakeSession, resolveIntakeScope, scopeMatches, intakeWatermark, advanceIntake, rememberSidecarFile, epoch, ready: () => state === 'ready' && !replayingWrites, status: () => state === 'ready' && replayingWrites ? 'recovering' as const : state,
+    reportContextUsed, profileSnapshot,
     recover: (preserveActiveTurns = false) => observeDiagnosticAsync(options.diagnostics, 'memory.recover', () => recover(preserveActiveTurns), { stage: 'recovering', identities: { ownerEpoch: epoch } }),
     receiveSource: (input: ReceivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', async () => receiveSource(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId, generation: input.turn }, metrics: { count: 1, ok: true } }),

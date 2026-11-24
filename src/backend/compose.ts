@@ -1164,7 +1164,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const replay = Array.isArray(operation)
     assertAdmitted()
     const id = agent.currentSession()
-    let feedCurrent: (() => boolean) | undefined
+    let feedCurrent: Awaited<ReturnType<typeof admitFeedContinuation>> | undefined
     if (feedItemId) {
       if (replay) throw new Error(t('main.memory.context.stale'))
       feedCurrent = await admitFeedContinuation({ text: question, read: () => feedContinuation(feedItemId),
@@ -1197,7 +1197,7 @@ ${question}` : question
       return
     }
     return await new Promise<void>((resolve, reject) => {
-      const complete = agent.prompt(words, pictures, { userTurn: true, onStart: () => { admission?.delivered(); resolve() }, sourceId: undefined, held }).then(() => {
+      const complete = agent.prompt(words, pictures, { userTurn: true, onStart: () => { admission?.delivered(); resolve() }, sourceId: undefined, sourceText: feedCurrent?.supplement ?? '', held }).then(() => {
         reject(new Error(t('main.memory.context.stale')))
       }, error => { if (!admission || admission.current()) finishForegroundTurn(); reject(error) })
       admission?.completed.push(complete)
