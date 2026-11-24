@@ -694,11 +694,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       return { kind: 'unknown' }
     }
 
-    const classifyNoteFile = (
-      file: FileRef,
-      batch?: MemoryDocumentReadBatch,
-      fallbackBatch?: MemoryDocumentReadBatch,
-    ): 'current' | 'already_processed' | 'unverifiable' | 'stale' => {
+    const classifyNoteMetadata = (file: FileRef): 'current' | 'already_processed' | 'stale' => {
       const reg = notes.noteRegistration(file.key)
       if (!reg || reg.deleted || !reg.enabled || reg.workspace !== file.workspace || reg.path !== file.path
         || reg.revision !== file.checkpoint || reg.fileRevision !== file.revision) {
@@ -706,21 +702,34 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       }
       if (reg.processed >= file.checkpoint) return 'already_processed'
       if (!refsCurrent(file.sources)) return 'stale'
-      if (batch) {
-        const obsRev = batch.observedRevision(file.workspace, file.path)
-        if (obsRev === undefined || obsRev === null) return 'unverifiable'
-        if (obsRev !== file.revision) return 'stale'
-        return fileCurrent(file, batch) ? 'current' : 'stale'
-      }
-      const live = livePhysicalState(file.workspace, file.path)
+      return 'current'
+    }
+
+    const classifyNoteFile = (
+      file: FileRef,
+      batch?: MemoryDocumentReadBatch,
+      fallbackBatch?: MemoryDocumentReadBatch,
+    ): 'current' | 'already_processed' | 'unverifiable' | 'stale' => {
+      const meta = classifyNoteMetadata(file)
+      if (meta !== 'current') return meta
       const noteMatchesPolicy = (latest: ReturnType<MemoryNotes['read']>, snap: MemoryPhysicalFile): boolean => {
         if (!latest || !latest.enabled || latest.workspace !== file.workspace || latest.path !== file.path
           || latest.revision !== file.checkpoint || latest.fileRevision !== file.revision) {
           return false
         }
-        const view = policy.read(file.workspace, file.path, (w, p) => w === file.workspace && p === file.path ? snap : null)
+        const view = policy.readStrict(file.workspace, file.path, (w, p) => w === file.workspace && p === file.path ? snap : null)
         return view?.policyToken === file.policyToken && refsCurrent(file.sources)
       }
+      if (batch) {
+        const obsRev = batch.observedRevision(file.workspace, file.path)
+        if (obsRev === undefined || obsRev === null) return 'unverifiable'
+        if (obsRev !== file.revision) return 'stale'
+        const snap = batch.physical(file.workspace, file.path)
+        if (!snap) return 'unverifiable'
+        const latest = notes.read(file.key, snap)
+        return noteMatchesPolicy(latest, snap) ? 'current' : 'stale'
+      }
+      const live = livePhysicalState(file.workspace, file.path)
       if (live.kind === 'snapshot') {
         if (!live.file) return 'unverifiable'
         if (live.file.revision !== file.revision) return 'stale'
@@ -751,7 +760,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) return 'unverifiable'
         return 'stale'
       }
-      return fileCurrent(file) ? 'current' : 'stale'
+      const latest = notes.read(file.key, undefined, { throwOnPhysicalError: true })
+      if (!latest) return 'stale'
+      const snap: MemoryPhysicalFile = { path: latest.path, markdown: latest.document, revision: latest.fileRevision }
+      return noteMatchesPolicy(latest, snap) ? 'current' : 'stale'
     }
 
     const classifyObservedRefs = (
@@ -899,69 +911,122 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         let advanced = false
         const unresolved: DeferredCheckpoint[] = []
         for (const target of targets) {
-          const state = classifyNoteFile(target.file, checkpointBatch)
-          if (state === 'unverifiable') {
-            unresolved.push(target)
-          } else if (state === 'current') {
-            if (target.observedNotes?.length || target.observedReads?.length) {
-              const obsState = classifyObservedRefs(target.workspace, target.observedReads, target.observedNotes, checkpointBatch)
-              if (obsState === 'stale') {
-                progress(job, 'source_changed', 'consolidate')
-                if (!options.isDeferredRetry) scanRetry = true
-                continue
-              }
-              if (obsState === 'wait') {
-                if (options.isDeferredRetry) unresolved.push(target)
-                else waitingForAdmission = true
-                continue
-              }
-              if (obsState === 'unverifiable') {
-                unresolved.push(target)
-                continue
-              }
-              // Synchronous live-disk revalidation inside the checkpoint transaction closes interleaving edits during loadFiles.
-              if (checkpointBatch) {
-                const liveObsState = classifyObservedRefs(target.workspace, target.observedReads, target.observedNotes, undefined, checkpointBatch)
-                if (liveObsState === 'unverifiable') {
-                  unresolved.push(target)
-                  continue
-                }
-                if (liveObsState === 'stale') {
-                  progress(job, 'source_changed', 'consolidate')
-                  if (!options.isDeferredRetry) scanRetry = true
-                  continue
-                }
-                if (liveObsState === 'wait') {
-                  if (options.isDeferredRetry) unresolved.push(target)
-                  else waitingForAdmission = true
-                  continue
-                }
-              }
+          // 1. Metadata-only precondition check on target (zero disk I/O).
+          const metaState = classifyNoteMetadata(target.file)
+          if (metaState === 'already_processed') continue
+          if (metaState === 'stale') {
+            progress(job, 'source_changed', 'consolidate')
+            if (!options.isDeferredRetry) scanRetry = true
+            continue
+          }
+
+          // 2. Partition observed notes into distinct dependencies vs self-observations of target.file.key so the
+          //    target file is physically validated ONCE, immediately before markProcessed.
+          const distinctObservedNotes = (target.observedNotes ?? []).filter(obs => obs.key !== target.file.key)
+          const selfObservedNotes = (target.observedNotes ?? []).filter(obs => obs.key === target.file.key)
+
+          // 3. Validate distinct observed dependencies FIRST (batch if available, then live).
+          if (distinctObservedNotes.length || target.observedReads?.length) {
+            const obsState = classifyObservedRefs(target.workspace, target.observedReads, distinctObservedNotes, checkpointBatch)
+            if (obsState === 'stale') {
+              progress(job, 'source_changed', 'consolidate')
+              if (!options.isDeferredRetry) scanRetry = true
+              continue
             }
-            if (target.operationIds.length === 0
-              && target.file.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) {
+            if (obsState === 'wait') {
               if (options.isDeferredRetry) unresolved.push(target)
               else waitingForAdmission = true
               continue
             }
+            if (obsState === 'unverifiable') {
+              unresolved.push(target)
+              continue
+            }
+            // Synchronous live-disk revalidation inside the checkpoint transaction closes interleaving edits during loadFiles.
             if (checkpointBatch) {
-              const liveFileState = classifyNoteFile(target.file, undefined, checkpointBatch)
-              if (liveFileState === 'unverifiable') {
+              const liveObsState = classifyObservedRefs(target.workspace, target.observedReads, distinctObservedNotes, undefined, checkpointBatch)
+              if (liveObsState === 'unverifiable') {
                 unresolved.push(target)
                 continue
               }
-              if (liveFileState !== 'current') {
+              if (liveObsState === 'stale') {
                 progress(job, 'source_changed', 'consolidate')
                 if (!options.isDeferredRetry) scanRetry = true
                 continue
               }
-            }
-            if (notes.markProcessed(target.file.key, target.file.checkpoint)) {
-              if (target.oversized) oversizedAny = true
-              if (!target.oversized || target.operationIds.length > 0) {
-                advanced = true
-                processedAny = true
+              if (liveObsState === 'wait') {
+                if (options.isDeferredRetry) unresolved.push(target)
+                else waitingForAdmission = true
+                continue
               }
+            }
+          }
+
+          // 4. Validate self-observed metadata/sources/eligibility (physical state is verified once in step 6 below).
+          let selfStale = false
+          let selfWait = false
+          for (const obsSelf of selfObservedNotes) {
+            if (target.workspace !== target.file.workspace || obsSelf.path !== target.file.path
+              || obsSelf.checkpoint !== target.file.checkpoint || obsSelf.revision !== target.file.revision
+              || !refsCurrent(obsSelf.sources)) {
+              selfStale = true
+              break
+            }
+            if (obsSelf.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) {
+              selfWait = true
+            }
+          }
+          if (selfStale) {
+            progress(job, 'source_changed', 'consolidate')
+            if (!options.isDeferredRetry) scanRetry = true
+            continue
+          }
+          if (selfWait) {
+            if (options.isDeferredRetry) unresolved.push(target)
+            else waitingForAdmission = true
+            continue
+          }
+
+          // 5. Own-source eligibility for NOOP targets.
+          if (target.operationIds.length === 0
+            && target.file.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) {
+            if (options.isDeferredRetry) unresolved.push(target)
+            else waitingForAdmission = true
+            continue
+          }
+
+          // 6. Validate target note's physical file ONCE immediately before markProcessed.
+          if (checkpointBatch) {
+            const batchFileState = classifyNoteFile(target.file, checkpointBatch)
+            if (batchFileState === 'unverifiable') {
+              unresolved.push(target)
+              continue
+            }
+            if (batchFileState !== 'current') {
+              if (batchFileState === 'stale') {
+                progress(job, 'source_changed', 'consolidate')
+                if (!options.isDeferredRetry) scanRetry = true
+              }
+              continue
+            }
+          }
+          const liveFileState = classifyNoteFile(target.file, undefined, checkpointBatch)
+          if (liveFileState === 'unverifiable') {
+            unresolved.push(target)
+            continue
+          }
+          if (liveFileState !== 'current') {
+            if (liveFileState === 'stale') {
+              progress(job, 'source_changed', 'consolidate')
+              if (!options.isDeferredRetry) scanRetry = true
+            }
+            continue
+          }
+          if (notes.markProcessed(target.file.key, target.file.checkpoint)) {
+            if (target.oversized) oversizedAny = true
+            if (!target.oversized || target.operationIds.length > 0) {
+              advanced = true
+              processedAny = true
             }
           }
         }

@@ -2502,4 +2502,115 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   await hN.retryNow()
   assert.equal(modelCallsN, 2, 'restoring regular file after directory swap must complete deferred checkpoint with 0 extra planner calls (R13 P2-3)')
   assert.equal(hN.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+
+  // Part O (R14 P2-1): On a no-batch runtime, changing the target note on disk WHILE Dream validates a distinct observed
+  // dependency must be caught by target's single live check immediately before markProcessed (kept pending, NOT processed).
+  let d0OPath = ''
+  let d1OAbs = ''
+  let armMutateTargetO = false
+  const hO = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    omitReadFileAtCommit: true,
+    omitReadPhysicalFile: true,
+    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
+      const rev = defaultRead(workspace, filePath)
+      if (armMutateTargetO && filePath === d0OPath) {
+        armMutateTargetO = false
+        fs.writeFileSync(d1OAbs, `${fs.readFileSync(d1OAbs, 'utf8')}\n<!-- target edited during distinct obs validation -->`)
+      }
+      return rev
+    },
+  })
+  const d0O = hO.addDailyNote([{ text: '旧日记：大连机房配置' }], { session: 's-r14-o0', day: '2026-11-15' })
+  d0OPath = d0O.path
+  hO.notes.markProcessed(d0O.key, d0O.note.revision)
+  const d1O = hO.addDailyNote([{ text: '目标 O 读取 d0O 后无需新建文档' }], { session: 's-r14-o1', day: '2026-11-16' })
+  d1OAbs = path.join(hO.store.fileRoot, d1O.workspace, d1O.path)
+  hO.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armMutateTargetO = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0o', name: 'read', input: { path: d0O.path } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  await hO.run()
+  assert.equal(armMutateTargetO, false, 'target mutation during distinct observed note check must have fired')
+  assert.equal(hO.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'target note changed during distinct dependency check must remain pending, NOT marked processed (R14 P2-1)')
+
+  // Part P (R14 P2-2): Target note that the planner also reads (in observedNotes) must be physically validated ONLY ONCE
+  // (1 revision check + 1 strict read total); moving it after that single strict read must still complete cleanly.
+  let d1PPath = ''
+  let d1PAbs = ''
+  let d1PBackup = ''
+  let revChecksP = 0
+  let strictReadsP = 0
+  const hP = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    omitReadFileAtCommit: true,
+    omitReadPhysicalFile: true,
+    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
+      if (filePath === d1PPath) revChecksP++
+      return defaultRead(workspace, filePath)
+    },
+  })
+  const d1P = hP.addDailyNote([{ text: '目标 P 同时被规划器自身 read 读取' }], { session: 's-r14-p1', day: '2026-11-16' })
+  d1PPath = d1P.path
+  d1PAbs = path.join(hP.store.fileRoot, d1P.workspace, d1P.path)
+  d1PBackup = `${d1PAbs}.moved`
+  const origReadP = hP.notes.read
+  hP.notes.read = (key, physical, opts) => {
+    const res = origReadP(key, physical, opts)
+    if (key === d1P.key && opts?.throwOnPhysicalError && res) {
+      strictReadsP++
+      fs.renameSync(d1PAbs, d1PBackup)
+    }
+    return res
+  }
+  hP.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
+    const readRes = await request.tools!.executeTool({ callId: 'c-self', name: 'read', input: { path: d1P.path } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  await hP.run()
+  assert.equal(revChecksP, 1, 'self-observed target note must run only 1 revision check (R14 P2-2)')
+  assert.equal(strictReadsP, 1, 'self-observed target note must run only 1 strict read (R14 P2-2)')
+  assert.equal(hP.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'self-observed target note must complete cleanly using its single physical observation (R14 P2-2)')
+  fs.renameSync(d1PBackup, d1PAbs)
+
+  // Part Q (R14 P2-3): Metadata decoding error during target policy validation (after strict notes.read succeeds)
+  // must propagate via policy.readStrict (keeping manual Dream request pending with completedAt === null).
+  let armCorruptQ = false
+  const hQ = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    omitReadFileAtCommit: true,
+    omitReadPhysicalFile: true,
+  })
+  const d1Q = hQ.addDailyNote([{ text: '目标 Q 策略校验前触发元数据损坏' }], { session: 's-r14-q1', day: '2026-11-16' })
+  const origReadQ = hQ.notes.read
+  hQ.notes.read = (key, physical, opts) => {
+    const res = origReadQ(key, physical, opts)
+    if (armCorruptQ && key === d1Q.key && opts?.throwOnPhysicalError && res) {
+      armCorruptQ = false
+      hQ.store.db.prepare('UPDATE memory_note_sources SET spans = ? WHERE note = ?')
+        .run('{malformed-json', d1Q.key)
+    }
+    return res
+  }
+  hQ.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armCorruptQ = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    return JSON.stringify({ operations: [] })
+  })
+  const manualOpQ = randomUUID()
+  hQ.jobs.request(manualOpQ)
+  await hQ.effects.wake()
+  assert.equal(armCorruptQ, false, 'target metadata corruption must have fired right before policy.readStrict')
+  const statusQ = hQ.jobs.status(manualOpQ)
+  assert.equal(statusQ.completedAt, null, 'metadata decoding failure during target policy validation must NOT emit completedAt receipt (R14 P2-3)')
+  assert.notEqual(statusQ.state, 'idle', 'job must enter retry rather than idle/empty on target policy decoding error (R14 P2-3)')
 })

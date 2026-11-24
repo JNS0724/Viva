@@ -120,6 +120,9 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
   function read(workspace: string, path: string, snapshot?: PhysicalSnapshot): MemoryDocumentView | null {
     try { return readAccepted(workspace, path, false, undefined, snapshot) ?? null } catch { return null }
   }
+  function readStrict(workspace: string, path: string, snapshot?: PhysicalSnapshot): MemoryDocumentView | null {
+    return readAccepted(workspace, path, false, undefined, snapshot) ?? null
+  }
   function readAccepted(workspace: string, path: string, includeDisabled = false, acceptedDigest?: DocumentSnapshot, snapshot?: PhysicalSnapshot): MemoryDocumentManagementView | null {
     const registered = path.startsWith('daily/') ? notes.registeredAt(workspace, path) : undefined
     const physical = snapshot?.(workspace, path)
@@ -261,5 +264,5 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       return verified.length ? traceLineHistory(verified, startLine, endLine) : null
     } catch { return null }
   }
-  return { read, readBatch, paths, list, managementRead, managementList, managementCurrent, lineHistory }
+  return { read, readStrict, readBatch, paths, list, managementRead, managementList, managementCurrent, lineHistory }
 }
