@@ -1556,6 +1556,95 @@ test('ingestion isolates live turn from deferred scan turn, keeps state across q
   }, { timeoutMs: 2_000 }), 'all 4 missing-alias messages in a released session must finalize once shared releaseDeadline expires')
   const elapsed8 = Date.now() - started8
   assert.ok(elapsed8 < 450, `4 missing-alias messages in released session must share one 150ms releaseDeadline (not 4x=600ms), got ${elapsed8}ms`)
+
+  // 9. R6 P1: Retry timer starts flush -> release() -> flush rejects EIO -> settleReleased restores bounded retry without external wake!
+  const sess9 = randomUUID()
+  const msg9 = randomUUID()
+  const text9 = '重试等待 flush 时关闭会话且 flush EIO 仍自动结算'
+  let flushCount9 = 0
+  const retryFlushStarted = deferred<void>()
+  const retryFlushGate = deferred<boolean>()
+  const events9: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg9, source: { kind: 'user' }, content: [{ type: 'text', text: text9 }] } },
+    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const fakeSession9 = {
+    id: sess9,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events9.length },
+    snapshotEvents(from: number, end: number) { return events9.slice(from, end) },
+  }
+  const ing9 = createSessionIngestion(ownerApi, () => {
+    flushCount9++
+    if (flushCount9 === 2) {
+      retryFlushStarted.resolve()
+      return retryFlushGate.promise
+    }
+    return Promise.resolve(true)
+  }, { host: true, aliasGraceMs: 250 })
+  t.after(() => ing9.drain())
+  await ing9.receive(
+    fakeSession9 as unknown as Parameters<typeof ing9.receive>[0],
+    [{ id: msg9, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: text9 }] } as unknown as Parameters<typeof ing9.receive>[1][0]],
+    1,
+  )
+  // Wait for the retry timer to fire and enter flush #2, then release(), then reject flush #2 with EIO!
+  await retryFlushStarted.promise
+  ing9.release(fakeSession9 as unknown as Parameters<typeof ing9.release>[0])
+  retryFlushGate.reject(Object.assign(new Error('retry flush EIO'), { code: 'EIO' }))
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess9) as { n: number }
+      const active = db.prepare('SELECT COUNT(*) AS n FROM owner_active_turns WHERE session = ?').get(sess9) as { n: number }
+      return turns.n === 1 && active.n === 0
+    } finally { db.close() }
+  }, { timeoutMs: 3_000 }), 'retry flush -> release -> EIO must still restore bounded retry and settle turn without external wake')
+
+  // 10. R6 P2: Queued short scan (turn/start) + queued 4-message scan + release() preserves shared releaseDeadline across both scans!
+  const sess10 = randomUUID()
+  const shortFlushGate10 = deferred<boolean>()
+  let flushCount10 = 0
+  const events10: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+  ]
+  const fakeSession10 = {
+    id: sess10,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events10.length },
+    snapshotEvents(from: number, end: number) { return events10.slice(from, end) },
+  }
+  const ing10 = createSessionIngestion(ownerApi, () => {
+    flushCount10++
+    return flushCount10 === 1 ? shortFlushGate10.promise : Promise.resolve(true)
+  }, { host: true, aliasGraceMs: 150 })
+  t.after(() => ing10.drain())
+  const scanShort10 = ing10.synchronize(fakeSession10 as unknown as Parameters<typeof ing10.synchronize>[0])
+  events10.push(
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '双扫描无别名 1' }] } },
+    { seq: 2, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '双扫描无别名 2' }] } },
+    { seq: 3, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '双扫描无别名 3' }] } },
+    { seq: 4, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '双扫描无别名 4' }] } },
+    { seq: 5, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  )
+  const scanFull10 = ing10.synchronize(fakeSession10 as unknown as Parameters<typeof ing10.synchronize>[0])
+  const started10 = Date.now()
+  ing10.release(fakeSession10 as unknown as Parameters<typeof ing10.release>[0])
+  shortFlushGate10.resolve(true)
+  await Promise.all([scanShort10, scanFull10])
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess10) as { n: number }
+      const ignored = db.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND kind = 'ignored'").get(sess10) as { n: number }
+      return turns.n === 1 && ignored.n === 4
+    } finally { db.close() }
+  }, { timeoutMs: 2_000 }), 'queued short scan must NOT clear shared releaseDeadline for queued 4-message scan')
+  const elapsed10 = Date.now() - started10
+  assert.ok(elapsed10 < 450, `queued short+full scans must share one 150ms releaseDeadline (not 4x=600ms), got ${elapsed10}ms`)
 })
 
 test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {

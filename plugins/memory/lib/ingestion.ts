@@ -51,6 +51,22 @@ export function createSessionIngestion(
 
   const hasPendingWork = (state: Replay) => state.awaitingSince.size > 0 || Boolean(state.pendingEvents?.length)
 
+  function settleReleased(state: Replay) {
+    const sessionId = String(state.session.id)
+    if (!state.released || state.inFlight > 0 || sessions.get(sessionId) !== state) return
+    if (!hasPendingWork(state) || state.epoch !== owner.epoch) {
+      clearRetry(state)
+      state.releaseDeadline = null
+      sessions.delete(sessionId)
+      return
+    }
+    if (!closed && state.retryTimer === null && state.pendingEvents?.length) {
+      const deadline = state.releaseDeadline ?? (Date.now() + aliasGraceMs)
+      state.releaseDeadline = deadline
+      scheduleResume(state, Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, deadline - Date.now())))
+    }
+  }
+
   function handleReleasedError(state: Replay, error: unknown) {
     const sessionId = String(state.session.id)
     const nowMs = Date.now()
@@ -81,10 +97,7 @@ export function createSessionIngestion(
     entry.work = entry.work.catch(() => {}).then(() => owner.inEpoch(entry.epoch, () => action(entry)))
       .finally(() => {
         entry.inFlight = Math.max(0, entry.inFlight - 1)
-        if (entry.released && entry.inFlight === 0 && (!hasPendingWork(entry) || entry.epoch !== owner.epoch) && sessions.get(sessionId) === entry) {
-          clearRetry(entry)
-          sessions.delete(sessionId)
-        }
+        settleReleased(entry)
       })
     return entry.work
   }
@@ -163,7 +176,6 @@ export function createSessionIngestion(
       }
     }
     state.pendingEvents = null
-    state.releaseDeadline = null
   }
 
   async function scan(state: Replay, end: SessionLogOffset, persisted: Promise<unknown>) {
@@ -228,10 +240,7 @@ export function createSessionIngestion(
       }
     })).finally(() => {
       state.inFlight = Math.max(0, state.inFlight - 1)
-      if (state.released && state.inFlight === 0 && (!hasPendingWork(state) || state.epoch !== owner.epoch) && sessions.get(sessionId) === state) {
-        clearRetry(state)
-        sessions.delete(sessionId)
-      }
+      settleReleased(state)
     })
     return state.work
   }
@@ -268,10 +277,7 @@ export function createSessionIngestion(
           const anchor = state.awaitingSince.size > 0 ? Math.min(...state.awaitingSince.values()) : Date.now()
           state.releaseDeadline = anchor + aliasGraceMs
         }
-        if (state.inFlight === 0 && state.retryTimer === null && state.pendingEvents?.length) {
-          const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, state.releaseDeadline - Date.now()))
-          scheduleResume(state, waitMs)
-        }
+        settleReleased(state)
         return
       }
       clearRetry(state)
