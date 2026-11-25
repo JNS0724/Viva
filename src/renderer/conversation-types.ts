@@ -100,7 +100,8 @@ export interface ConversationPayloads {
   prompt_admitted: { sourceId: string, accepted: boolean }
   prompt_persisted: { sourceId: string }
   prompt_retracted: { sourceId: string }
-  user_steer: { text: string, sourceId?: string, via?: string | null }
+  user_steer: { text: string, sourceId?: string, streamKey?: string, via?: string | null }
+  user_steer_retracted: { streamKey: string }
   steer_failed: { id: string | undefined }
   steer_delivery: { sourceId: string, delivery: 'pending' | 'not-sent' | 'sent' }
   steer_resent: { at: number, turnId?: string }

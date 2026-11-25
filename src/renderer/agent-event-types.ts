@@ -36,5 +36,6 @@ export type AgentEvent =
   | ({ type: 'task_permission_closed' } & Position & Payload<'permission_closed'>)
   | ({ type: 'task_question', requestedAt?: number } & Position & Payload<'question_request'>)
   | ({ type: 'task_question_closed' } & Position & Payload<'question_closed'>)
-  | ({ type: 'task_steered', text: string } & Position)
+  | ({ type: 'task_steered', text: string, key?: string } & Position)
+  | ({ type: 'task_steer_retracted', key: string } & Position)
   | ({ type: 'task_end', stopReason?: string, message?: string | null } & Position)

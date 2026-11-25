@@ -349,7 +349,8 @@ export function taskActions() {
      * Words the agent said into that task's turn (task-runtime.ts `said`), shown in its part of the conversation; a
      * piece of its stream, taken once (a read that has them already leaves them out by its number).
      */
-    task_steer: (state, action) => takePiece(state, action, (taken) => inView(taken, action.taskId, { type: 'user_steer', text: action.text, via: null })),
+    task_steer: (state, action) => takePiece(state, action, (taken) => inView(taken, action.taskId, { type: 'user_steer', text: action.text, ...(action.streamKey ? { streamKey: action.streamKey } : {}), via: null })),
+    task_steer_retracted: (state, action) => takePiece(state, action, (taken) => inView(taken, action.taskId, { type: 'user_steer_retracted', streamKey: action.streamKey })),
 
     task_closed: (state, { taskId }) => {
       const closed = {

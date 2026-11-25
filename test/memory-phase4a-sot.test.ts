@@ -20,12 +20,15 @@ import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 import { withRequestSource } from '../src/shared/request-routing/header.ts'
 import { withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
 import { withProvenanceHeader, wrapRawWithProvenance } from '../src/shared/request-routing/provenance.ts'
-import { interjection } from '../src/backend/steer-channel.ts'
+import { interjection, NO_PLUGIN } from '../src/backend/steer-channel.ts'
 import { createTaskRuntime } from '../src/backend/task-runtime.ts'
 import { createTaskStore } from '../src/backend/task-store.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
 import { createSteerChannel } from '../plugins/steer/lib/channel.ts'
 import { apply as applySteer, liftProvenance } from '../plugins/steer/index.ts'
+import { decodeAgentEvent } from '../src/renderer/agent-event-decoder.ts'
+import { createEventActions } from '../src/renderer/agent-event-actions.ts'
+import { initialState, reduce } from '../src/renderer/state.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { openAppDb } from '../src/backend/app-db.ts'
 import { applyMemoryAdapter } from '../plugins/memory/lib/adapter.ts'
@@ -2072,6 +2075,12 @@ test('Phase 4A Codex R3 P1-1..P1-2 & P2-3..P2-6: same-turn question dep revocati
   const searchSid = SessionId(randomUUID())
   const searchHandle = await searchCtx.agents.create({ sessionId: searchSid, meta: { cwd: searchDir }, agentOptions: { provider: 'mock', model: 'mock' } })
   defer(async () => { await searchHandle.dispose() })
+  let snapshotCopiesDuringSearch = 0
+  const origSnapshotEvents = searchHandle.agent.session.snapshotEvents.bind(searchHandle.agent.session)
+  t.mock.method(searchHandle.agent.session, 'snapshotEvents', (...args: Parameters<typeof origSnapshotEvents>) => {
+    snapshotCopiesDuringSearch++
+    return origSnapshotEvents(...args)
+  })
 
   // Turn 1: Human task follow-up -> keeps ori_question for current human turn.
   const turn1Done = deferred<void>()
@@ -2098,6 +2107,7 @@ test('Phase 4A Codex R3 P1-1..P1-2 & P2-3..P2-6: same-turn question dep revocati
   assert.ok(String(searchBodies[0]!.ori_question ?? '').includes('内部预算为 47 万'), 'human turn search should keep its own ori_question')
   assert.equal(searchBodies[1]!.query, '杭州天气')
   assert.equal('ori_question' in searchBodies[1]!, false, 'viva-task-brief turn search must omit ori_question instead of leaking prior turn human message')
+  assert.equal(snapshotCopiesDuringSearch, 0, 'web_search guard must use eventAt/openTurnStartSeq with zero snapshotEvents copies')
 
   // R3 P2-3: Lazy `.iterate()` in contextSources() stops at 17th matching workspace row (O(1) scanned rows, NOT all N)!
   const storeIter = openMemoryStore(path.join(dir, 'iter.db'), () => nowMs)
@@ -2220,7 +2230,7 @@ test('Phase 4A Codex R3 P1-1..P1-2 & P2-3..P2-6: same-turn question dep revocati
     agent: {
       startTask: async () => ({ ok: true, taskId: rejectTaskId }),
       promptTask: () => {},
-      steerTask: async () => ({ ok: false }),
+      steerTask: async () => ({ ok: false, reason: 'idle' }),
       resumeTask: async () => ({ ok: true }),
       cancelTask: async () => {},
       closeTask: async () => {},
@@ -2273,4 +2283,176 @@ test('Phase 4A Codex R3 P1-1..P1-2 & P2-3..P2-6: same-turn question dep revocati
   assert.equal(noHostUser.data.source.kind, 'user')
   assert.equal('vivaProvenance' in noHostUser.data.source, false)
   assert.equal((noHostUser.data.content[0] as { type: 'text', text: string }).text, literalExample)
+})
+
+test('Phase 4A Codex R4 P1-1..P1-2 & P2-3..P2-4: multi-answer mid-read revocation, pre-note revocation batch settlement, steer ACK timeout preservation, and open-window steer retraction sync', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4a-r4-')
+  const nowMs = Date.parse('2026-11-25T15:00:00Z')
+
+  // R4 P1-1: Same turn with TWO answers [A, B] where B's question depends on A;
+  // revoking A DURING readSessionRange withholds B's question in WRITE_NOTE while keeping B.text!
+  const root1 = path.join(dir, 'mem-r4-p11')
+  const noteInputs1: Array<{ turns: Array<{ user: Array<{ sourceId: string, text: string, question: string | null }> }> }> = []
+  let revokeAOnRangeRead: (() => void) | null = null
+  const owner1 = openMemoryOwner({
+    root: root1,
+    hostNamespace: 'viva',
+    dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => {
+      revokeAOnRangeRead?.()
+      revokeAOnRangeRead = null
+      return { status: 'ok', assistant: '' }
+    },
+    compute: job => {
+      if (job.stage === 'note') {
+        noteInputs1.push(JSON.parse(job.input))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '双回答', markdown: '双回答记录' }))
+      }
+      return null
+    },
+  })
+  defer(() => owner1.close())
+  await owner1.recover()
+  const sid1 = 'sess-r4-multi-ans'
+  const ansA = randomUUID(), ansB = randomUUID()
+  owner1.beginTurn({ sessionId: sid1, turn: 1, sessionKind: 'main', conversation: 'conv-r4-1', cwd: dir })
+  await owner1.handleHost('acceptQuestionAnswer', {
+    operationId: ansA, text: '第一个回答：项目代号北极星', session: sid1, turn: 1, conversation: 'conv-r4-1',
+    cards: [{ id: 'qA', question: '项目代号是什么？', header: '代号', options: [{ label: 'X' }], multiSelect: false }],
+    requestId: 'req-A', questionId: 'qA', context: { kind: 'user' }, questionAt: nowMs, questionProfileGen: 0,
+  })
+  await owner1.handleHost('acceptQuestionAnswer', {
+    operationId: ansB, text: '第二个回答：每周五同步', session: sid1, turn: 1, conversation: 'conv-r4-1',
+    cards: [{ id: 'qB', question: '北极星项目每周几同步？', header: '同步', options: [{ label: '周一' }], multiSelect: false }],
+    requestId: 'req-B', questionId: 'qB', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  })
+  const db1 = new DatabaseSync(path.join(root1, 'memory.db'))
+  defer(() => db1.close())
+  revokeAOnRangeRead = () => {
+    db1.prepare("UPDATE memory_sources SET text=NULL, hash=NULL, outcome='rejected' WHERE id=?").run(ansA)
+  }
+  await owner1.settleTurn({
+    sessionId: sid1, cwd: dir, sessionKind: 'main', conversation: 'conv-r4-1', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 6, turn: 1, reasonKind: 'completed',
+    sources: [], assistantText: '', at: nowMs + 20, timezone: 'UTC',
+  })
+  await owner1.runtime.wake()
+  assert.equal(noteInputs1.length, 1)
+  const noteUsers1 = noteInputs1[0]!.turns.flatMap(turn => turn.user)
+  assert.equal(noteUsers1.some(u => u.sourceId === ansA), false, 'revoked answer A must be excluded')
+  const noteB = noteUsers1.find(u => u.sourceId === ansB)
+  assert.ok(noteB, 'valid answer B must still reach WRITE_NOTE')
+  assert.equal(noteB.text, '第二个回答：每周五同步')
+  assert.equal(noteB.question, null, 'revoking answer A mid-read must withhold answer B question in WRITE_NOTE')
+
+  // R4 P1-2: With noteInterval=5, revoking triggering prompt BEFORE WRITE_NOTE starts must NOT stall
+  // the valid custom answer in the same range — flush writes the note with question:null and clears pending!
+  const root2 = path.join(dir, 'mem-r4-p12')
+  const noteInputs2: Array<{ turns: Array<{ user: Array<{ sourceId: string, text: string, question: string | null }> }> }> = []
+  const owner2 = openMemoryOwner({
+    root: root2,
+    hostNamespace: 'viva',
+    dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '' }),
+    compute: job => {
+      if (job.stage === 'note') {
+        noteInputs2.push(JSON.parse(job.input))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '延迟笔记', markdown: '延迟记录' }))
+      }
+      return null
+    },
+  })
+  defer(() => owner2.close())
+  await owner2.recover()
+  const sid2 = 'sess-r4-deferred'
+  const trigger2 = randomUUID(), answer2 = randomUUID()
+  owner2.beginTurn({ sessionId: sid2, turn: 1, sessionKind: 'main', conversation: 'conv-r4-2', cwd: dir })
+  await owner2.handleHost('acceptQuestionAnswer', {
+    operationId: answer2, text: '只喝美式咖啡', session: sid2, turn: 1, conversation: 'conv-r4-2',
+    cards: [{ id: 'q2', question: '基于上述敏感行程，偏好什么饮品？', header: '饮品', options: [{ label: '茶' }], multiSelect: false }],
+    requestId: 'req-2', questionId: 'q2', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  })
+  await owner2.settleTurn({
+    sessionId: sid2, cwd: dir, sessionKind: 'main', conversation: 'conv-r4-2', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
+    sources: [{ sourceId: trigger2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '同轮触发原话', at: nowMs, timezone: 'UTC' }],
+    assistantText: '', at: nowMs + 20, timezone: 'UTC',
+  })
+  const db2 = new DatabaseSync(path.join(root2, 'memory.db'))
+  defer(() => db2.close())
+  // Revoke trigger2 BEFORE WRITE_NOTE has even been scheduled (noteInterval=5)!
+  db2.prepare("UPDATE memory_sources SET text=NULL, hash=NULL, outcome='rejected' WHERE id=?").run(trigger2)
+  owner2.runtime.flushNoteTurns?.(sid2)
+  await owner2.runtime.wake()
+  assert.equal(noteInputs2.length, 1, 'revoking triggering prompt before WRITE_NOTE must NOT stall valid custom answer')
+  const noteAns2 = noteInputs2[0]!.turns.flatMap(turn => turn.user).find(u => u.sourceId === answer2)
+  assert.ok(noteAns2)
+  assert.equal(noteAns2.text, '只喝美式咖啡')
+  assert.equal(noteAns2.question, null)
+  assert.equal(db2.prepare("SELECT COUNT(*) AS n FROM memory_note_ranges WHERE session=? AND status='pending'").get(sid2)?.n, 0, 'batch must settle cleanly with 0 pending ranges')
+
+  // R4 P2-3 & P2-4: Steer ACK timeout preserves history/sourceId; explicit idle rejection retracts BOTH history AND open window!
+  const appDbR4 = openAppDb({ file: path.join(dir, 'app-r4.db') })
+  defer(() => appDbR4.close())
+  const historyDbR4 = openHistoryDb({ db: appDbR4.db })
+  defer(() => historyDbR4.close())
+  const mainConvR4 = historyDbR4.save(historyDbR4.create({ sessionId: 'main-r4' }), [{ role: 'user', text: 'hi', receipt: null }]).id
+  const taskStoreR4 = createTaskStore({ db: appDbR4.db })
+  const taskIdR4 = randomUUID()
+  const publishedEvents: unknown[] = []
+  let nextSteerResult: { ok: boolean, reason?: string } = { ok: false, reason: 'idle' }
+  const taskRuntimeR4 = createTaskRuntime({
+    db: historyDbR4,
+    store: taskStoreR4,
+    current: () => historyDbR4.get(mainConvR4)!.conversation,
+    agentInfo: () => ({ mode: 'ready', model: 'mock' }),
+    publish: event => { publishedEvents.push(event) },
+    agent: {
+      startTask: async () => ({ ok: true, taskId: taskIdR4 }),
+      promptTask: () => {},
+      steerTask: async () => nextSteerResult,
+      resumeTask: async () => ({ ok: true }),
+      cancelTask: async () => {},
+      closeTask: async () => {},
+    },
+  })
+  defer(() => taskRuntimeR4.dispose())
+  const handlersR4 = new Map<string, (...args: unknown[]) => unknown>()
+  registerTaskIpc({ handle: (ch, fn) => { handlersR4.set(ch, fn as (...args: unknown[]) => unknown) } }, taskRuntimeR4.window)
+  await taskRuntimeR4.agent.start('initial task brief', 'brief')
+
+  // Build open-window state from published events!
+  const mapEvent = createEventActions()
+  let winState: State = initialState
+  const applyPublished = (fromIdx: number) => {
+    for (let i = fromIdx; i < publishedEvents.length; i++) {
+      const decoded = decodeAgentEvent(publishedEvents[i])
+      if (!decoded) continue
+      const action = mapEvent(decoded, 100 + i)
+      if (action) winState = reduce(winState, action)
+    }
+    return publishedEvents.length
+  }
+  let evCursor = applyPublished(0)
+
+  // Case 1 (P2-4): Explicit rejection (reason: 'idle') retracts from BOTH history.db AND open window!
+  nextSteerResult = { ok: false, reason: 'idle' }
+  await assert.rejects(() => Promise.resolve(handlersR4.get('task:message')!({}, taskIdR4, 'rejected idle msg')))
+  evCursor = applyPublished(evCursor)
+  const segId = taskStoreR4.list()[0]!.segmentId
+  assert.deepEqual(historyDbR4.get(segId)!.messages.map(m => m.text), ['initial task brief'])
+  const openTaskAfterReject = winState.tasks.list.find(item => item.id === taskIdR4)!
+  assert.deepEqual(openTaskAfterReject.view.messages.map(m => m.text), ['initial task brief'], 'open window must retract rejected steer message')
+
+  // Case 2 (P2-3): ACK timeout (reason: NO_PLUGIN, unknown delivery) MUST preserve history, sourceId, and open window!
+  nextSteerResult = { ok: false, reason: NO_PLUGIN }
+  await assert.rejects(() => Promise.resolve(handlersR4.get('task:message')!({}, taskIdR4, 'timed out maybe delivered')))
+  evCursor = applyPublished(evCursor)
+  const msgsAfterTimeout = historyDbR4.get(segId)!.messages
+  assert.deepEqual(msgsAfterTimeout.map(m => m.text), ['initial task brief', 'timed out maybe delivered'], 'timeout with unknown delivery must preserve message in history')
+  assert.ok(msgsAfterTimeout[1]!.sourceId, 'timeout with unknown delivery must preserve sourceId')
+  const openTaskAfterTimeout = winState.tasks.list.find(item => item.id === taskIdR4)!
+  assert.deepEqual(openTaskAfterTimeout.view.messages.map(m => m.text), ['initial task brief', 'timed out maybe delivered'])
 })

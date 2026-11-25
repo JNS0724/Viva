@@ -137,7 +137,7 @@ const examples = {
   memory_changed: { type: 'memory_changed' }, files_changed: { type: 'files_changed', path: 'notes.md' }, feed_changed: { type: 'feed_changed' }, schedules_changed: { type: 'schedules_changed' },
   task_closed: { type: 'task_closed', taskId: 'task' },
   task_snapshot: { type: 'task_snapshot', snapshot }, task_update: { type: 'task_update', ...position, update: chunk('answer') }, task_permission_closed: { type: 'task_permission_closed', ...position, requestId: 'p' },
-  task_question: { type: 'task_question', ...position, ...question }, task_question_closed: { type: 'task_question_closed', ...position, questionId: 'q' }, task_steered: { type: 'task_steered', ...position, text: 'more' }, task_end: { type: 'task_end', ...position, stopReason: 'end_turn' },
+  task_question: { type: 'task_question', ...position, ...question }, task_question_closed: { type: 'task_question_closed', ...position, questionId: 'q' }, task_steered: { type: 'task_steered', ...position, text: 'more' }, task_steer_retracted: { type: 'task_steer_retracted', ...position, key: 'k1' }, task_end: { type: 'task_end', ...position, stopReason: 'end_turn' },
 } satisfies Record<AgentEvent['type'], unknown>
 
 test('every supported wire tag has a valid production decode and exhaustive action/effect route', () => {

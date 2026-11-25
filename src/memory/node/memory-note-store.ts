@@ -207,8 +207,16 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
 
   function projectRange(row: RangeRow): NoteRangeTurn {
     const refs = JSON.parse(row.source_tokens_json) as SourceRef[]
-    const invalid = refs.filter(ref => { const source = store.readSource(ref.id); return !source || token(source) !== ref.token })
-    if (invalid.length > 0) throw new Error('memory-source-version')
+    const activeSourceIds: string[] = []
+    for (const ref of refs) {
+      const source = store.readSource(ref.id)
+      if (!source) continue
+      if (token(source) === ref.token) {
+        activeSourceIds.push(ref.id)
+      } else if (source.text !== null && source.outcome !== 'rejected') {
+        throw new Error('memory-source-version')
+      }
+    }
     const questionRefs = JSON.parse(row.question_sources_json) as SourceRef[]
     const questionCurrent = Boolean(row.question_valid && questionRefs.every(validRef))
     const dependencies = JSON.parse(row.assistant_sources_json) as SourceRef[]
@@ -224,7 +232,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       fromSeq: row.from_seq,
       toSeq: row.to_seq,
       turn: row.turn,
-      sourceIds: sourceIdsOf(row),
+      sourceIds: activeSourceIds,
       assistantSourceIds: assistantValid ? dependencies.map(ref => ref.id) : [],
       assistantDigest: assistantValid ? row.assistant_digest : null,
       assistantValid,
@@ -363,9 +371,14 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     // Persist direct question-context metadata directly on each answer's memory_sources row so
     // sourceQuestionContext() survives range consumption and DSH session-log deletion (§5.3 item 2).
     if (hasQuestions) {
-      for (const answer of answers) {
+      for (let i = 0; i < sources.length; i++) {
+        const answer = sources[i]!
+        if (answer.author !== 'answer') continue
+        const precedingIds = sources
+          .filter((source, idx) => source.id !== answer.id && (source.author !== 'answer' || idx < i))
+          .map(source => source.id)
         const answerQuestionRefs = questionCurrent
-          ? snapshot([...sources.filter(source => source.id !== answer.id).map(source => source.id), ...(input.questionSources ?? [])])
+          ? snapshot([...precedingIds, ...(input.questionSources ?? [])])
           : []
         store.updateSourceQuestionContext?.(answer.id, questionCurrent, answerQuestionRefs)
       }

@@ -102,7 +102,7 @@ type Maybe<T> = T | Promise<T>
 export interface TaskAgent {
   startTask: () => Maybe<StartedTask>
   promptTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => unknown
-  steerTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => Maybe<{ ok: boolean } | null | undefined>
+  steerTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => Maybe<{ ok: boolean, reason?: string, delivery?: string } | null | undefined>
   resumeTask: (request: { taskId: string, cwd?: string }) => Maybe<{ ok: boolean }>
   cancelTask: (taskId: string) => unknown
   closeTask: (taskId: string) => unknown
@@ -664,7 +664,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   function said(taskId: string, text: string, key?: string, sourceId?: string) {
     taskWords.userSaid(taskId, text, key, sourceId)
     const runId = registry.runOf(taskId)
-    if (runId !== null) pushPiece(taskId, runId, { type: 'task_steered', text })
+    if (runId !== null) pushPiece(taskId, runId, { type: 'task_steered', text, ...(key ? { key } : {}) })
+  }
+
+  /** Retract a steered message ONLY after dsh explicitly confirms non-delivery (idle/missing/not-sent). */
+  function retractSaid(taskId: string, key: string) {
+    taskWords.undoUserSaid(taskId, key)
+    const runId = registry.runOf(taskId)
+    if (runId !== null) pushPiece(taskId, runId, { type: 'task_steer_retracted', key })
   }
 
   async function deliverTaskMessage(
@@ -695,7 +702,12 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       ...(sourceId ? { sourceId } : {}),
     })
     if (!steered?.ok) {
-      taskWords.undoUserSaid(taskId, steerKey)
+      // Retract ONLY on confirmed non-delivery (idle / missing / explicit not-sent).
+      // On ACK timeout (unknown delivery), retain the in-flight record and its sourceId.
+      const confirmedNotSent = steered?.delivery === 'not-sent'
+        || steered?.reason === 'idle'
+        || steered?.reason === 'missing'
+      if (confirmedNotSent) retractSaid(taskId, steerKey)
       throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
     }
     return { taskId, delivered: 'into its turn', ...(sourceId ? { sourceId } : {}) }

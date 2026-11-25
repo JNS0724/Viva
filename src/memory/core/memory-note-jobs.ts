@@ -210,13 +210,27 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       const sources = row.sourceIds.flatMap(id => sourceOf(id) ?? [])
       const assistantAllowed = row.assistantSourceIds.every(readable)
       const fetchedAssistant = assistantByRange.get(row.id) ?? ''
+      const hasDirectQuestionMeta = typeof store.updateSourceQuestionContext === 'function'
       const user = sources.flatMap(source => {
         const ref = notes.snapshot([source.id])[0]!
-        const questionAllowed = Boolean(source.question) && row.questionCurrent && row.questionSourceIds.every(readable)
+        const directRefs = hasDirectQuestionMeta ? (source.questionSources ?? []) : undefined
+        const questionDepIds = directRefs ? directRefs.map(dep => dep.id) : row.questionSourceIds
+        const questionBaseValid = directRefs ? Boolean(source.questionValid) : row.questionCurrent
+        const questionAllowed = Boolean(source.question) && questionBaseValid && questionDepIds.every(id => {
+          if (!readable(id)) return false
+          if (!directRefs) return true
+          const expected = directRefs.find(dep => dep.id === id)
+          if (!expected) return true
+          try {
+            return notes.snapshot([id])[0]?.token === expected.token
+          } catch {
+            return false
+          }
+        })
         // Separate validation for human answer text vs. revocable question text (§5.3 item 3):
         // revoking a question-only prerequisite withholds ONLY `question` without discarding a valid custom answer.
         if (!source.text?.trim()) return []
-        return [{ source, ref, text: source.text, question: questionAllowed ? source.question : null }]
+        return [{ source, ref, text: source.text, question: questionAllowed ? source.question : null, questionDepIds: questionAllowed ? questionDepIds : [] }]
       })
       return { row, user, assistant: assistantAllowed && user.length && fetchedAssistant && sources.every(source => allowsText(fetchedAssistant, source)) ? fetchedAssistant : '' }
     })
@@ -243,7 +257,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     }
     const assistantIds = [...new Set([...turns.flatMap(turn => [
       ...(turn.assistant ? [...turn.row.sourceIds, ...turn.row.assistantSourceIds] : []),
-      ...(turn.user.some(item => item.question) ? turn.row.questionSourceIds : []),
+      ...turn.user.flatMap(item => item.question ? item.questionDepIds : []),
     ]),
       ...(previousAssistant ? [...lastTurn!.sourceIds, ...lastTurn!.assistantSourceIds] : [])])]
     const related = [...new Set([...sources.map(source => source.id), ...priorSources, ...assistantIds])]

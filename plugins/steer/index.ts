@@ -11,7 +11,7 @@
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, freezeMessage, MessageId, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionSeq, type Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-tools'
 import { createSteerChannel, REASONS } from './lib/channel.ts'
@@ -58,20 +58,19 @@ export const Config = z.object({})
 const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
 
 /**
- * Whether the current open turn (events since the latest `turn/start`) contains a human
- * `source.kind === 'user'` message. Used to prevent `dsh-web-deepseek-api` from walking past a
- * non-human turn (`viva-task-brief`, `viva-report-batch`, `viva-unattended`) and leaking an
- * unrelated earlier human message as `ori_question`.
+ * Whether the current open turn (events since `openTurnStartSeq`) contains a human
+ * `source.kind === 'user'` message. Uses O(1) `session.eventAt(seq)` indexed reads bounded by
+ * `turnBoundaryOf(session).openTurnStartSeq` so ordinary human `web_search` calls never copy the
+ * full session log snapshot.
  */
-function currentTurnHasUserPrompt(session: { snapshotEvents(): readonly { type: string, data?: unknown }[] }): boolean {
-  const events = session.snapshotEvents()
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]!
+function currentTurnHasUserPrompt(session: Session, openTurnStartSeq: number | undefined): boolean {
+  const end = Number(session.seq)
+  const start = openTurnStartSeq ?? 0
+  for (let seq = end - 1; seq >= start; seq--) {
+    const event = session.eventAt(SessionSeq(seq))
+    if (!event) continue
     if (event.type === 'turn/start') return false
-    if (event.type === 'user/message') {
-      const data = event.data as { source?: { kind?: unknown } } | undefined
-      if (data?.source?.kind === 'user') return true
-    }
+    if (event.type === 'user/message' && event.data.source.kind === 'user') return true
   }
   return false
 }
@@ -106,7 +105,10 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     scoped.on('tools/execute', (execution, next) => {
       if (execution.name !== 'web_search') return next()
       const initiator = ctx.agents.currentInitiator()
-      if (!initiator || currentTurnHasUserPrompt(initiator.session)) return next()
+      if (!initiator) return next()
+      const boundary = ctx.agents.turnBoundaryOf(initiator.session)
+      const turnStartSeq = boundary?.openTurnStartSeq !== undefined ? Number(boundary.openTurnStartSeq) : undefined
+      if (currentTurnHasUserPrompt(initiator.session, turnStartSeq)) return next()
       const maskedSession = new Proxy(initiator.session, {
         get(target, prop) {
           if (prop === 'deriveMessages') return () => []

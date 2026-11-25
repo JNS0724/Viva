@@ -165,10 +165,14 @@ export const CONVERSATION_ACTIONS = {
    * Said while the agent works (viva-steer): into the thread at once, the turn going on. What the agent was
    * writing closes, so its reply to these words starts below them.
    */
-  user_steer: (view, { text, via = null, sourceId }) => {
+  user_steer: (view, { text, via = null, sourceId, streamKey }) => {
     const closed = closeStreams(view)
-    const message = { id: messageId(closed, closed.messages.length), role: 'user', text, ...(sourceId ? { sourceId } : {}), open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
+    const message = { id: messageId(closed, closed.messages.length), role: 'user', text, ...(sourceId ? { sourceId } : {}), ...(streamKey ? { streamKey } : {}), open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
     return { ...closed, messages: [...closed.messages, message] }
+  },
+  user_steer_retracted: (view, { streamKey }) => {
+    const messages = view.messages.filter((message) => !(message.role === 'user' && message.streamKey === streamKey))
+    return messages.length === view.messages.length ? view : { ...view, messages }
   },
 
   /** The words could not reach the agent: they stay in the thread, marked as not sent. */
