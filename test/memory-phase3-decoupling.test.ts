@@ -1590,8 +1590,9 @@ test('ingestion isolates live turn from deferred scan turn, keeps state across q
     [{ id: msg9, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: text9 }] } as unknown as Parameters<typeof ing9.receive>[1][0]],
     1,
   )
-  // Wait for the retry timer to fire and enter flush #2, then release(), then reject flush #2 with EIO!
+  // Wait for the retry timer to fire, enter scan()'s `await persisted` (setImmediate barrier), then release(), then reject flush #2 with EIO!
   await retryFlushStarted.promise
+  await new Promise(resolve => setImmediate(resolve))
   ing9.release(fakeSession9 as unknown as Parameters<typeof ing9.release>[0])
   retryFlushGate.reject(Object.assign(new Error('retry flush EIO'), { code: 'EIO' }))
   assert.ok(await eventually(() => {
@@ -1645,6 +1646,62 @@ test('ingestion isolates live turn from deferred scan turn, keeps state across q
   }, { timeoutMs: 2_000 }), 'queued short scan must NOT clear shared releaseDeadline for queued 4-message scan')
   const elapsed10 = Date.now() - started10
   assert.ok(elapsed10 < 450, `queued short+full scans must share one 150ms releaseDeadline (not 4x=600ms), got ${elapsed10}ms`)
+
+  // 11. R7 P2: Queued short scan failing AFTER releaseDeadline must NOT clear releaseDeadline for subsequent queued scan (0 deferMissingAlias calls after error)!
+  const sess11 = randomUUID()
+  const shortStarted11 = deferred<void>()
+  const releaseBusy11 = deferred<void>()
+  let calls11 = 0
+  let deferralsAfterError11 = 0
+  const events11: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '超期错误无别名 1' }] } },
+  ]
+  const fakeSession11 = {
+    id: sess11,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events11.length },
+    snapshotEvents(from: number, end: number) { return events11.slice(from, end) },
+  }
+  const flakyDeadlineOwner = {
+    ...ownerApi,
+    async receiveSource(input: Parameters<typeof ownerApi.receiveSource>[0]) {
+      if (input.sessionId === sess11) {
+        calls11++
+        if (calls11 === 1) {
+          shortStarted11.resolve()
+          await releaseBusy11.promise
+          throw new Error('Memory owner busy after deadline')
+        }
+        if (input.deferMissingAlias) deferralsAfterError11++
+      }
+      return ownerApi.receiveSource(input)
+    },
+  }
+  const ing11 = createSessionIngestion(flakyDeadlineOwner, async () => true, { host: true, aliasGraceMs: 120 })
+  t.after(() => ing11.drain())
+  const scanShort11 = ing11.synchronize(fakeSession11 as unknown as Parameters<typeof ing11.synchronize>[0])
+  await shortStarted11.promise
+  events11.push(
+    { seq: 2, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '超期错误无别名 2' }] } },
+    { seq: 3, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '超期错误无别名 3' }] } },
+    { seq: 4, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  )
+  const scanFull11 = ing11.synchronize(fakeSession11 as unknown as Parameters<typeof ing11.synchronize>[0])
+  ing11.release(fakeSession11 as unknown as Parameters<typeof ing11.release>[0])
+  await delay(160)
+  releaseBusy11.resolve()
+  await Promise.all([scanShort11, scanFull11])
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess11) as { n: number }
+      const ignored = db.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND kind = 'ignored'").get(sess11) as { n: number }
+      return turns.n === 1 && ignored.n === 3
+    } finally { db.close() }
+  }, { timeoutMs: 2_000 }), 'queued full scan after expired short-scan failure must immediately finalize all 3 messages')
+  assert.equal(deferralsAfterError11, 0, 'expired short-scan error must NOT reset releaseDeadline (subsequent scan must pass deferMissingAlias=false)')
 })
 
 test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {

@@ -77,7 +77,6 @@ export function createSessionIngestion(
     } else {
       state.awaitingSince.clear()
       state.pendingEvents = null
-      state.releaseDeadline = null
       onError?.(error)
     }
   }
