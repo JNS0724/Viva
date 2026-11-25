@@ -351,10 +351,13 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     const assistantRefs = assistantDigest ? snapshot([...sources.map(source => source.id), ...(input.assistantSources ?? [])]) : []
     const answers = sources.filter(source => source.author === 'answer')
     const hasQuestions = answers.length > 0
-    const baseQuestionDeps = input.questionSources ?? []
-    const baseQuestionAllReadable = baseQuestionDeps.every(readable)
-    const questionCurrent = !hasQuestions || (input.questionCurrent === true && baseQuestionAllReadable && answers.every(source => Boolean(source.question)))
-    const nonAnswerIds = sources.filter(source => source.author !== 'answer').map(source => source.id)
+    const baseQuestionDeps = hasQuestions ? (input.questionSources ?? []) : []
+    const questionCurrent = !hasQuestions || (
+      input.questionCurrent === true
+      && answers.every(source => Boolean(source.question))
+      && baseQuestionDeps.every(readable)
+    )
+    const nonAnswerIds = hasQuestions ? sources.filter(source => source.author !== 'answer').map(source => source.id) : []
     const questionRefs = hasQuestions && questionCurrent ? snapshot([...nonAnswerIds, ...baseQuestionDeps]) : []
     db.prepare(`INSERT INTO memory_note_ranges(
       range_id, note_key, session, workspace, day, from_seq, to_seq, turn,
