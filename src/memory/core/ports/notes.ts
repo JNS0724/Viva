@@ -1,5 +1,6 @@
 // Domain storage port. Implementations live in memory/node; no database handle crosses this boundary.
 import type { DocumentSourceRef, MemoryPhysicalFile } from './documents.ts'
+import type { MemorySessionKind } from '../../contracts/records.ts'
 import type { MemorySource } from './store.ts'
 type SourceRef = DocumentSourceRef
 export interface NoteRow {
@@ -45,7 +46,7 @@ export type ReadSessionRangeResult =
     | { status: 'unavailable' }
 
 export type ReadSessionRange = (
-    input: { sessionId: string; fromSeq: number; toSeq: number },
+    input: { sessionId: string; fromSeq: number; toSeq: number; sessionKind?: MemorySessionKind },
     signal?: AbortSignal,
 ) => Promise<ReadSessionRangeResult>
 
@@ -86,7 +87,7 @@ export interface MemoryNotes {
     snapshot: (ids: readonly string[]) => SourceRef[];
     jobState: (key: string, generation: number) => string | undefined;
     blocked: (key: string) => boolean;
-    contextSources(session: string, source: MemorySource): string[] | null;
+    contextSources(session: string, source: MemorySource, excludeIds?: ReadonlySet<string>): string[] | null;
     hasRange(session: string, fromSeq: number, toSeq: number): boolean;
     addRange(input: {
         session: string;

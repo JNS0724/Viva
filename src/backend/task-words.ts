@@ -1,5 +1,5 @@
 import type { QuestionAnswer } from '../shared/question-answer.ts'
-import { answered, ended, fromSaved, said, saved, updated, type SavedMessage, type Transcript } from './task-transcript.ts'
+import { answered, ended, fromSaved, said, saved, unsaid, updated, type SavedMessage, type Transcript } from './task-transcript.ts'
 
 /**
  * What each background task says, kept by the backend as it comes (task-transcript.ts) and saved into its segment
@@ -96,6 +96,16 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
     if (sourceId) save(taskId)
   }
 
+  /** Retract a steered user message after dsh explicitly rejects delivery, persisting the clean history. */
+  function undoUserSaid(taskId: string, key: string) {
+    const transcript = transcripts.get(taskId)
+    if (!transcript) return
+    const next = unsaid(transcript, key)
+    if (next === transcript) return
+    transcripts.set(taskId, next)
+    save(taskId)
+  }
+
   /**
    * An event from the agent (acp-bridge.ts emit); those not about a task held are left alone. A turn's end saves at
    * once; inside the change that keeps the end (`strict`, task-runtime.ts), a save that fails throws, so the end is
@@ -169,6 +179,6 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
     })) : null
   }
 
-  return { track, userSaid, receive, answer, holdQuestion, flush, drop, current, checkpoint, has: (taskId: string) => transcripts.has(taskId) }
+  return { track, userSaid, undoUserSaid, receive, answer, holdQuestion, flush, drop, current, checkpoint, has: (taskId: string) => transcripts.has(taskId) }
 }
 export type TaskWords = ReturnType<typeof createTaskWords>

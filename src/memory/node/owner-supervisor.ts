@@ -10,6 +10,7 @@ import { OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
 import type { MemoryComputeTools } from '../contracts/compute.ts'
 import type { MemoryCompute } from '../contracts/memory-contract.ts'
+import type { MemorySessionKind } from '../contracts/records.ts'
 import type { ReadSessionRangeResult } from '../core/ports/notes.ts'
 import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from './owner-adapter.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
@@ -17,7 +18,7 @@ import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerProfile | MemoryOwnerChange | MemoryOwnerContextUsed
 export type MemoryOwnerCallbacks = {
   compute?(input: { job: MemoryCompute, tools?: MemoryComputeTools['tools'] }, signal: AbortSignal): Promise<string>
-  readSessionRange?(input: { sessionId: string, fromSeq: number, toSeq: number }, signal: AbortSignal): Promise<ReadSessionRangeResult>
+  readSessionRange?(input: { sessionId: string, fromSeq: number, toSeq: number, sessionKind?: MemorySessionKind }, signal: AbortSignal): Promise<ReadSessionRangeResult>
 }
 type Options = {
   root: string
@@ -171,8 +172,10 @@ export function createMemoryOwnerSupervisor(options: Options) {
               || typeof input.toSeq !== 'number') {
               return { status: 'unavailable' } satisfies ReadSessionRangeResult
             }
+            const sessionKind = input.sessionKind === 'main' || input.sessionKind === 'task' || input.sessionKind === 'unattended'
+              ? input.sessionKind : undefined
             return callbacks.readSessionRange(
-              { sessionId: input.sessionId, fromSeq: input.fromSeq, toSeq: input.toSeq },
+              { sessionId: input.sessionId, fromSeq: input.fromSeq, toSeq: input.toSeq, ...(sessionKind ? { sessionKind } : {}) },
               signal,
             )
           default: throw new Error('Unsupported memory owner callback')

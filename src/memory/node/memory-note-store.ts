@@ -344,7 +344,8 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     const answers = sources.filter(source => source.author === 'answer')
     const hasQuestions = answers.length > 0
     const questionCurrent = !hasQuestions || (input.questionCurrent === true && answers.every(source => Boolean(source.question)))
-    const questionRefs = hasQuestions && questionCurrent ? snapshot(input.questionSources ?? []) : []
+    const nonAnswerIds = sources.filter(source => source.author !== 'answer').map(source => source.id)
+    const questionRefs = hasQuestions && questionCurrent ? snapshot([...nonAnswerIds, ...(input.questionSources ?? [])]) : []
     db.prepare(`INSERT INTO memory_note_ranges(
       range_id, note_key, session, workspace, day, from_seq, to_seq, turn,
       sources_json, source_tokens_json, assistant_sources_json, assistant_digest, assistant_valid,
@@ -363,7 +364,10 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     // sourceQuestionContext() survives range consumption and DSH session-log deletion (§5.3 item 2).
     if (hasQuestions) {
       for (const answer of answers) {
-        store.updateSourceQuestionContext?.(answer.id, questionCurrent, questionRefs)
+        const answerQuestionRefs = questionCurrent
+          ? snapshot([...sources.filter(source => source.id !== answer.id).map(source => source.id), ...(input.questionSources ?? [])])
+          : []
+        store.updateSourceQuestionContext?.(answer.id, questionCurrent, answerQuestionRefs)
       }
     }
     if (input.ephemeralAssistant && assistantDigest) {
@@ -413,17 +417,17 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     recover, read, snapshot, references,
     jobState: (key: string, generation: number) => journal.state(`note:${memoryFileRevision(key)}:${generation}`),
     blocked: (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(key) || rawNote(key)?.file_revision && !read(key)),
-    contextSources(session: string, source: MemorySource): string[] | null {
-      // Bound dependency capture to O(1) per row even under deep pending backlogs (e.g. when no
-      // Note model is configured). If complete prior proofs in this (session, workspace) exceed
-      // MAX_CONTEXT_SOURCES, fail closed (return null) so optional assistant/question context is
-      // omitted instead of storing truncated proofs or quadratic O(N^2) reference lists.
+    contextSources(session: string, source: MemorySource, excludeIds?: ReadonlySet<string>): string[] | null {
+      // Bound dependency capture to O(1) rows read and stored per turn even under deep pending
+      // backlogs (e.g. when no Note model is configured). Lazy `.iterate()` stops at the 17th
+      // matching workspace source and fails closed (returns null) instead of scanning all N rows.
       const MAX_CONTEXT_SOURCES = 16
       const targetWorkspace = workspaceOf(source)
-      const rows = db.prepare('SELECT id, scope, context, project FROM memory_sources WHERE session=? AND id<>? ORDER BY rowid DESC')
-        .all(session, source.id) as Array<{ id: string, scope: string, context: string | null, project: string | null }>
+      const stmt = db.prepare('SELECT id, scope, context, project FROM memory_sources WHERE session=? ORDER BY rowid DESC')
       const ids: string[] = []
-      for (const row of rows) {
+      for (const raw of stmt.iterate(session)) {
+        const row = raw as { id: string, scope: string, context: string | null, project: string | null }
+        if (excludeIds ? excludeIds.has(row.id) : row.id === source.id) continue
         const rowWorkspace = workspaceOf({
           ...source,
           scope: JSON.parse(row.scope) as MemorySource['scope'],

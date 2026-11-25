@@ -372,7 +372,7 @@ export async function readPersistedSessionRange(
   sessionId: string,
   fromSeq: number,
   toSeq: number,
-  { host = false }: { host?: boolean } = {},
+  { host = false, initialSessionKind = 'main' }: { host?: boolean, initialSessionKind?: SessionKind } = {},
 ): Promise<ReadSessionRangeResult> {
   if (toSeq <= fromSeq) return { status: 'ok', assistant: '' }
   let attempt = await readHandleRange(sessionPersistence, sessionId, fromSeq, toSeq)
@@ -380,7 +380,7 @@ export async function readPersistedSessionRange(
     attempt = await readHandleRange(sessionPersistence, sessionId, fromSeq, toSeq)
   }
   if (attempt.status !== 'ok') return attempt
-  const assistant = selectTurnAssistantText(attempt.events, host)
+  const assistant = selectTurnAssistantText(attempt.events, host, initialSessionKind)
   return { status: 'ok', assistant: looksSecret(assistant) ? '' : assistant }
 }
 
@@ -686,6 +686,8 @@ export function createSessionIngestion(
     let inTurn = false
     let turnNumber = 0
     let turnStartSeq = currentSeq
+    let turnStartSessionKind: SessionKind = sessionKind
+    let turnEvents: SessionEvent[] = []
     let acc: TurnClassification = { sessionKind, conversation: conversation ?? undefined, hasReport: false, sources: [], assistantParts: [] }
 
     for (; idx < events.length; idx++) {
@@ -696,9 +698,12 @@ export function createSessionIngestion(
         inTurn = true
         turnNumber = event.data.turn
         turnStartSeq = currentSeq
+        turnStartSessionKind = sessionKind
+        turnEvents = [event]
         acc = { sessionKind, conversation: conversation ?? undefined, hasReport: false, sources: [], assistantParts: [] }
         continue
       }
+      turnEvents.push(event)
       if (event.type === 'user/message') {
         classifyUserMessageForTurn(event.data, event.time, tz, sessionId, host, acc)
         if (acc.sessionKind !== 'main') sessionKind = acc.sessionKind
@@ -712,22 +717,17 @@ export function createSessionIngestion(
       if (event.type === 'turn/end') {
         const toSeq = event.seq + 1
         const reasonKind = event.data.reason.kind
-        // For multi-step background tasks, publish ONLY the final non-empty assistant conclusion
-        // so preliminary pre-tool guesses superseded by a corrected answer never enter global recall.
-        const finalAssistantPart = [...acc.assistantParts].reverse().find(part => part.trim().length > 0) ?? ''
-        const assistantText = acc.hasReport || acc.sessionKind === 'unattended'
-          ? ''
-          : acc.sessionKind === 'task'
-            ? finalAssistantPart
-            : acc.assistantParts.join('\n')
+        // Share the exact same host + sessionKind assistant selector as readPersistedSessionRange
+        // so stored assistant_digest and on-demand range reads always agree (including task goal turns).
+        const assistantText = selectTurnAssistantText(turnEvents, host, turnStartSessionKind)
         const turnSources = [...acc.sources]
-        if (reasonKind === 'completed' && acc.sessionKind === 'task' && finalAssistantPart.trim() && !looksSecret(finalAssistantPart)) {
+        if (reasonKind === 'completed' && acc.sessionKind === 'task' && assistantText.trim() && !looksSecret(assistantText)) {
           turnSources.push({
             sourceId: deterministicSourceUuid('task-assistant', sessionId, event.seq),
             author: 'assistant',
             sourceKind: 'task-assistant',
             profileEligible: false,
-            text: finalAssistantPart,
+            text: assistantText,
             conversation: acc.conversation ?? conversation,
             at: event.time,
             timezone: tz,

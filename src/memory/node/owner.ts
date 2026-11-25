@@ -150,7 +150,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     store,
     compute: options.compute,
     route: options.route,
-    readSessionRange: options.readSessionRange,
+    readSessionRange: options.readSessionRange
+      ? (input, signal) => {
+          const row = db.prepare('SELECT session_kind FROM owner_intake_cursors WHERE session=?').get(input.sessionId) as { session_kind?: string } | undefined
+          const cursorKind = row?.session_kind === 'main' || row?.session_kind === 'task' || row?.session_kind === 'unattended'
+            ? row.session_kind as SessionKind : undefined
+          return options.readSessionRange!({ ...input, ...(cursorKind ? { sessionKind: cursorKind } : {}) }, signal)
+        }
+      : undefined,
     diagnostics: options.diagnostics,
     ...(options.now ? { now: options.now } : {}),
     dailyNotes: options.dailyNotes ?? true,

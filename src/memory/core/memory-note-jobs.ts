@@ -69,7 +69,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const source = sources[0]
     if (!source) return null
     const day = todayAt(sources.at(-1)!.at, timezone)
-    const dependencies = notes.contextSources(session, source)
+    const dependencies = notes.contextSources(session, source, new Set(sources.map(item => item.id)))
     const contextCurrent = dependencies !== null && dependencies.every(id => readable(id))
     const safeAssistant = contextCurrent && assistant && sources.every(item => allowsText(assistant, item)) ? assistant : ''
     const key = notes.addRange({
@@ -101,7 +101,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const source = sources[0]
     if (!source) return
     const day = todayAt(sources.at(-1)!.at, timezone)
-    const dependencies = notes.contextSources(session, source)
+    const dependencies = notes.contextSources(session, source, new Set(sources.map(item => item.id)))
     const contextCurrent = dependencies !== null && dependencies.every(id => readable(id))
     // A generated response may contain protected material or opaque tool
     // metadata. Suppress that copy without discarding independent human input.

@@ -1937,3 +1937,340 @@ test('Phase 4A §5.7.2b: agent/pre-step liftProvenance strips transport headers 
     return row?.text === lookalikeLine
   }, { timeoutMs: 8_000 }), 'standalone DSH must store literal header verbatim in memory_sources')
 })
+
+test('Phase 4A Codex R3 P1-1..P1-2 & P2-3..P2-6: same-turn question dep revocation, non-human web_search ori_question guard, lazy O(1) contextSources, task goal-turn range parity, rejected task:message cleanup, and non-host steer no-op', { timeout: 45_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4a-r3-')
+  const nowMs = Date.parse('2026-11-25T12:00:00Z')
+
+  // R3 P1-1: Same-turn [userPrompt, customAnswer] includes userPrompt in question_sources_json so revoking
+  // userPrompt invalidates question context in BOTH WRITE_NOTE and Dream while preserving customAnswer.text!
+  const root1 = path.join(dir, 'mem-r3-p11')
+  const noteInputs1: Array<{ turns: Array<{ user: Array<{ sourceId: string, text: string, question: string | null }> }> }> = []
+  const dreamProfileInputs1: Array<{ canonicalSources: Array<{ sourceId: string, text: string, question: string | null, questionUnavailable: boolean }> }> = []
+  const owner1 = openMemoryOwner({
+    root: root1,
+    hostNamespace: 'viva',
+    dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '' }),
+    compute: job => {
+      if (job.stage === 'note') {
+        noteInputs1.push(JSON.parse(job.input))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '同轮问答', markdown: '同轮问答记录' }))
+      }
+      if (job.stage === 'dream') {
+        if (job.system === DREAM_PROFILE_SYSTEM) {
+          dreamProfileInputs1.push(JSON.parse(job.input))
+          return Promise.resolve(JSON.stringify({ action: 'NOOP' }))
+        }
+        return Promise.resolve(JSON.stringify({ operations: [] }))
+      }
+      return null
+    },
+  })
+  defer(() => owner1.close())
+  await owner1.recover()
+  const sameTurnSid = 'sess-same-turn-q'
+  const triggerSrcId = randomUUID()
+  const answerSrcId = randomUUID()
+  owner1.beginTurn({ sessionId: sameTurnSid, turn: 1, sessionKind: 'main', conversation: 'conv-stq', cwd: dir })
+  await owner1.handleHost('acceptQuestionAnswer', {
+    operationId: answerSrcId,
+    text: '偏好周三上午开会',
+    session: sameTurnSid,
+    turn: 1,
+    conversation: 'conv-stq',
+    cards: [{ id: 'q1', question: '基于刚才敏感议程，选哪个会议时间？', header: '时间', options: [{ label: '周一' }], multiSelect: false }],
+    requestId: 'req-stq',
+    questionId: 'q1',
+    context: { kind: 'user' },
+    questionAt: nowMs + 10,
+    questionProfileGen: 0,
+  })
+  // Settle Turn 1 with [userPrompt, customAnswer] together, then revoke ONLY userPrompt before WRITE_NOTE runs!
+  await owner1.settleTurn({
+    sessionId: sameTurnSid, cwd: dir, sessionKind: 'main', conversation: 'conv-stq', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
+    sources: [{ sourceId: triggerSrcId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '触发提问的同轮敏感原话', at: nowMs, timezone: 'UTC' }],
+    assistantText: '', at: nowMs + 20, timezone: 'UTC',
+  })
+  const db1rw = new DatabaseSync(path.join(root1, 'memory.db'))
+  defer(() => db1rw.close())
+  // Verify triggerSrcId is recorded in answer's direct question_sources_json!
+  const ansMeta = db1rw.prepare('SELECT question_sources_json FROM memory_sources WHERE id=?').get(answerSrcId) as { question_sources_json: string }
+  assert.ok(ansMeta.question_sources_json.includes(triggerSrcId), 'same-turn triggering user prompt must be recorded in answer question_sources_json')
+  db1rw.prepare("UPDATE memory_sources SET text=NULL, hash=NULL, outcome='rejected' WHERE id=?").run(triggerSrcId)
+  await owner1.runtime.wake()
+  assert.equal(noteInputs1.length, 1)
+  const noteAns = noteInputs1[0]!.turns.flatMap(turn => turn.user).find(u => u.sourceId === answerSrcId)
+  assert.ok(noteAns, 'WRITE_NOTE must retain valid custom answer when same-turn triggering prompt is revoked')
+  assert.equal(noteAns.text, '偏好周三上午开会')
+  assert.equal(noteAns.question, null, 'revoking same-turn triggering prompt must withhold question in WRITE_NOTE')
+  await owner1.runtime.runDocumentDream()
+  assert.ok(dreamProfileInputs1.length >= 1)
+  const dreamAns = dreamProfileInputs1.at(-1)!.canonicalSources.find(s => s.sourceId === answerSrcId)
+  assert.ok(dreamAns)
+  assert.equal(dreamAns.text, '偏好周三上午开会')
+  assert.equal(dreamAns.question, null)
+  assert.equal(dreamAns.questionUnavailable, true, 'revoking same-turn triggering prompt must withhold question in Dream')
+
+  // R3 P1-2: Real dsh-web-deepseek-api web_search on a viva-task-brief turn omits ori_question instead of
+  // leaking an unrelated prior turn's human prompt, while human turns keep ori_question intact!
+  const searchDir = path.join(dir, 'search-guard')
+  mkdirSync(searchDir, { recursive: true })
+  const searchCfg = path.join(searchDir, 'cordis.yml')
+  writeFileSync(searchCfg, JSON.stringify([
+    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions', 'dsh-web', 'dsh-tool-web']
+      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
+    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(searchDir, 'sessions'), compression: 'zstd' } },
+    { id: 'web-deepseek-api', name: '@deepseek-ai/dsh-web-deepseek-api', config: { searchBaseURL: 'https://search.example.test/v1/tools', sendOriginalQuestion: true } },
+  ]))
+  const prevSearchKey = process.env.DEEPSEEK_API_KEY
+  process.env.DEEPSEEK_API_KEY = 'sk-test-search-only'
+  defer(() => {
+    if (prevSearchKey === undefined) delete process.env.DEEPSEEK_API_KEY
+    else process.env.DEEPSEEK_API_KEY = prevSearchKey
+  })
+  const searchBodies: Array<Record<string, unknown>> = []
+  const origFetch = globalThis.fetch
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (url.startsWith('https://search.example.test/')) {
+      searchBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+      return new Response(JSON.stringify({ results: [{ title: '杭州天气', url: 'https://weather.example.test', snippet: '晴 22°C' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return origFetch(input, init)
+  })
+  const searchCtx = await boot('p4a-r3-search', searchCfg, [], undefined, new URL('../package.json', import.meta.url).href)
+  defer(async () => { await searchCtx.fiber.dispose() })
+  let turnCallIdx = 0
+  class SearchToolAdapter extends LlmAdapter {
+    override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+      const lastIsTool = options.messages.at(-1)?.role === 'tool'
+      if (!lastIsTool) {
+        turnCallIdx++
+        const query = turnCallIdx === 1 ? '预算审批流程' : '杭州天气'
+        const callId = ToolCallId(`ws-${turnCallIdx}`)
+        const args = JSON.stringify({ queries: [query] })
+        yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+        yield { type: 'tool-call-delta', index: 0, id: callId, name: 'web_search', argumentsDelta: args }
+        yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: callId, name: 'web_search', arguments: args } }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+        return
+      }
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: '搜索完成' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: '搜索完成' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  searchCtx.llm.registerAdapter(['mock'], new SearchToolAdapter())
+  applySteer(searchCtx, {}, makeFakePort() as unknown as NodeJS.Process)
+  const searchSid = SessionId(randomUUID())
+  const searchHandle = await searchCtx.agents.create({ sessionId: searchSid, meta: { cwd: searchDir }, agentOptions: { provider: 'mock', model: 'mock' } })
+  defer(async () => { await searchHandle.dispose() })
+
+  // Turn 1: Human task follow-up -> keeps ori_question for current human turn.
+  const turn1Done = deferred<void>()
+  const offT1 = searchCtx.on('agent/status', ({ agent, status }) => { if (agent.session.id === searchSid && status === 'idle') { offT1(); turn1Done.resolve() } })
+  const humanWrapped = withTaskRequestSource('内部预算为 47 万', randomUUID())
+  searchHandle.agent.send(createUserMessage({
+    content: [{ type: 'text', text: withProvenanceHeader(humanWrapped.text, { origin: 'human', sourceKind: 'task-human-steer', sessionKind: 'task', conversationId: 'conv-ws', sourceId: randomUUID(), humanSpans: humanWrapped.spans }) }],
+    source: { kind: 'user' },
+  }), 'next-turn', true)
+  await turn1Done.promise
+
+  // Turn 2: Router viva-task-brief -> MUST omit ori_question instead of leaking Turn 1's "内部预算为 47 万"!
+  const turn2Done = deferred<void>()
+  const offT2 = searchCtx.on('agent/status', ({ agent, status }) => { if (agent.session.id === searchSid && status === 'idle') { offT2(); turn2Done.resolve() } })
+  const briefWrapped = withTaskRequestSource('查杭州天气', randomUUID())
+  searchHandle.agent.send(createUserMessage({
+    content: [{ type: 'text', text: withProvenanceHeader(briefWrapped.text, { origin: 'router', sourceKind: 'task-brief', sessionKind: 'task', conversationId: 'conv-ws', humanSpans: briefWrapped.spans }) }],
+    source: { kind: 'user' },
+  }), 'next-turn', true)
+  await turn2Done.promise
+
+  assert.equal(searchBodies.length, 2)
+  assert.equal(searchBodies[0]!.query, '预算审批流程')
+  assert.ok(String(searchBodies[0]!.ori_question ?? '').includes('内部预算为 47 万'), 'human turn search should keep its own ori_question')
+  assert.equal(searchBodies[1]!.query, '杭州天气')
+  assert.equal('ori_question' in searchBodies[1]!, false, 'viva-task-brief turn search must omit ori_question instead of leaking prior turn human message')
+
+  // R3 P2-3: Lazy `.iterate()` in contextSources() stops at 17th matching workspace row (O(1) scanned rows, NOT all N)!
+  const storeIter = openMemoryStore(path.join(dir, 'iter.db'), () => nowMs)
+  defer(() => storeIter.close())
+  const notesIter = openMemoryNotes(storeIter, () => true, () => false)
+  let lastSrcId = ''
+  for (let i = 0; i < 40; i++) {
+    const id = randomUUID()
+    lastSrcId = id
+    const text = `source ${i}`
+    storeIter.insertSource({
+      id, operation: id, version: 1, conversation: 'conv-iter', session: 'sess-iter',
+      scope: { kind: 'user' }, context: { kind: 'user' }, project: null,
+      author: 'user', sourceKind: 'main-human', profileEligible: true,
+      text, hash: memoryHash(text), length: text.length,
+      question: null, requestId: null, questionId: null,
+      at: nowMs + i, timezone: 'UTC', outcome: 'note-pending',
+    })
+  }
+  const latestSrc = storeIter.readSource(lastSrcId)!
+  let yieldedRows = 0
+  const origPrepare = storeIter.db.prepare.bind(storeIter.db)
+  t.mock.method(storeIter.db, 'prepare', (sql: string) => {
+    const stmt = origPrepare(sql)
+    if (sql.includes('FROM memory_sources WHERE session=?')) {
+      const origIter = stmt.iterate.bind(stmt)
+      stmt.iterate = ((...params: never[]) => {
+        const inner = origIter(...params)
+        return (function* () {
+          for (const row of inner) {
+            yieldedRows++
+            yield row
+          }
+          return undefined
+        })()
+      }) as typeof stmt.iterate
+    }
+    return stmt
+  })
+  assert.equal(notesIter.contextSources('sess-iter', latestSrc, new Set([latestSrc.id])), null)
+  assert.ok(yieldedRows <= 18, `contextSources must stop lazily at <= 18 rows instead of materializing all 40, yielded ${yieldedRows}`)
+
+  // R3 P2-4: Subsequent native goal turn on an existing task session agrees between settlement and readPersistedSessionRange!
+  const rootGoal = path.join(dir, 'mem-r3-goal')
+  const goalNoteInputs: Array<{ turns: Array<{ assistant: string }> }> = []
+  const goalSessions = new Map<string, Session>()
+  const goalPersistence = {
+    async open(id: SessionId) {
+      const s = goalSessions.get(String(id))
+      if (!s) throw notFoundError()
+      return {
+        inheritedEventCount: s.inheritedEventCount,
+        async read(from: number, limit: number) { return { events: s.snapshotEvents().slice(from, from + limit) } },
+        async close() {},
+      }
+    },
+    async list() { return [] },
+  } as unknown as Parameters<typeof createSessionIngestion>[2]
+  const ownerGoal = openMemoryOwner({
+    root: rootGoal,
+    hostNamespace: 'viva',
+    dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: ({ sessionId, fromSeq, toSeq, sessionKind }) =>
+      readPersistedSessionRange(goalPersistence as Parameters<typeof readPersistedSessionRange>[0], sessionId, fromSeq, toSeq, { host: true, initialSessionKind: sessionKind }),
+    compute: job => {
+      if (job.stage === 'note') {
+        goalNoteInputs.push(JSON.parse(job.input))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '目标轮次', markdown: '目标记录' }))
+      }
+      return null
+    },
+  })
+  defer(() => ownerGoal.close())
+  await ownerGoal.recover()
+  const goalAdapter = {
+    get epoch() { return 'ep-g' },
+    inEpoch: async <T,>(_ep: string | undefined, fn: () => Promise<T>) => fn(),
+    intakeCursor: async (s: string) => ownerGoal.intakeCursor(s),
+    advanceIntakeCursor: async (i: Parameters<typeof ownerGoal.advanceIntakeCursor>[0]) => ownerGoal.advanceIntakeCursor(i),
+    beginTurn: async (i: Parameters<typeof ownerGoal.beginTurn>[0]) => ownerGoal.beginTurn(i),
+    stageOpenTurnSources: async (i: Parameters<typeof ownerGoal.stageOpenTurnSources>[0]) => ownerGoal.stageOpenTurnSources(i),
+    settleTurn: async (i: Parameters<typeof ownerGoal.settleTurn>[0]) => ownerGoal.settleTurn(i),
+  }
+  const goalIngest = createSessionIngestion(goalAdapter, { flush: async () => true }, goalPersistence, { host: true })
+  const sGoal = Session.create(SessionId('sess-r3-goal'), [], { version: 4, id: SessionId('sess-r3-goal'), createdAt: nowMs, cwd: dir, isSeeded: false })
+  goalSessions.set('sess-r3-goal', sGoal)
+  // Turn 1 establishes session_kind = 'task'
+  const b1 = withTaskRequestSource('初始后台任务', randomUUID())
+  sGoal.append('turn/start', { turn: 1 })
+  sGoal.append('user/message', liftProvenance(createUserMessage({ content: [{ type: 'text', text: withProvenanceHeader(b1.text, { origin: 'router', sourceKind: 'task-brief', sessionKind: 'task', conversationId: 'conv-goal', humanSpans: b1.spans }) }], source: { kind: 'user' } })), { surfaceOp: 'append' })
+  sGoal.append('assistant/message', { message: { id: 'g-a1', role: 'assistant', content: [{ type: 'text', text: '第一轮结论' }] }, interrupted: false } as never, { surfaceOp: 'append' })
+  sGoal.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await goalIngest.synchronize(sGoal)
+  await ownerGoal.runtime.wake()
+  // Turn 2 triggered by native DSH goal message (no Viva header) with 2 assistant parts -> MUST match 'final' on range read!
+  sGoal.append('turn/start', { turn: 2 })
+  sGoal.append('user/message', createUserMessage({ content: [{ type: 'text', text: '继续执行目标' }], source: { kind: 'goal' } as unknown as UserMessage['source'] }), { surfaceOp: 'append' })
+  sGoal.append('assistant/message', { message: { id: 'g-a2a', role: 'assistant', content: [{ type: 'text', text: 'intermediate' }] }, interrupted: false } as never, { surfaceOp: 'append' })
+  sGoal.append('assistant/message', { message: { id: 'g-a2b', role: 'assistant', content: [{ type: 'text', text: 'final' }] }, interrupted: false } as never, { surfaceOp: 'append' })
+  sGoal.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+  await goalIngest.synchronize(sGoal)
+  await ownerGoal.runtime.wake()
+  assert.equal(goalNoteInputs.length, 2)
+  assert.equal(goalNoteInputs[1]!.turns[0]!.assistant, 'final', 'subsequent native goal turn on task session must agree on final assistant digest')
+
+  // R3 P2-5: task:message IPC rejection (steer returns idle) leaves ZERO orphaned user message or sourceId in history!
+  const appDbR3 = openAppDb({ file: path.join(dir, 'app-r3-ipc.db') })
+  defer(() => appDbR3.close())
+  const historyDbR3 = openHistoryDb({ db: appDbR3.db })
+  defer(() => historyDbR3.close())
+  const mainConvR3 = historyDbR3.save(historyDbR3.create({ sessionId: 'main-r3' }), [{ role: 'user', text: 'hello', receipt: null }]).id
+  const taskStoreR3 = createTaskStore({ db: appDbR3.db })
+  const rejectTaskId = randomUUID()
+  const taskRuntimeR3 = createTaskRuntime({
+    db: historyDbR3,
+    store: taskStoreR3,
+    current: () => historyDbR3.get(mainConvR3)!.conversation,
+    agentInfo: () => ({ mode: 'ready', model: 'mock' }),
+    agent: {
+      startTask: async () => ({ ok: true, taskId: rejectTaskId }),
+      promptTask: () => {},
+      steerTask: async () => ({ ok: false }),
+      resumeTask: async () => ({ ok: true }),
+      cancelTask: async () => {},
+      closeTask: async () => {},
+    },
+  })
+  defer(() => taskRuntimeR3.dispose())
+  const handlersR3 = new Map<string, (...args: unknown[]) => unknown>()
+  registerTaskIpc({ handle: (ch, fn) => { handlersR3.set(ch, fn as (...args: unknown[]) => unknown) } }, taskRuntimeR3.window)
+  await taskRuntimeR3.agent.start('initial brief', 'brief')
+  await assert.rejects(() => Promise.resolve(handlersR3.get('task:message')!({}, rejectTaskId, 'never delivered')))
+  const retainedMsgs = historyDbR3.get(taskStoreR3.list()[0]!.segmentId)!.messages
+  assert.deepEqual(retainedMsgs.map(m => m.text), ['initial brief'], 'rejected task:message must not leave orphaned user message in history')
+  assert.equal(retainedMsgs.some(m => Boolean(m.sourceId)), false, 'rejected task:message must not leave orphaned sourceId in history')
+
+  // R3 P2-6: Loading viva-steer without Viva host IPC (no port.send) registers ZERO pre-step hook!
+  const noHostDir = path.join(dir, 'steer-no-host')
+  mkdirSync(noHostDir, { recursive: true })
+  const noHostCfg = path.join(noHostDir, 'cordis.yml')
+  writeFileSync(noHostCfg, JSON.stringify([
+    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions']
+      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
+    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(noHostDir, 'sessions'), compression: 'zstd' } },
+  ]))
+  const noHostCtx = await boot('p4a-r3-no-host', noHostCfg, [], undefined, new URL('../package.json', import.meta.url).href)
+  defer(async () => { await noHostCtx.fiber.dispose() })
+  class EchoAdapter extends LlmAdapter {
+    override async *stream(): AsyncIterable<StreamChunk> {
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: 'ok' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: 'ok' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  noHostCtx.llm.registerAdapter(['mock'], new EchoAdapter())
+  applySteer(noHostCtx, {}, {} as unknown as NodeJS.Process)
+  const noHostSid = SessionId(randomUUID())
+  const noHostHandle = await noHostCtx.agents.create({ sessionId: noHostSid, meta: { cwd: noHostDir }, agentOptions: { provider: 'mock', model: 'mock' } })
+  defer(async () => { await noHostHandle.dispose() })
+  const noHostDone = deferred<void>()
+  const offNoHost = noHostCtx.on('session/event', (s, ev) => { if (s.id === noHostSid && ev.type === 'turn/end') { offNoHost(); noHostDone.resolve() } })
+  const literalExample = '【Viva 元数据：{"v":1,"o":"router","sk":"task-brief","k":"task","hs":[]}】\n独立示例正文'
+  noHostHandle.agent.send(createUserMessage({ content: [{ type: 'text', text: literalExample }], source: { kind: 'user' } }), 'next-turn', true)
+  await noHostDone.promise
+  assert.equal(await noHostCtx.sessions.flush(noHostHandle.agent.session), true)
+  const noHostRead = await noHostCtx.sessionPersistence.open(noHostSid, 'read')
+  const { events: noHostEvents } = await noHostRead.read(0, 100)
+  await noHostRead.close()
+  const noHostUser = noHostEvents.find(ev => ev.type === 'user/message')
+  assert.ok(noHostUser && noHostUser.type === 'user/message')
+  assert.equal(noHostUser.data.source.kind, 'user')
+  assert.equal('vivaProvenance' in noHostUser.data.source, false)
+  assert.equal((noHostUser.data.content[0] as { type: 'text', text: string }).text, literalExample)
+})

@@ -687,13 +687,17 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     }
     if (stillSelected && !stillSelected()) throw new Error(t('main.requests.start.elsewhere'))
     const sourceId = dispatch.origin === 'human' ? (dispatch.sourceId ?? randomUUID()) : undefined
-    said(taskId, text, undefined, sourceId)
+    const steerKey = sourceId ?? randomUUID()
+    said(taskId, text, steerKey, sourceId)
     const steered = await agent.steerTask(taskId, text, {
       origin: dispatch.origin,
       conversationId: kept.segmentId,
       ...(sourceId ? { sourceId } : {}),
     })
-    if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
+    if (!steered?.ok) {
+      taskWords.undoUserSaid(taskId, steerKey)
+      throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
+    }
     return { taskId, delivered: 'into its turn', ...(sourceId ? { sourceId } : {}) }
   }
 

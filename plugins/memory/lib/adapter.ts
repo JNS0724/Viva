@@ -108,9 +108,12 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
           throw memoryProviderFailure(error) ?? new MemoryComputeError('call-failed')
         }
       },
-      async readSessionRange({ sessionId, fromSeq, toSeq }) {
+      async readSessionRange({ sessionId, fromSeq, toSeq, sessionKind }) {
         if (lifetime.signal.aborted || !sessionPersistence) return { status: 'unavailable' as const }
-        return readPersistedSessionRange(sessionPersistence, sessionId, fromSeq, toSeq, { host: Boolean(config.host) })
+        return readPersistedSessionRange(sessionPersistence, sessionId, fromSeq, toSeq, {
+          host: Boolean(config.host),
+          ...(sessionKind ? { initialSessionKind: sessionKind } : {}),
+        })
       },
     },
   }, port)

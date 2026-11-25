@@ -13,6 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, freezeMessage, MessageId, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import type {} from '@deepseek-ai/dsh-tools'
 import { createSteerChannel, REASONS } from './lib/channel.ts'
 import { createReportDesk, REPORT_SOURCE, reportMessageId, type ReportAgent, type ReportMessage } from './lib/reports.ts'
 import {
@@ -56,10 +57,35 @@ export const Config = z.object({})
 
 const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
 
+/**
+ * Whether the current open turn (events since the latest `turn/start`) contains a human
+ * `source.kind === 'user'` message. Used to prevent `dsh-web-deepseek-api` from walking past a
+ * non-human turn (`viva-task-brief`, `viva-report-batch`, `viva-unattended`) and leaking an
+ * unrelated earlier human message as `ori_question`.
+ */
+function currentTurnHasUserPrompt(session: { snapshotEvents(): readonly { type: string, data?: unknown }[] }): boolean {
+  const events = session.snapshotEvents()
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!
+    if (event.type === 'turn/start') return false
+    if (event.type === 'user/message') {
+      const data = event.data as { source?: { kind?: unknown } } | undefined
+      if (data?.source?.kind === 'user') return true
+    }
+  }
+  return false
+}
+
 /** @param port the channel to the app (tests pass their own) */
 export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
+  if (typeof port.send !== 'function') {
+    log('dsh was not started by the app: nothing to steer from')
+    return
+  }
+
   // Unwrap Viva transport provenance headers before commit and LLM send (docs/memory-runtime-decoupling.md §5.4).
-  // Deliberately registered WITHOUT `{ prepend: true }` to respect Cordis waterfall onion ordering.
+  // Deliberately registered WITHOUT `{ prepend: true }` to respect Cordis waterfall onion ordering,
+  // and ONLY when launched by the Viva host (`typeof port.send === 'function'`).
   ctx.on('agent/pre-step', async (_payload, next) => {
     const decision = await next()
     if (decision.kind === 'reject' || decision.messages.length === 0) return decision
@@ -72,10 +98,32 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     return changed ? { ...decision, messages } : decision
   })
 
-  if (typeof port.send !== 'function') {
-    log('dsh was not started by the app: nothing to steer from')
-    return
-  }
+  // Guard `web_search` on non-human turns (`viva-task-brief`, `viva-report-batch`, `viva-unattended`):
+  // keep `session.requestContext()` intact for DeepSeek billing while hiding prior-turn human prompts
+  // from `dsh-web-deepseek-api`'s `latestUserQuestion` scan so unrelated earlier messages are never
+  // leaked as `ori_question`.
+  ctx.inject(['tools'], scoped => {
+    scoped.on('tools/execute', (execution, next) => {
+      if (execution.name !== 'web_search') return next()
+      const initiator = ctx.agents.currentInitiator()
+      if (!initiator || currentTurnHasUserPrompt(initiator.session)) return next()
+      const maskedSession = new Proxy(initiator.session, {
+        get(target, prop) {
+          if (prop === 'deriveMessages') return () => []
+          const value = Reflect.get(target, prop, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+      const maskedAgent = new Proxy(initiator, {
+        get(target, prop) {
+          if (prop === 'session') return maskedSession
+          const value = Reflect.get(target, prop, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+      return ctx.agents.withInitiator(maskedAgent, () => next())
+    })
+  })
   /** Only a running turn takes steering; an idle agent would start a turn of its own, outside the app's prompt. */
   function steer(sessionId: string, text: string, source?: SteerMessageSource) {
     const agent = ctx.agents.get(SessionId(sessionId))
