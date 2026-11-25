@@ -79,7 +79,7 @@ export type SettleTurnInput = {
   flushNotes?: boolean
 }
 
-export type CursorResult = { status: 'ok' | 'duplicate' | 'cas_mismatch', nextSeq: number }
+export type CursorResult = { status: 'ok' | 'duplicate' | 'cas_mismatch' | 'scope_unavailable', nextSeq: number }
 
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'readSessionRange'> & {
   diagnostics?: DiagnosticPort
@@ -320,14 +320,28 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (candidate.author !== 'user' && candidate.author !== 'answer') continue
         if (!candidate.text.trim()) continue
         const origin = resolveCandidateOrigin(session, bound, candidate)
+        const expectedHash = memoryHash(candidate.text)
         const existing = store.readSource(candidate.sourceId)
-        if (!existing) {
+        if (existing) {
+          if (existing.session !== session
+            || existing.conversation !== origin.conversation
+            || existing.author !== origin.author
+            || existing.hash !== expectedHash
+            || existing.text !== candidate.text) {
+            continue
+          }
+        } else {
           runtime.accept(candidate.text, origin, candidate.sourceId, undefined, {
             deferAutomatic: true, at: candidate.at, timezone: candidate.timezone,
           })
         }
         const saved = store.readSource(candidate.sourceId)
-        if (saved?.text) {
+        if (saved?.text
+          && saved.session === session
+          && saved.conversation === origin.conversation
+          && saved.author === origin.author
+          && saved.hash === expectedHash
+          && saved.text === candidate.text) {
           db.prepare('INSERT OR IGNORE INTO owner_open_turn_sources(session, turn, source_id) VALUES (?,?,?)')
             .run(session, turn, saved.id)
           staged.push(saved.id)
@@ -367,7 +381,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       // Terminal-reason gating (§5.2 item 2): ONLY 'completed' turns upsert canonical sources & note ranges.
       if (reasonKind === 'completed' && effectiveKind !== 'unattended') {
         const resolved = resolveIntakeScope(cwd)
-        if (resolved.status !== 'unknown' && scopeMatches(session, resolved)) {
+        if (resolved.status === 'unknown') {
+          // Temporarily unavailable project directory: leave cursor untouched so replay retries cleanly.
+          return { status: 'scope_unavailable' as const, nextSeq: existingCursor?.next_seq ?? fromSeq }
+        }
+        if (scopeMatches(session, resolved)) {
           const bound = bindSession(session, resolved, effectiveConv)
           const admittedIds: string[] = []
           for (const candidate of sources) {
@@ -668,7 +686,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
         store.tx(() => {
           assertIntakeCurrent()
-          runtime.accept(input.text, { ...context, context: input.context }, sourceId,
+          const isHostTaskAnswer = Boolean(options.hostNamespace) && input.context?.kind === 'task'
+          const answerOrigin = isHostTaskAnswer
+            ? { ...context, context: { kind: 'user' as const }, sourceKind: 'task-question-answer' as const, profileEligible: true }
+            : { ...context, context: input.context }
+          runtime.accept(input.text, answerOrigin, sourceId,
             { question: question.question, requestId: input.requestId, questionId: input.questionId, custom: true,
               ...(input.questionAt !== undefined ? { questionAt: input.questionAt } : {}),
               ...(input.questionProfileGen !== undefined ? { questionProfileGen: input.questionProfileGen } : {}) },

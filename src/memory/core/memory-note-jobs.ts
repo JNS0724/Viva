@@ -121,18 +121,23 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     wake()
   }
 
-  async function resolveRangeAssistant(row: ReturnType<typeof notes.pending>[number]): Promise<{ status: 'ok', text: string } | { status: 'deleted' } | { status: 'unavailable' }> {
-    if (!row.assistantValid || !row.assistantDigest || !row.assistantSourceIds.every(readable)) {
-      return { status: 'ok', text: '' }
-    }
-    if (row.assistant && hash(row.assistant) === row.assistantDigest) {
+  async function resolveRangeAssistant(
+    row: ReturnType<typeof notes.pending>[number],
+    verifyRange: boolean,
+  ): Promise<{ status: 'ok', text: string } | { status: 'deleted' } | { status: 'unavailable' }> {
+    const wantsAssistant = Boolean(row.assistantValid && row.assistantDigest && row.assistantSourceIds.every(readable))
+    if (wantsAssistant && row.assistant && hash(row.assistant) === row.assistantDigest) {
       return { status: 'ok', text: row.assistant }
     }
     if (row.fromSeq >= row.toSeq || !readSessionRange) {
       return { status: 'ok', text: '' }
     }
+    if (!verifyRange && !wantsAssistant) {
+      return { status: 'ok', text: '' }
+    }
     const fetched = await readSessionRange({ sessionId: row.session, fromSeq: row.fromSeq, toSeq: row.toSeq })
     if (fetched.status === 'deleted' || fetched.status === 'unavailable') return fetched
+    if (!wantsAssistant) return { status: 'ok', text: '' }
     const verified = fetched.assistant && hash(fetched.assistant) === row.assistantDigest ? fetched.assistant : ''
     return { status: 'ok', text: verified }
   }
@@ -177,7 +182,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const activeRows: typeof rawRows = []
     const assistantByRange = new Map<string, string>()
     for (const row of rawRows) {
-      const fetched = await resolveRangeAssistant(row)
+      const fetched = await resolveRangeAssistant(row, true)
       if (fetched.status === 'unavailable') return 'retry'
       if (fetched.status === 'deleted') {
         deletedRows.push(row)
@@ -230,7 +235,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const lastTurn = notes.previous(job.key, rows[0]!.id)
     let previousAssistant: string | null = null
     if (lastTurn && [...lastTurn.sourceIds, ...lastTurn.assistantSourceIds].every(readable)) {
-      const fetchedPrev = await resolveRangeAssistant(lastTurn)
+      const fetchedPrev = await resolveRangeAssistant(lastTurn, false)
       if (fetchedPrev.status === 'unavailable') return 'retry'
       if (fetchedPrev.status === 'ok' && fetchedPrev.text && sources.every(source => allowsText(fetchedPrev.text, source))) {
         previousAssistant = fetchedPrev.text

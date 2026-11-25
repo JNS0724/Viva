@@ -47,7 +47,7 @@ for (const kind of ['file metadata', 'credential'] as const) {
       memory.recordNoteTurn!(origin.session, [id], index === 2 ? generated : '已收到')
       await memory.wake()
     }
-    assert.equal(store.db.prepare('SELECT count(*) n FROM memory_note_ranges').get()?.n, 5)
+    assert.equal(store.db.prepare('SELECT count(*) n FROM memory_note_ranges').get()?.n, 1, 'consumed ranges retire at journal commit, retaining only the latest range for previous()')
     assert.equal(inputs.length, 1, 'five completed human turns, including the protected-output turn, trigger the normal daily job')
     assert.deepEqual(inputs[0]!.turns.flatMap(turn => turn.user.map(source => source.text)), users)
     assert.equal(inputs[0]!.turns[2]!.assistant, '')
@@ -55,10 +55,10 @@ for (const kind of ['file metadata', 'credential'] as const) {
     const marker = kind === 'file metadata' ? saved.contentRevision : 'sk-syntheticCredential123456789'
     assert.equal(JSON.stringify(inputs).includes(marker), false, 'protected assistant content never reaches the note model')
     const beforeReplay = store.db.prepare('SELECT range_id,source_tokens_json,assistant_sources_json,status FROM memory_note_ranges ORDER BY rowid').all()
-    memory.recordNoteTurn!(origin.session, [ids[2]!], generated)
+    memory.recordNoteTurn!(origin.session, [ids[4]!], '已收到')
     await memory.wake()
     assert.deepEqual(store.db.prepare('SELECT range_id,source_tokens_json,assistant_sources_json,status FROM memory_note_ranges ORDER BY rowid').all(), beforeReplay,
-      'replaying the same completed protected-output turn is idempotent')
+      'replaying the retained latest completed turn is idempotent')
     assert.equal(inputs.length, 1)
     for (const workspace of readdirSync(store.fileRoot)) {
       // Phase 4A: zero session/dialog/*.jsonl files are ever written!

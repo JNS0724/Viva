@@ -507,7 +507,12 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * 接着问: a task that ended is asked `text` as its next question, in its own session, which remembers all it
    * did; taken up first when an earlier launch held it. It is going again, so kept as going.
    */
-  async function ask(taskId: string, text: unknown, stillSelected?: () => boolean) {
+  async function ask(
+    taskId: string,
+    text: unknown,
+    stillSelected?: () => boolean,
+    dispatch: { origin: 'human' | 'router', sourceId?: string } = { origin: 'router' },
+  ) {
     if (!isText(text)) throw new Error('invalid task request')
     const kept = store.list().find((entry) => entry.id === taskId)
     // Let go since the window listed it (beyond the latest kept): said plainly, not as an error.
@@ -516,13 +521,20 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await withDetachedOperation('task', () => askReserved(taskId, text, kept, place.counted, stillSelected), { stage: 'dispatch', identities: { taskId } })
+      return await withDetachedOperation('task', () => askReserved(taskId, text, kept, place.counted, stillSelected, dispatch), { stage: 'dispatch', identities: { taskId } })
     } finally {
       place.release()
     }
   }
 
-  async function askReserved(taskId: string, text: string, kept: StoredTask, counted: () => void, stillSelected?: () => boolean) {
+  async function askReserved(
+    taskId: string,
+    text: string,
+    kept: StoredTask,
+    counted: () => void,
+    stillSelected?: () => boolean,
+    dispatch: { origin: 'human' | 'router', sourceId?: string } = { origin: 'router' },
+  ) {
     const reattached = !attached.has(taskId)
     if (reattached) {
       const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
@@ -547,35 +559,53 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     counted()
     tasks.set(taskId, running)
     if (!taskWords.has(taskId)) taskWords.track(taskId, before)
-    taskWords.userSaid(taskId, text)
-    agent.promptTask(taskId, text, { origin: 'router', conversationId: kept.segmentId })
-    return { ok: true }
+    const sourceId = dispatch.origin === 'human' ? (dispatch.sourceId ?? randomUUID()) : undefined
+    taskWords.userSaid(taskId, text, undefined, sourceId)
+    agent.promptTask(taskId, text, {
+      origin: dispatch.origin,
+      conversationId: kept.segmentId,
+      ...(sourceId ? { sourceId } : {}),
+    })
+    return { ok: true, ...(sourceId ? { sourceId } : {}) }
   }
 
   /**
    * Taken up again: its dsh session is reattached as a task and asked `words` (the agent's); the window gets what
    * it had said, from its own words on, and those words, to show it as it was.
    */
-  async function resume(taskId: string, words: string, stillSelected?: () => boolean) {
+  async function resume(
+    taskId: string,
+    words: string,
+    stillSelected?: () => boolean,
+    dispatch: { origin: 'human' | 'router', sourceId?: string } = { origin: 'router' },
+  ) {
     const kept = store.list().find((entry) => entry.id === taskId)
     if (!kept) throw new Error('no such task')
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await withDetachedOperation('task', () => resumeReserved(taskId, words, kept, place.counted, stillSelected), { stage: 'recovering', identities: { taskId } })
+      return await withDetachedOperation('task', () => resumeReserved(taskId, words, kept, place.counted, stillSelected, dispatch), { stage: 'recovering', identities: { taskId } })
     } finally {
       place.release()
     }
   }
 
-  async function resumeReserved(taskId: string, words: string, kept: StoredTask, counted: () => void, stillSelected?: () => boolean) {
+  async function resumeReserved(
+    taskId: string,
+    words: string,
+    kept: StoredTask,
+    counted: () => void,
+    stillSelected?: () => boolean,
+    dispatch: { origin: 'human' | 'router', sourceId?: string } = { origin: 'router' },
+  ) {
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
     if (!taken.ok) return { ok: false, problem: taskProblems().lost }
     if (stillSelected && !stillSelected()) {
       await agent.closeTask(taskId)
       return { ok: false, problem: t('main.requests.start.elsewhere') }
     }
-    const brief = briefMessage(words)
+    const sourceId = dispatch.origin === 'human' ? (dispatch.sourceId ?? randomUUID()) : undefined
+    const brief = { ...briefMessage(words), ...(sourceId ? { sourceId } : {}) }
     const runId = newRunId()
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
@@ -593,8 +623,13 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     attached = new Set([...attached, taskId])
     const said = [...before, brief]
     taskWords.track(taskId, said)
-    agent.promptTask(taskId, words, { origin: 'router', conversationId: kept.segmentId })
-    return { ok: true, task: restoredSummary(kept), messages: said }
+    if (sourceId) taskWords.flush()
+    agent.promptTask(taskId, words, {
+      origin: dispatch.origin,
+      conversationId: kept.segmentId,
+      ...(sourceId ? { sourceId } : {}),
+    })
+    return { ok: true, task: restoredSummary(kept), messages: said, ...(sourceId ? { sourceId } : {}) }
   }
 
   const keptTask = (taskId: string) => {
@@ -626,30 +661,50 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * Words into a task's turn: into what it said, and to the window as a piece of its run's stream (`task_steered`),
    * numbered with that write, so a read of the task (`finished`) has them exactly when its mark counts the piece.
    */
-  function said(taskId: string, text: string, key?: string) {
-    taskWords.userSaid(taskId, text, key)
+  function said(taskId: string, text: string, key?: string, sourceId?: string) {
+    taskWords.userSaid(taskId, text, key, sourceId)
     const runId = registry.runOf(taskId)
     if (runId !== null) pushPiece(taskId, runId, { type: 'task_steered', text })
   }
 
-  async function agentMessage(taskId: string, text: string, stillSelected?: () => boolean) {
+  async function deliverTaskMessage(
+    taskId: string,
+    text: string,
+    dispatch: { origin: 'human' | 'router', sourceId?: string },
+    stillSelected?: () => boolean,
+  ) {
     if (attached.has(taskId) && pendingEnds.has(taskId)) throw new Error(taskProblems().going)
     const kept = keptTask(taskId)
     if (isEnded(kept)) {
-      const asked = await ask(taskId, text, stillSelected)
+      const asked = await ask(taskId, text, stillSelected, dispatch)
       if (!asked.ok) throw new Error(asked.problem)
-      return { taskId, delivered: 'next question' }
+      return { taskId, delivered: 'next question', ...('sourceId' in asked && asked.sourceId ? { sourceId: asked.sourceId } : {}) }
     }
     if (!attached.has(taskId)) {
-      const taken = await resume(taskId, text, stillSelected)
+      const taken = await resume(taskId, text, stillSelected, dispatch)
       if (!taken.ok) throw new Error(taken.problem)
-      return { taskId, delivered: 'taken up again' }
+      return { taskId, delivered: 'taken up again', ...('sourceId' in taken && taken.sourceId ? { sourceId: taken.sourceId } : {}) }
     }
     if (stillSelected && !stillSelected()) throw new Error(t('main.requests.start.elsewhere'))
-    said(taskId, text)
-    const steered = await agent.steerTask(taskId, text, { origin: 'router', conversationId: kept.segmentId })
+    const sourceId = dispatch.origin === 'human' ? (dispatch.sourceId ?? randomUUID()) : undefined
+    said(taskId, text, undefined, sourceId)
+    const steered = await agent.steerTask(taskId, text, {
+      origin: dispatch.origin,
+      conversationId: kept.segmentId,
+      ...(sourceId ? { sourceId } : {}),
+    })
     if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
-    return { taskId, delivered: 'into its turn' }
+    return { taskId, delivered: 'into its turn', ...(sourceId ? { sourceId } : {}) }
+  }
+
+  async function agentMessage(taskId: string, text: string, stillSelected?: () => boolean) {
+    return deliverTaskMessage(taskId, text, { origin: 'router' }, stillSelected)
+  }
+
+  async function windowMessage(taskId: unknown, text: unknown, sourceId?: string) {
+    if (typeof taskId !== 'string' || !taskId) throw new Error(taskProblems().gone)
+    if (!isText(text)) throw new Error('invalid task request')
+    return deliverTaskMessage(taskId, text, { origin: 'human', sourceId: sourceId ?? randomUUID() })
   }
 
   /**
@@ -803,6 +858,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
         const taken = await resume(taskId, t('main.task-ipc.resume.default.prompt'))
         return taken.ok ? { ok: true } : { ok: false, problem: taken.problem }
       },
+      /** Direct human follow-up or steer on a background task card with explicit sourceId provenance. */
+      message: windowMessage,
     },
     /** The agent's tools (viva-tasks): its queries, and starting, stopping or messaging a task. */
     agent: {

@@ -21,12 +21,15 @@ import { withRequestSource } from '../src/shared/request-routing/header.ts'
 import { withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
 import { withProvenanceHeader, wrapRawWithProvenance } from '../src/shared/request-routing/provenance.ts'
 import { interjection } from '../src/backend/steer-channel.ts'
+import { createTaskRuntime } from '../src/backend/task-runtime.ts'
+import { createTaskStore } from '../src/backend/task-store.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { openAppDb } from '../src/backend/app-db.ts'
 import { applyMemoryAdapter } from '../plugins/memory/lib/adapter.ts'
 import {
   createSessionIngestion,
   extractHumanMessages,
+  extractRecallQueries,
   readPersistedSessionRange,
   readVerifiedDurableSlice,
 } from '../plugins/memory/lib/ingestion.ts'
@@ -262,7 +265,8 @@ test('Phase 4A §5.7.1b: gap-free CAS cursor guard, same-day multi-batch note up
   const dailyRows = db.prepare('SELECT key, revision FROM memory_daily_notes').all() as Array<{ key: string, revision: number }>
   assert.equal(dailyRows.length, 1, 'multiple same-day batches must update the same note_key')
   assert.ok(dailyRows[0]!.revision >= 2)
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM memory_note_ranges WHERE status='written'").get()?.n, 2)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM memory_note_ranges WHERE status='written'").get()?.n, 1, 'consumed ranges retire at journal commit, retaining only the single latest row')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_note_sources').get()?.n, 2)
 })
 
 test('Phase 4A §5.7.1c: read-only cold catch-up retries list(), never takes write lease, leaves unclosed turns untouched, and gates aborted/interrupted turns', { timeout: 30_000 }, async t => {
@@ -895,8 +899,11 @@ test('Phase 4A §5.7.2k: valid & revoked direct question metadata on memory_sour
   })
   await runtime.wake()
 
-  // Confirm range consumed AND delete all memory_note_ranges rows (simulating post-consumption + DSH log deletion)!
+  // Confirm production journal commit retired Turn 1 automatically (only Turn 2 retained for previous()),
+  // and verify Dream profile planner still admits valid question even if memory_note_ranges is empty!
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_note_ranges WHERE session=?').get(sessionA)?.n, 1)
   assert.equal(store.db.prepare("SELECT status FROM memory_note_ranges WHERE session=? AND turn=2").get(sessionA)?.status, 'written')
+  assert.equal(store.db.prepare('SELECT question_sources_json FROM memory_note_ranges WHERE session=? AND turn=2').get(sessionA)?.question_sources_json, '[]')
   store.db.prepare('DELETE FROM memory_note_ranges WHERE session=?').run(sessionA)
 
   // Verify Dream profile planner STILL admits the valid question from memory_sources direct columns!
@@ -946,4 +953,380 @@ test('Phase 4A §5.7.2k: valid & revoked direct question metadata on memory_sour
   assert.equal(revokedEntry.text, '以后汇报统一用要点列表')
   assert.equal(revokedEntry.question, null)
   assert.equal(revokedEntry.questionUnavailable, true)
+})
+
+test('Phase 4A Codex R1 P1-1..P1-4: task custom answer settlement, human-only deleted range, unattended zero L3 pre-step, and unavailable standalone cwd retry', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4a-r1-p1-')
+
+  // P1-1: Task custom answer via acceptQuestionAnswer (with legacy context.kind==='task') normalizes to global user workspace
+  // and settles alongside task-brief + task-assistant in one transaction without memory-turn-scope!
+  const root1 = path.join(dir, 'mem-p11')
+  const owner1 = openMemoryOwner({
+    root: root1,
+    hostNamespace: 'viva',
+    dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '华东部署结论' }),
+    compute: job => job.stage === 'note'
+      ? Promise.resolve(JSON.stringify({ status: 'write', title: '任务问答', markdown: '任务问答记录' }))
+      : null,
+  })
+  defer(() => owner1.close())
+  await owner1.recover()
+  const taskSid = randomUUID(), taskConv = randomUUID(), ansOpId = randomUUID(), nowMs = Date.now()
+  owner1.beginTurn({ sessionId: taskSid, turn: 1, sessionKind: 'task', conversation: taskConv, cwd: dir })
+  await owner1.handleHost('acceptQuestionAnswer', {
+    operationId: ansOpId,
+    text: '本次任务部署到上海机房',
+    session: taskSid,
+    turn: 1,
+    conversation: taskConv,
+    cards: [{ id: 'q1', question: '部署到哪个机房？', header: '机房', options: [{ label: '北京' }], multiSelect: false }],
+    requestId: 'req-task-q1',
+    questionId: 'q1',
+    context: { kind: 'task', id: taskSid },
+    questionAt: nowMs,
+    questionProfileGen: 0,
+  })
+  const settled1 = await owner1.settleTurn({
+    sessionId: taskSid, cwd: dir, sessionKind: 'task', conversation: taskConv, inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
+    sources: [
+      { sourceId: randomUUID(), author: 'agent', sourceKind: 'task-brief', profileEligible: false, text: '执行机房部署检查', conversation: taskConv, at: nowMs, timezone: 'UTC' },
+      { sourceId: randomUUID(), author: 'assistant', sourceKind: 'task-assistant', profileEligible: false, text: '华东部署结论', conversation: taskConv, at: nowMs + 1, timezone: 'UTC' },
+    ],
+    assistantText: '华东部署结论', at: nowMs + 2, timezone: 'UTC', flushNotes: true,
+  })
+  assert.deepEqual(settled1, { status: 'ok', nextSeq: 5 })
+  const db1 = new DatabaseSync(path.join(root1, 'memory.db'), { readOnly: true })
+  defer(() => db1.close())
+  const ansRow = db1.prepare('SELECT context, source_kind, profile_eligible FROM memory_sources WHERE id=?').get(ansOpId) as
+    { context: string, source_kind: string, profile_eligible: number }
+  assert.deepEqual(JSON.parse(ansRow.context), { kind: 'user' })
+  assert.equal(ansRow.source_kind, 'task-question-answer')
+  assert.equal(ansRow.profile_eligible, 1)
+  assert.equal(db1.prepare('SELECT next_seq FROM owner_intake_cursors WHERE session=?').get(taskSid)?.next_seq, 5)
+
+  // P1-2: Human-only completed turn (assistantText: '', assistantDigest: null) whose DSH session was deleted
+  // BEFORE WRITE_NOTE MUST still call readSessionRange, skip the range, and emit 0 new Daily Notes!
+  const root2 = path.join(dir, 'mem-p12')
+  let rangeReads = 0
+  let noteComputeCalls = 0
+  const owner2 = openMemoryOwner({
+    root: root2,
+    hostNamespace: 'viva',
+    dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => { rangeReads++; return { status: 'deleted' } },
+    compute: job => {
+      if (job.stage === 'note') {
+        noteComputeCalls++
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '不应该写出', markdown: '不应写出' }))
+      }
+      return null
+    },
+  })
+  defer(() => owner2.close())
+  await owner2.recover()
+  const deletedHumanSrc = randomUUID()
+  await owner2.settleTurn({
+    sessionId: 'sess-human-only-deleted', cwd: dir, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 3, turn: 1, reasonKind: 'completed',
+    sources: [{ sourceId: deletedHumanSrc, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '仅真人口述已删除会话', at: nowMs, timezone: 'UTC' }],
+    assistantText: '', at: nowMs, timezone: 'UTC',
+  })
+  await owner2.runtime.wake()
+  assert.ok(rangeReads >= 1, 'WRITE_NOTE must check readSessionRange even when assistantDigest is null')
+  assert.equal(noteComputeCalls, 0, 'confirmed deleted session must not generate a new Daily Note')
+  const db2 = new DatabaseSync(path.join(root2, 'memory.db'), { readOnly: true })
+  defer(() => db2.close())
+  assert.equal(db2.prepare('SELECT status FROM memory_note_ranges WHERE session=?').get('sess-human-only-deleted')?.status, 'skipped')
+  assert.equal(db2.prepare('SELECT text FROM memory_sources WHERE id=?').get(deletedHumanSrc)?.text, '仅真人口述已删除会话')
+
+  // P1-3: Unattended prompt with empty humanSpans triggers ZERO L3 automaticRecall calls on real agent/pre-step!
+  const unattendedWire = wrapRawWithProvenance('定时汇总日报内容', { origin: 'unattended', sourceKind: 'unattended', sessionKind: 'unattended' }, '').text
+  const unattendedMsg = createUserMessage({ content: [{ type: 'text', text: unattendedWire }], source: { kind: 'user' } })
+  assert.deepEqual(extractRecallQueries([unattendedMsg], { host: true }), [])
+  const cfg = path.join(dir, 'cordis-p13.yml')
+  writeFileSync(cfg, JSON.stringify([
+    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions']
+      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
+    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(dir, 'sessions-p13'), compression: 'zstd' } },
+  ]))
+  const ctx = await boot('p4a-r1-p13', cfg, [], undefined, new URL('../package.json', import.meta.url).href)
+  t.after(async () => { await ctx.fiber.dispose() })
+  const seenRequests: string[] = []
+  class StaticAdapter extends LlmAdapter {
+    override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+      seenRequests.push(JSON.stringify(options.messages))
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: 'ok' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: 'ok' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  ctx.llm.registerAdapter(['mock'], new StaticAdapter())
+  const port = makeFakePort()
+  const pluginOwner = applyMemoryAdapter(ctx, { host: true, dataRoot: path.join(dir, 'mem-p13'), dailyNotes: false }, port as unknown as NodeJS.Process)
+  t.after(async () => { await pluginOwner.close() })
+  assert.ok(await eventually(() => pluginOwner.ready(), { timeoutMs: 15_000 }))
+  await pluginOwner.handleHost('createFile', { args: [{ operationId: randomUUID(), title: '定时汇总日报内容', text: '定时汇总日报内容 PRIVATE_UNATTENDED_SECRET_MARKER' }] })
+  const unattHandle = await ctx.agents.create({ sessionId: SessionId(randomUUID()), meta: { cwd: dir }, agentOptions: { provider: 'mock', model: 'mock' } })
+  t.after(async () => { await unattHandle.dispose() })
+  const unattDone = deferred<void>()
+  ctx.on('session/event', (s, ev) => { if (s.id === unattHandle.agent.session.id && ev.type === 'turn/end') unattDone.resolve() })
+  unattHandle.agent.send(createUserMessage({ content: [{ type: 'text', text: unattendedWire }], source: { kind: 'user' } }), 'next-turn', true)
+  await unattDone.promise
+  assert.equal(seenRequests.length, 1)
+  assert.equal(seenRequests[0]!.includes('<memory-recall'), false, 'unattended pre-step must never inject L3 memory-recall')
+  assert.equal(seenRequests[0]!.includes('PRIVATE_UNATTENDED_SECRET_MARKER'), false)
+
+  // P1-4: Temporarily unavailable standalone project directory leaves cursor untouched; restoring cwd succeeds!
+  const root4 = path.join(dir, 'mem-p14')
+  const owner4 = openMemoryOwner({ root: root4, dailyNotes: false, compute: () => null, route: () => null })
+  defer(() => owner4.close())
+  await owner4.recover()
+  const missingCwd = path.join(dir, 'temp-offline-repo')
+  const srcId4 = randomUUID()
+  const blocked = await owner4.settleTurn({
+    sessionId: 'sess-offline-cwd', cwd: missingCwd, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 3, turn: 1, reasonKind: 'completed',
+    sources: [{ sourceId: srcId4, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '离线目录恢复后保留的偏好', at: nowMs, timezone: 'UTC' }],
+    assistantText: '', at: nowMs, timezone: 'UTC',
+  })
+  assert.equal(blocked.status, 'scope_unavailable')
+  assert.equal(owner4.intakeCursor('sess-offline-cwd').nextSeq, null, 'cursor must NOT advance when cwd scope is temporarily unavailable')
+  mkdirSync(missingCwd, { recursive: true })
+  const recovered = await owner4.settleTurn({
+    sessionId: 'sess-offline-cwd', cwd: missingCwd, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 3, turn: 1, reasonKind: 'completed',
+    sources: [{ sourceId: srcId4, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '离线目录恢复后保留的偏好', at: nowMs, timezone: 'UTC' }],
+    assistantText: '', at: nowMs, timezone: 'UTC',
+  })
+  assert.deepEqual(recovered, { status: 'ok', nextSeq: 3 })
+  const db4 = new DatabaseSync(path.join(root4, 'memory.db'), { readOnly: true })
+  defer(() => db4.close())
+  assert.equal(db4.prepare('SELECT text FROM memory_sources WHERE id=?').get(srcId4)?.text, '离线目录恢复后保留的偏好')
+})
+
+test('Phase 4A Codex R1 P2-1..P2-6: standalone verbatim text, open-turn UUID verification, real task-card producer, retry rearm/disposal handoff, O(1) range cleanup, and multi-step final task conclusion', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4a-r1-p2-')
+  const nowMs = Date.parse('2026-11-23T12:00:00Z')
+
+  // P2-1: Standalone DSH (host: false) preserves literal Viva header verbatim and never switches sessionKind to unattended!
+  const spoofedHeader = wrapRawWithProvenance('示例文本', { origin: 'unattended', sourceKind: 'unattended', sessionKind: 'unattended' }, '').text
+  const standaloneMsg1 = createUserMessage({ content: [{ type: 'text', text: spoofedHeader }], source: { kind: 'user' } })
+  const standaloneMsg2 = createUserMessage({ content: [{ type: 'text', text: '普通偏好：喜欢深色主题' }], source: { kind: 'user' } })
+  const extractedStandalone = extractHumanMessages([standaloneMsg1, standaloneMsg2], { host: false })
+  assert.deepEqual(extractedStandalone.map(item => item.text), [spoofedHeader, '普通偏好：喜欢深色主题'])
+
+  const root1 = path.join(dir, 'mem-p21')
+  const owner1 = openMemoryOwner({ root: root1, dailyNotes: false, compute: () => null, route: () => null })
+  defer(() => owner1.close())
+  await owner1.recover()
+  const persistedMap = new Map<string, Session>()
+  const makePersisted = (id: string) => {
+    const s = Session.create(SessionId(id), [], { version: 4, id: SessionId(id), createdAt: nowMs, cwd: dir, isSeeded: false })
+    persistedMap.set(id, s)
+    return s
+  }
+  const fakePersistenceObj = {
+    async open(id: SessionId) {
+      const s = persistedMap.get(String(id))
+      if (!s) throw notFoundError()
+      return {
+        inheritedEventCount: s.inheritedEventCount,
+        async read(from: number, limit: number) { return { events: s.snapshotEvents().slice(from, from + limit) } },
+        async close() {},
+      }
+    },
+    async list() { return [...persistedMap.values()].map(s => ({ header: s.header, revision: 'r1' as never })) },
+  }
+  const fakePersistence = fakePersistenceObj as unknown as Parameters<typeof createSessionIngestion>[2]
+  const makeAdapter = (o: typeof owner1) => ({
+    get epoch() { return 'ep-1' },
+    inEpoch: async <T,>(_ep: string | undefined, fn: () => Promise<T>) => fn(),
+    intakeCursor: async (s: string) => o.intakeCursor(s),
+    advanceIntakeCursor: async (i: Parameters<typeof o.advanceIntakeCursor>[0]) => o.advanceIntakeCursor(i),
+    beginTurn: async (i: Parameters<typeof o.beginTurn>[0]) => o.beginTurn(i),
+    stageOpenTurnSources: async (i: Parameters<typeof o.stageOpenTurnSources>[0]) => o.stageOpenTurnSources(i),
+    settleTurn: async (i: Parameters<typeof o.settleTurn>[0]) => o.settleTurn(i),
+  })
+  const standaloneIngest = createSessionIngestion(makeAdapter(owner1), { flush: async () => true }, fakePersistence, { host: false })
+  const sStandalone = makePersisted('sess-standalone-verbatim')
+  sStandalone.append('turn/start', { turn: 1 })
+  sStandalone.append('user/message', standaloneMsg1, { surfaceOp: 'append' })
+  sStandalone.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  sStandalone.append('turn/start', { turn: 2 })
+  sStandalone.append('user/message', standaloneMsg2, { surfaceOp: 'append' })
+  sStandalone.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+  await standaloneIngest.synchronize(sStandalone)
+  const db1 = new DatabaseSync(path.join(root1, 'memory.db'), { readOnly: true })
+  defer(() => db1.close())
+  assert.equal(db1.prepare('SELECT session_kind FROM owner_intake_cursors WHERE session=?').get('sess-standalone-verbatim')?.session_kind, 'main')
+  const standaloneTexts = (db1.prepare('SELECT text FROM memory_sources WHERE session=? ORDER BY rowid').all('sess-standalone-verbatim') as Array<{ text: string }>).map(r => r.text)
+  assert.deepEqual(standaloneTexts, [spoofedHeader, '普通偏好：喜欢深色主题'])
+
+  // P2-2: Open-turn staging rejects cross-session UUID reuse with different text!
+  const sharedUuid = randomUUID()
+  owner1.stageOpenTurnSources({
+    sessionId: 'sess-A', turn: 1, sessionKind: 'main', conversation: 'conv-A', cwd: dir,
+    sources: [{ sourceId: sharedUuid, author: 'user', sourceKind: 'main-human', profileEligible: true, text: 'A会话的机密偏好', at: nowMs, timezone: 'UTC' }],
+  })
+  const spoofStage = owner1.stageOpenTurnSources({
+    sessionId: 'sess-B', turn: 1, sessionKind: 'main', conversation: 'conv-B', cwd: dir,
+    sources: [{ sourceId: sharedUuid, author: 'user', sourceKind: 'main-human', profileEligible: true, text: 'B会话伪造文本', at: nowMs + 1, timezone: 'UTC' }],
+  })
+  assert.deepEqual(spoofStage.staged, [], 'conflicting UUID replay in another session must not be staged')
+  assert.equal(await owner1.rememberSidecarFile('sess-B', 'A会话的机密偏好', new AbortController().signal), null)
+
+  // P2-3: Real task-card human follow-up producer path through taskRuntime.window.message() -> historyDb.sourceLink()!
+  const appDb = openAppDb({ file: path.join(dir, 'app-p23.db') })
+  defer(() => appDb.close())
+  const historyDb = openHistoryDb({ db: appDb.db })
+  defer(() => historyDb.close())
+  const mainConv = historyDb.save(historyDb.create({ sessionId: 'main-s' }), [{ role: 'user', text: '主对话', receipt: null }]).id
+  const taskStore = createTaskStore({ db: appDb.db })
+  const dispatchedSteers: Array<{ taskId: string, text: string, meta: unknown }> = []
+  const taskSessionId = randomUUID()
+  const taskRuntime = createTaskRuntime({
+    db: historyDb,
+    store: taskStore,
+    current: () => historyDb.get(mainConv)!.conversation,
+    agentInfo: () => ({ mode: 'ready', model: 'mock' }),
+    agent: {
+      startTask: async () => ({ ok: true, taskId: taskSessionId }),
+      promptTask: () => {},
+      steerTask: async (taskId, text, meta) => { dispatchedSteers.push({ taskId, text, meta }); return { ok: true } },
+      resumeTask: async () => ({ ok: true }),
+      cancelTask: async () => {},
+      closeTask: async () => {},
+    },
+  })
+  defer(() => taskRuntime.dispose())
+  await taskRuntime.agent.start('后台检查配置', '检查配置')
+  const humanFollowupText = '卡片真人追问：优先核对华南集群\u200B配置'
+  const delivered = await taskRuntime.window.message(taskSessionId, humanFollowupText)
+  assert.ok('sourceId' in delivered && typeof delivered.sourceId === 'string')
+  assert.equal(dispatchedSteers.length, 1)
+  const sentMeta = dispatchedSteers[0]!.meta as { origin: string, sourceId?: string, conversationId?: string }
+  assert.equal(sentMeta.origin, 'human')
+  assert.equal(sentMeta.sourceId, delivered.sourceId)
+  assert.ok(sentMeta.conversationId)
+  // Feed the exact steer output through viva-task-human-steer ingestion -> memory_sources -> historyDb.sourceLink()!
+  const root2 = path.join(dir, 'mem-p23')
+  const owner2 = openMemoryOwner({ root: root2, hostNamespace: 'viva', dailyNotes: false, compute: () => null, route: () => null })
+  defer(() => owner2.close())
+  await owner2.recover()
+  const hostIngest = createSessionIngestion(makeAdapter(owner2), { flush: async () => true }, fakePersistence, { host: true })
+  const wrappedFollowup = withTaskRequestSource(humanFollowupText, randomUUID())
+  const sTaskCard = makePersisted(taskSessionId)
+  sTaskCard.append('turn/start', { turn: 1 })
+  sTaskCard.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: wrappedFollowup.text }],
+    source: { kind: 'viva-task-human-steer', sourceId: sentMeta.sourceId, conversationId: sentMeta.conversationId, humanSpans: wrappedFollowup.payloadSpans },
+  }), { surfaceOp: 'append' })
+  // P2-6: Two-step background task: preliminary wrong guess -> tool result -> corrected final conclusion!
+  sTaskCard.append('assistant/message', { message: { id: 'a-step-1', role: 'assistant', content: [{ type: 'text', text: '初步猜测：配置在北美机房（待核实）' }] }, interrupted: false } as never, { surfaceOp: 'append' })
+  sTaskCard.append('assistant/message', { message: { id: 'a-step-2', role: 'assistant', content: [{ type: 'text', text: '最终结论：已核实华南集群配置正常。' }] }, interrupted: false } as never, { surfaceOp: 'append' })
+  sTaskCard.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await hostIngest.synchronize(sTaskCard)
+  const db2 = new DatabaseSync(path.join(root2, 'memory.db'), { readOnly: true })
+  defer(() => db2.close())
+  const humanSteerRow = db2.prepare('SELECT id, text, source_kind, profile_eligible FROM memory_sources WHERE id=?').get(sentMeta.sourceId!) as
+    { id: string, text: string, source_kind: string, profile_eligible: number } | undefined
+  assert.ok(humanSteerRow)
+  assert.equal(humanSteerRow.text, humanFollowupText)
+  assert.equal(humanSteerRow.source_kind, 'task-human-steer')
+  assert.equal(humanSteerRow.profile_eligible, 1)
+  assert.ok(historyDb.sourceLink(humanSteerRow.id), 'task-card human follow-up produced by taskRuntime.window.message must resolve historyDb.sourceLink()')
+  const taskAsstRow = db2.prepare("SELECT text FROM memory_sources WHERE session=? AND source_kind='task-assistant'").get(taskSessionId) as { text: string } | undefined
+  assert.equal(taskAsstRow?.text, '最终结论：已核实华南集群配置正常。', 'multi-step task must publish ONLY the final corrected assistant conclusion')
+  assert.equal(taskAsstRow?.text.includes('初步猜测'), false)
+
+  // P2-4: Cold retry rearms past 2+ consecutive intakeCursor() failures; live retry recovers from short-read;
+  // disposed session with unresolved work hands off to read-only cold scanner!
+  let cursorFailsLeft = 2
+  const flakyOwnerAdapter = {
+    ...makeAdapter(owner2),
+    async intakeCursor(s: string) {
+      if (s === 'sess-cold-flaky' && cursorFailsLeft > 0) {
+        cursorFailsLeft--
+        throw new Error('transient owner RPC failure')
+      }
+      return owner2.intakeCursor(s)
+    },
+  }
+  const sColdFlaky = makePersisted('sess-cold-flaky')
+  const coldFlakySrcId = randomUUID()
+  sColdFlaky.append('turn/start', { turn: 1 })
+  sColdFlaky.append('user/message', createUserMessage({ content: [{ type: 'text', text: makeHeadedMainPrompt('两次失败后冷恢复成功', '两次失败后冷恢复成功', 'conv-flaky', coldFlakySrcId) }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+  sColdFlaky.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const liveSessions = new Map<string, Session>()
+  let liveShortReadsLeft = 1
+  const flakyPersistence = {
+    ...fakePersistenceObj,
+    async open(id: SessionId) {
+      if (String(id) === 'sess-live-dispose' && liveShortReadsLeft > 0) {
+        liveShortReadsLeft--
+        return { inheritedEventCount: 0, async read() { return { events: [] } }, async close() {} }
+      }
+      return fakePersistenceObj.open(id)
+    },
+  } as unknown as Parameters<typeof createSessionIngestion>[2]
+  const retryIngest = createSessionIngestion(
+    flakyOwnerAdapter,
+    { flush: async () => true, get: id => liveSessions.get(String(id)), list: () => [...liveSessions.values()] },
+    flakyPersistence,
+    { host: true },
+  )
+  defer(() => retryIngest.drain())
+  retryIngest.startColdCatchup()
+  assert.ok(await eventually(() => Boolean(db2.prepare('SELECT 1 FROM memory_sources WHERE id=?').get(coldFlakySrcId)), { timeoutMs: 5_000 }),
+    'cold retry must rearm after 2+ consecutive intakeCursor failures')
+
+  const sDispose = makePersisted('sess-live-dispose')
+  const disposeSrcId = randomUUID()
+  sDispose.append('turn/start', { turn: 1 })
+  sDispose.append('user/message', createUserMessage({ content: [{ type: 'text', text: makeHeadedMainPrompt('销毁后转冷扫补齐', '销毁后转冷扫补齐', 'conv-disp', disposeSrcId) }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+  sDispose.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  liveSessions.set('sess-live-dispose', sDispose)
+  await retryIngest.synchronize(sDispose) // hits short-read once and arms retry
+  liveSessions.delete('sess-live-dispose')
+  retryIngest.release(sDispose) // disposal must hand unresolved session to read-only cold scanner!
+  assert.ok(await eventually(() => Boolean(db2.prepare('SELECT 1 FROM memory_sources WHERE id=?').get(disposeSrcId)), { timeoutMs: 5_000 }),
+    'disposed session with unresolved durable work must hand off to read-only cold recovery')
+
+  // P2-5: 30 ordinary user/assistant turns keep memory_note_ranges retired (<= 1 row) and retained assistant refs O(1) bounded (NOT 465)!
+  const root5 = path.join(dir, 'mem-p25')
+  const owner5 = openMemoryOwner({
+    root: root5,
+    hostNamespace: 'viva',
+    dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '已收到回答' }),
+    compute: job => job.stage === 'note'
+      ? Promise.resolve(JSON.stringify({ status: 'write', title: '连续对话', markdown: '连续对话记录' }))
+      : null,
+  })
+  defer(() => owner5.close())
+  await owner5.recover()
+  for (let i = 0; i < 30; i++) {
+    const fromSeq = i * 3
+    await owner5.settleTurn({
+      sessionId: 'sess-30-turns', cwd: dir, sessionKind: 'main', inheritedSeq: 0,
+      expectedNextSeq: i === 0 ? null : fromSeq, fromSeq, toSeq: fromSeq + 3, turn: i + 1, reasonKind: 'completed',
+      sources: [{ sourceId: randomUUID(), author: 'user', sourceKind: 'main-human', profileEligible: true, text: `第 ${i + 1} 轮普通偏好记录`, at: nowMs + i * 1000, timezone: 'UTC' }],
+      assistantText: '已收到回答', at: nowMs + i * 1000, timezone: 'UTC',
+    })
+    await owner5.runtime.wake()
+  }
+  const db5 = new DatabaseSync(path.join(root5, 'memory.db'), { readOnly: true })
+  defer(() => db5.close())
+  const remainingRows = db5.prepare('SELECT assistant_sources_json, question_sources_json FROM memory_note_ranges WHERE session=?').all('sess-30-turns') as
+    Array<{ assistant_sources_json: string, question_sources_json: string }>
+  assert.equal(remainingRows.length, 1, 'consumed ranges must retire at journal commit, retaining at most 1 latest row')
+  const totalAssistantRefs = remainingRows.reduce((sum, row) => sum + (JSON.parse(row.assistant_sources_json) as unknown[]).length, 0)
+  assert.ok(totalAssistantRefs <= 2, `retained assistant references across 30 turns must stay O(1) bounded, got ${totalAssistantRefs}`)
+  assert.equal(remainingRows[0]!.question_sources_json, '[]')
 })

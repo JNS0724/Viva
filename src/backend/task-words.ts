@@ -89,9 +89,11 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
   }
 
   /** The user said something to the task: its first words, words into its turn, its next question. */
-  function userSaid(taskId: string, words: string, key?: string) {
+  function userSaid(taskId: string, words: string, key?: string, sourceId?: string) {
     const transcript = transcripts.get(taskId)
-    if (transcript) change(taskId, said(transcript, words, key))
+    if (!transcript) return
+    change(taskId, said(transcript, words, key, sourceId))
+    if (sourceId) save(taskId)
   }
 
   /**

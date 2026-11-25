@@ -91,6 +91,20 @@ export function extractHumanMessages(
   for (const message of messages) {
     const raw = textOf(message)
     const kind = message.source.kind as string
+    if (!host) {
+      // Standalone DSH preserves user text verbatim and never interprets Viva provenance headers (§5.4).
+      if (kind !== 'user' || !raw.trim()) continue
+      extracted.push({
+        id: String(message.id),
+        text: raw,
+        sourceId: normalizeSourceId(String(message.id), sessionId, String(message.id)),
+        sourceKind: 'main-human',
+        sessionKind: 'main',
+        profileEligible: true,
+        requestId: extractCorrelationRequestId(raw),
+      })
+      continue
+    }
     if (kind === 'viva-main-human-steer') {
       const src = message.source as { sourceId?: string, conversationId?: string, humanSpans?: Array<{ start: number, end: number }> }
       const spans = src.humanSpans ? validateHumanSpans(src.humanSpans, raw.length) : null
@@ -132,39 +146,23 @@ export function extractHumanMessages(
     if (kind !== 'user') continue
 
     const parsed = parseProvenanceHeader(raw)
-    if (parsed) {
-      const { provenance, payload } = parsed
-      if (provenance.origin !== 'human') continue
-      if (provenance.sourceKind === 'viva-report' || provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'unattended') continue
-      if (!provenance.humanSpans) continue
-      const text = extractHumanSpans(payload, provenance.humanSpans)
-      if (!text || !text.trim()) continue
-      const isTask = provenance.sourceKind === 'task-human-steer' || provenance.sessionKind === 'task'
-      extracted.push({
-        id: String(message.id),
-        text,
-        sourceId: normalizeSourceId(provenance.sourceId, sessionId, String(message.id)),
-        ...(provenance.conversationId ? { conversationId: provenance.conversationId } : {}),
-        sourceKind: isTask ? 'task-human-steer' : 'main-human',
-        sessionKind: isTask ? 'task' : 'main',
-        profileEligible: true,
-        requestId: extractCorrelationRequestId(payload),
-      })
-      continue
-    }
-
-    // No Viva provenance header: standalone DSH accepts raw non-empty user text directly;
-    // Viva host mode fails closed on unauthenticated raw user messages (§5.4 item 2).
-    if (host) continue
-    if (!raw.trim()) continue
+    if (!parsed) continue
+    const { provenance, payload } = parsed
+    if (provenance.origin !== 'human') continue
+    if (provenance.sourceKind === 'viva-report' || provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'unattended') continue
+    if (!provenance.humanSpans) continue
+    const text = extractHumanSpans(payload, provenance.humanSpans)
+    if (!text || !text.trim()) continue
+    const isTask = provenance.sourceKind === 'task-human-steer' || provenance.sessionKind === 'task'
     extracted.push({
       id: String(message.id),
-      text: raw,
-      sourceId: normalizeSourceId(String(message.id), sessionId, String(message.id)),
-      sourceKind: 'main-human',
-      sessionKind: 'main',
+      text,
+      sourceId: normalizeSourceId(provenance.sourceId, sessionId, String(message.id)),
+      ...(provenance.conversationId ? { conversationId: provenance.conversationId } : {}),
+      sourceKind: isTask ? 'task-human-steer' : 'main-human',
+      sessionKind: isTask ? 'task' : 'main',
       profileEligible: true,
-      requestId: extractCorrelationRequestId(raw),
+      requestId: extractCorrelationRequestId(payload),
     })
   }
   return extracted
@@ -173,8 +171,9 @@ export function extractHumanMessages(
 /**
  * Read-only L3 automatic recall query extractor used by `agent/pre-step` in `adapter.ts`.
  * Uses `extractHumanMessages` as the single source of truth for human messages, and additionally
- * permits read-only L3 lookups for ACP `task-brief` and `unattended` schedule prompts so background
- * tasks and schedules can consult global user memory without ever entering human `memory_sources`.
+ * permits read-only L3 lookups for hosted ACP `task-brief` prompts so background tasks can consult
+ * global user memory without ever entering human `memory_sources`.
+ * Unattended prompts (`origin: 'unattended'`, empty `humanSpans`) NEVER trigger L3 recall (§5.4).
  */
 export function extractRecallQueries(
   messages: readonly UserMessage[],
@@ -188,12 +187,12 @@ export function extractRecallQueries(
       queries.push({ id: item.id, text: item.text, ...(item.requestId ? { requestId: item.requestId } : {}) })
       continue
     }
+    if (!options.host) continue
     if ((message.source.kind as string) !== 'user') continue
     const parsed = parseProvenanceHeader(textOf(message))
     if (!parsed) continue
     const { provenance, payload } = parsed
-    if ((provenance.origin === 'router' && provenance.sourceKind === 'task-brief')
-      || (provenance.origin === 'unattended' && provenance.sourceKind === 'unattended')) {
+    if (provenance.origin === 'router' && provenance.sourceKind === 'task-brief') {
       const queryText = provenance.humanSpans && provenance.humanSpans.length > 0
         ? extractHumanSpans(payload, provenance.humanSpans)
         : withoutTaskHeaders(payload)
@@ -352,11 +351,11 @@ function classifyUserMessageForTurn(
 ) {
   const raw = textOf(message)
   const kind = message.source.kind as string
-  if (kind === 'viva-report') {
+  if (host && kind === 'viva-report') {
     acc.hasReport = true
     return
   }
-  if (kind === 'viva-task-router-message') {
+  if (host && kind === 'viva-task-router-message') {
     const src = message.source as { conversationId?: string }
     acc.sessionKind = 'task'
     if (src.conversationId) acc.conversation = src.conversationId
@@ -392,6 +391,7 @@ function classifyUserMessageForTurn(
     })
     return
   }
+  if (!host) return
   if (kind === 'user') {
     const parsed = parseProvenanceHeader(raw)
     if (!parsed) return
@@ -427,7 +427,8 @@ function classifyUserMessageForTurn(
   }
 }
 
-function detectTurnMetaFromMessages(messages: readonly UserMessage[]): { sessionKind: SessionKind, conversation?: string } {
+function detectTurnMetaFromMessages(messages: readonly UserMessage[], host: boolean): { sessionKind: SessionKind, conversation?: string } {
+  if (!host) return { sessionKind: 'main' }
   let sessionKind: SessionKind = 'main'
   let conversation: string | undefined
   for (const message of messages) {
@@ -455,6 +456,10 @@ type SessionQueue = {
   work: Promise<void>
   coldRetryTimer: ReturnType<typeof setTimeout> | null
   coldFailures: number
+  liveRetryTimer: ReturnType<typeof setTimeout> | null
+  liveFailures: number
+  needsCatchup: boolean
+  lastSyncedSeq: number
 }
 
 /**
@@ -492,15 +497,29 @@ export function createSessionIngestion(
     }
   }
 
+  function clearLiveRetry(entry: SessionQueue) {
+    if (entry.liveRetryTimer !== null) {
+      clearTimeout(entry.liveRetryTimer)
+      entry.liveRetryTimer = null
+    }
+  }
+
   function enqueue(sessionId: string, action: () => Promise<void>) {
     let entry = queues.get(sessionId)
     if (!entry || entry.epoch !== owner.epoch) {
-      if (entry) clearColdRetry(entry)
+      if (entry) {
+        clearColdRetry(entry)
+        clearLiveRetry(entry)
+      }
       entry = {
         epoch: owner.epoch,
         work: entry?.work.catch(() => {}) ?? Promise.resolve(),
         coldRetryTimer: null,
         coldFailures: 0,
+        liveRetryTimer: null,
+        liveFailures: 0,
+        needsCatchup: false,
+        lastSyncedSeq: 0,
       }
       queues.set(sessionId, entry)
     }
@@ -604,15 +623,22 @@ export function createSessionIngestion(
       if (event.type === 'turn/end') {
         const toSeq = event.seq + 1
         const reasonKind = event.data.reason.kind
-        const assistantText = acc.hasReport || acc.sessionKind === 'unattended' ? '' : acc.assistantParts.join('\n')
+        // For multi-step background tasks, publish ONLY the final non-empty assistant conclusion
+        // so preliminary pre-tool guesses superseded by a corrected answer never enter global recall.
+        const finalAssistantPart = [...acc.assistantParts].reverse().find(part => part.trim().length > 0) ?? ''
+        const assistantText = acc.hasReport || acc.sessionKind === 'unattended'
+          ? ''
+          : acc.sessionKind === 'task'
+            ? finalAssistantPart
+            : acc.assistantParts.join('\n')
         const turnSources = [...acc.sources]
-        if (reasonKind === 'completed' && acc.sessionKind === 'task' && assistantText.trim() && !looksSecret(assistantText)) {
+        if (reasonKind === 'completed' && acc.sessionKind === 'task' && finalAssistantPart.trim() && !looksSecret(finalAssistantPart)) {
           turnSources.push({
             sourceId: deterministicSourceUuid('task-assistant', sessionId, event.seq),
             author: 'assistant',
             sourceKind: 'task-assistant',
             profileEligible: false,
-            text: assistantText,
+            text: finalAssistantPart,
             conversation: acc.conversation ?? conversation,
             at: event.time,
             timezone: tz,
@@ -636,6 +662,7 @@ export function createSessionIngestion(
           flushNotes: acc.sessionKind === 'task',
         })
         if (res.status === 'cas_mismatch') return { casRetry: true }
+        if (res.status === 'scope_unavailable') throw new Error('Memory intake project scope temporarily unavailable')
         expectedNextSeq = res.nextSeq
         currentSeq = res.nextSeq
         inTurn = false
@@ -664,17 +691,55 @@ export function createSessionIngestion(
     return {}
   }
 
+  function scheduleLiveSessionRetry(session: Session) {
+    if (closed) return
+    const sessionId = String(session.id)
+    const entry = queues.get(sessionId)
+    if (!entry || entry.epoch !== owner.epoch) return
+    if (sessions.get && sessions.get(session.id) !== session) return
+    entry.needsCatchup = true
+    clearLiveRetry(entry)
+    entry.liveFailures++
+    const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(entry.liveFailures - 1, 6))
+    entry.liveRetryTimer = setTimeout(() => {
+      entry.liveRetryTimer = null
+      if (closed || entry.epoch !== owner.epoch) return
+      if (sessions.get && sessions.get(session.id) !== session) return
+      void enqueue(sessionId, () => scanLive(session, false)).catch(err => {
+        onError?.(err)
+        scheduleLiveSessionRetry(session)
+      })
+    }, delayMs)
+    entry.liveRetryTimer.unref?.()
+  }
+
   async function scanLive(session: Session, stageOpenTurn: boolean): Promise<void> {
     const sessionId = String(session.id)
     const inherited = session.inheritedEventCount
     const end = session.seq
+    const entry = queues.get(sessionId)
     for (let attempt = 0; attempt < 2; attempt++) {
-      const cursor = await owner.intakeCursor(sessionId)
+      let cursor
+      try {
+        cursor = await owner.intakeCursor(sessionId)
+      } catch (error) {
+        if (!stageOpenTurn) scheduleLiveSessionRetry(session)
+        throw error
+      }
       const fromSeq = cursor.nextSeq === null ? inherited : Math.max(inherited, cursor.nextSeq)
-      if (fromSeq >= end) return
+      if (fromSeq >= end) {
+        if (entry) {
+          entry.needsCatchup = false
+          entry.liveFailures = 0
+          entry.lastSyncedSeq = Math.max(entry.lastSyncedSeq, end)
+          clearLiveRetry(entry)
+        }
+        return
+      }
       const persistence = getPersistence()
       if (!persistence) {
         if (stageOpenTurn) throw new Error('Memory durability verification failed: persistence-unavailable')
+        if (entry) entry.needsCatchup = true
         return
       }
       const slice = await readVerifiedDurableSlice(sessions, persistence, session, fromSeq, end)
@@ -682,21 +747,30 @@ export function createSessionIngestion(
         if (stageOpenTurn) {
           throw new Error(`Memory durability verification failed: ${slice.reason}`)
         }
+        if (slice.reason !== 'not-found') {
+          scheduleLiveSessionRetry(session)
+        }
         return
       }
-      const outcome = await ingestPersistedEvents({
-        sessionId,
-        cwd: session.header.cwd,
-        inheritedSeq: inherited,
-        createdAt: cursor.createdAt,
-        cursorNextSeq: cursor.nextSeq,
-        sessionKind: cursor.sessionKind,
-        conversation: cursor.conversation,
-        events: slice.events,
-        sliceFromSeq: fromSeq,
-        sliceEndSeq: end,
-        collectOpenTurn: stageOpenTurn,
-      })
+      let outcome
+      try {
+        outcome = await ingestPersistedEvents({
+          sessionId,
+          cwd: session.header.cwd,
+          inheritedSeq: inherited,
+          createdAt: cursor.createdAt,
+          cursorNextSeq: cursor.nextSeq,
+          sessionKind: cursor.sessionKind,
+          conversation: cursor.conversation,
+          events: slice.events,
+          sliceFromSeq: fromSeq,
+          sliceEndSeq: end,
+          collectOpenTurn: stageOpenTurn,
+        })
+      } catch (error) {
+        if (!stageOpenTurn) scheduleLiveSessionRetry(session)
+        throw error
+      }
       if (outcome.casRetry) continue
       if (stageOpenTurn && outcome.openTurn) {
         await owner.stageOpenTurnSources({
@@ -707,6 +781,12 @@ export function createSessionIngestion(
           cwd: session.header.cwd,
           sources: outcome.openTurn.sources,
         })
+      }
+      if (entry) {
+        entry.needsCatchup = false
+        entry.liveFailures = 0
+        entry.lastSyncedSeq = Math.max(entry.lastSyncedSeq, end)
+        clearLiveRetry(entry)
       }
       return
     }
@@ -724,7 +804,10 @@ export function createSessionIngestion(
       entry.coldRetryTimer = null
       if (closed || entry.epoch !== owner.epoch) return
       if (sessions.get?.(SessionId(sessionId))) return
-      void scanCold(sessionId, header).catch(() => {})
+      void scanCold(sessionId, header).catch(err => {
+        onError?.(err)
+        scheduleColdSessionRetry(sessionId, header)
+      })
     }, delayMs)
     entry.coldRetryTimer.unref?.()
   }
@@ -843,7 +926,10 @@ export function createSessionIngestion(
     synchronize(session: Session) {
       const sessionId = String(session.id)
       const entry = queues.get(sessionId)
-      if (entry) clearColdRetry(entry)
+      if (entry) {
+        clearColdRetry(entry)
+        clearLiveRetry(entry)
+      }
       return enqueue(sessionId, () => scanLive(session, false))
     },
     stageOpenTurn(session: Session) {
@@ -854,7 +940,7 @@ export function createSessionIngestion(
     },
     beginTurn(session: Session, turn: number, messages: readonly UserMessage[]) {
       const sessionId = String(session.id)
-      const { sessionKind, conversation } = detectTurnMetaFromMessages(messages)
+      const { sessionKind, conversation } = detectTurnMetaFromMessages(messages, host)
       return enqueue(sessionId, () => owner.beginTurn({
         sessionId,
         turn,
@@ -868,11 +954,30 @@ export function createSessionIngestion(
     release(session: Session) {
       const sessionId = String(session.id)
       const entry = queues.get(sessionId)
-      if (!entry) return
-      clearColdRetry(entry)
-      const currentWork = entry.work
+      const header = session.header
+      const targetSeq = session.seq
+      const targetEpoch = entry?.epoch ?? owner.epoch
+      if (entry) {
+        clearColdRetry(entry)
+        clearLiveRetry(entry)
+      }
+      const hadPending = Boolean(entry?.needsCatchup || (entry && targetSeq > entry.lastSyncedSeq))
+      const currentWork = entry?.work ?? Promise.resolve()
       void currentWork.finally(() => {
-        if (queues.get(sessionId) === entry && entry.work === currentWork) {
+        const stillUnresolved = !closed
+          && Boolean(targetEpoch)
+          && owner.epoch === targetEpoch
+          && !sessions.get?.(session.id)
+          && Boolean(getPersistence())
+          && (hadPending || Boolean(entry?.needsCatchup) || (entry ? targetSeq > entry.lastSyncedSeq : targetSeq > 0))
+        if (stillUnresolved) {
+          void scanCold(sessionId, header).catch(err => {
+            onError?.(err)
+            scheduleColdSessionRetry(sessionId, header)
+          })
+          return
+        }
+        if (entry && queues.get(sessionId) === entry && entry.work === currentWork) {
           queues.delete(sessionId)
         }
       }).catch(() => {})
@@ -880,7 +985,10 @@ export function createSessionIngestion(
     async drain() {
       closed = true
       clearListRetry()
-      for (const entry of queues.values()) clearColdRetry(entry)
+      for (const entry of queues.values()) {
+        clearColdRetry(entry)
+        clearLiveRetry(entry)
+      }
       await Promise.allSettled([...queues.values()].map(entry => entry.work))
     },
   }

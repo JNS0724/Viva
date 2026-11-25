@@ -693,7 +693,8 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     assert.ok(fs.readFileSync(join(root, `daily/${card.day}.md`), 'utf8').includes(card.path))
     assert.equal(fs.existsSync(join(root, 'session/dialog')), false, 'Phase 4A never writes duplicate session/dialog/*.jsonl files')
     assert.equal(db.prepare("SELECT count(*) AS n FROM memory_note_ranges WHERE status='pending'").get()?.n, 0)
-    assert.equal(db.prepare("SELECT count(*) AS n FROM memory_note_ranges WHERE status='written'").get()?.n, 5)
+    assert.equal(db.prepare("SELECT count(*) AS n FROM memory_note_ranges WHERE status='written'").get()?.n, 1)
+    assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_sources').get()?.n, 5)
   } finally { db.close() }
 })
 
@@ -1359,8 +1360,8 @@ test('an Updates draft keeps the result identity until dispatch and never become
     questionOf(request.messages) === prompt && !JSON.stringify(request.messages).includes('"tool_result"'))
   assert.ok(firstPromptRequest, 'expected first model request for scheduled prompt before any tool_result')
   const firstPromptText = JSON.stringify(firstPromptRequest.messages)
-  assert.match(firstPromptText, /<memory-recall turn=\\"\d+\\" ref=\\"[A-Za-z0-9-]+\\">/, 'first scheduled model request must include anchored L3 memory-recall')
-  assert.ok(firstPromptText.includes(uniqueMemoryMarker), 'first scheduled model request must carry unique memory-only marker via verified sourceAlias')
+  assert.doesNotMatch(firstPromptText, /<memory-recall/, 'unattended scheduled prompt must not trigger automatic L3 memory-recall (§5.4)')
+  assert.equal(firstPromptText.includes(uniqueMemoryMarker), false, 'unattended scheduled prompt must not inject private memory marker via L3 recall')
   const text = await app.call<Promise<string>>('feed:continue', item.id)
   assert.ok(text.endsWith(draft), JSON.stringify({ body: item.body, text }))
   await app.newTopic()
@@ -1499,10 +1500,14 @@ test('a generated task brief stays derived while the answer keeps its task scope
   try {
     assert.ok(await eventually(() => memory.prepare("SELECT 1 FROM memory_sources WHERE author='agent' AND source_kind='task-brief' AND profile_eligible=0 AND session=? AND text=?").get(event.taskId, brief)))
     assert.equal(memory.prepare("SELECT 1 FROM memory_sources WHERE author='user' AND session=? AND text=?").get(event.taskId, brief), undefined)
-    const source = await eventually(() => memory.prepare("SELECT id,conversation,context FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer)))
+    const source = await eventually(() => memory.prepare("SELECT id,conversation,context,source_kind,profile_eligible FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer)))
     assert.ok(source, 'The canonical answer identity survives automatic source compaction')
     assert.ok(withheldReceipt, 'the task completed and the answer was stored without a host receipt')
-    assert.deepEqual(JSON.parse(String(source.context)), { kind: 'task', id: event.taskId })
+    assert.deepEqual(JSON.parse(String(source.context)), { kind: 'user' })
+    assert.equal(source.source_kind, 'task-question-answer')
+    assert.equal(source.profile_eligible, 1)
+    assert.ok(await eventually(() => Number(memory.prepare('SELECT next_seq FROM owner_intake_cursors WHERE session=?').get(event.taskId)?.next_seq ?? 0) > 0),
+      'task turn containing brief + answer + conclusion must settle its intake cursor cleanly')
     assert.equal(history.prepare('SELECT text FROM messages WHERE conversation_id=? AND source_id=?').get(source.conversation, source.id)?.text, answer)
   } finally { memory.close(); history.close() }
 })

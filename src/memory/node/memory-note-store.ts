@@ -116,6 +116,38 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
   function indexTarget(data: Data) {
     return data.kind === 'note' && data.path ? publicNoteId(data.key) : null
   }
+  function retireConsumedRanges(rangeIds: readonly string[], contributed: boolean) {
+    if (!rangeIds.length) return
+    const status = contributed ? 'written' : 'skipped'
+    const sessions = new Map<string, { workspace: string, session: string }>()
+    for (const rangeId of rangeIds) {
+      const row = db.prepare('SELECT workspace, session FROM memory_note_ranges WHERE range_id=?').get(rangeId) as
+        { workspace: string, session: string } | undefined
+      db.prepare('UPDATE memory_note_ranges SET status=? WHERE range_id=?').run(status, rangeId)
+      if (row) sessions.set(`${row.workspace}\0${row.session}`, row)
+    }
+    for (const { workspace, session } of sessions.values()) {
+      const latest = db.prepare(`SELECT rowid, range_id, source_tokens_json, assistant_valid
+        FROM memory_note_ranges
+        WHERE workspace=? AND session=? AND status IN ('written','skipped')
+        ORDER BY rowid DESC LIMIT 1`).get(workspace, session) as
+        { rowid: number, range_id: string, source_tokens_json: string, assistant_valid: number } | undefined
+      if (!latest) continue
+      // Keep only the single latest consumed range per (workspace, session) for `previous()`
+      // and strip cumulative/question refs so retained references stay O(1) across turns (§5.3 item 2).
+      const directAssistantRefs = latest.assistant_valid ? latest.source_tokens_json : '[]'
+      db.prepare(`UPDATE memory_note_ranges
+        SET assistant_sources_json=?, question_sources_json='[]'
+        WHERE rowid=?`).run(directAssistantRefs, latest.rowid)
+      const retired = db.prepare(`SELECT range_id FROM memory_note_ranges
+        WHERE workspace=? AND session=? AND status IN ('written','skipped') AND rowid<?`)
+        .all(workspace, session, latest.rowid) as Array<{ range_id: string }>
+      for (const old of retired) ephemeralAssistants.delete(old.range_id)
+      db.prepare(`DELETE FROM memory_note_ranges
+        WHERE workspace=? AND session=? AND status IN ('written','skipped') AND rowid<?`)
+        .run(workspace, session, latest.rowid)
+    }
+  }
   const journal = openMemoryFileJournal<Data>({ db, root: store.fileRoot, checkpoint,
     afterCommit(data, workspace) {
       const id = indexTarget(data)
@@ -136,10 +168,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
           db.prepare('DELETE FROM memory_note_sources WHERE note=?').run(data.key)
           for (const ref of data.refs) db.prepare('INSERT INTO memory_note_sources(note,source,token,spans) VALUES(?,?,?,?)').run(data.key, ref.id, ref.token, ref.spans ? JSON.stringify(ref.spans) : null)
         }
-        const status = data.contributed ? 'written' : 'skipped'
-        for (const rangeId of data.rows) {
-          db.prepare('UPDATE memory_note_ranges SET status=? WHERE range_id=?').run(status, rangeId)
-        }
+        retireConsumedRanges(data.rows, data.contributed)
         if (data.path) options.onCommitted?.()
         for (const ref of data.refs) if (store.readSource(ref.id)?.outcome === 'note-pending') {
           store.outcome(ref.id, data.contributed ? 'note-ready' : 'note-skipped')
@@ -384,13 +413,11 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     jobState: (key: string, generation: number) => journal.state(`note:${memoryFileRevision(key)}:${generation}`),
     blocked: (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(key) || rawNote(key)?.file_revision && !read(key)),
     contextSources(session: string, source: MemorySource) {
-      const rows = db.prepare('SELECT * FROM memory_note_ranges WHERE session=? AND workspace=? ORDER BY rowid')
-        .all(session, workspaceOf(source)) as unknown as RangeRow[]
-      return [...new Set(rows.flatMap(row => [
-        ...sourceIdsOf(row),
-        ...(row.assistant_valid ? (JSON.parse(row.assistant_sources_json) as SourceRef[]).map(ref => ref.id) : []),
-        ...(row.question_valid ? (JSON.parse(row.question_sources_json) as SourceRef[]).map(ref => ref.id) : []),
-      ]))]
+      // Collect only direct source IDs from active/retained ranges (<= noteInterval + 1 rows)
+      // rather than transitively re-copying assistant/question lists, bounding storage to O(1) per turn.
+      const rows = db.prepare('SELECT sources_json FROM memory_note_ranges WHERE session=? AND workspace=? ORDER BY rowid')
+        .all(session, workspaceOf(source)) as Array<{ sources_json: string }>
+      return [...new Set(rows.flatMap(row => JSON.parse(row.sources_json) as string[]))]
     },
     hasRange: (session: string, fromSeq: number, toSeq: number) =>
       Boolean(db.prepare('SELECT 1 FROM memory_note_ranges WHERE session=? AND from_seq=? AND to_seq=?').get(session, fromSeq, toSeq)),
@@ -447,10 +474,11 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       return (db.prepare('SELECT source FROM memory_note_sources WHERE note=? ORDER BY rowid').all(key) as Array<{ source: string }>).map(row => row.source)
     },
     finish(rows: Array<{ id: string }>, contributed: boolean) {
-      const status = contributed ? 'written' : 'skipped'
+      retireConsumedRanges(rows.map(row => row.id), contributed)
       for (const row of rows) {
-        db.prepare('UPDATE memory_note_ranges SET status=? WHERE range_id=?').run(status, row.id)
-        ephemeralAssistants.delete(row.id)
+        if (!db.prepare('SELECT 1 FROM memory_note_ranges WHERE range_id=?').get(row.id)) {
+          ephemeralAssistants.delete(row.id)
+        }
       }
     },
     commit(key: string, rows: Array<{ id: string }>, reply: { status: 'skip' } | { status: 'write', title: string, markdown: string, filename?: string },

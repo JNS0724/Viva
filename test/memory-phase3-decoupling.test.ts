@@ -9,7 +9,7 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { boot } from '@deepseek-ai/dsh-app-boot'
 import { createUserMessage, LlmAdapter, LlmError, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import { renderContextSnapshot } from '@deepseek-ai/dsh-system-prompt'
 import { createRemoteMemoryChannel } from '../src/backend/remote-memory-channel.ts'
 import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
@@ -242,8 +242,10 @@ test('L2 3-step boot, late-subscriber replay, unavailable immediate clear, empty
 
   const config = path.join(dir, 'cordis.yml')
   writeFileSync(config, JSON.stringify([
-    'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions',
-  ].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
+    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions']
+      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
+    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(dir, 'sessions'), compression: 'zstd' } },
+  ]))
   const ctx = await boot('phase3-l2-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
   t.after(async () => { await ctx.fiber.dispose(); await shared.close() })
 
@@ -294,8 +296,10 @@ test('single-hop agent/pre-step detects real mid-recall file disable (no frame m
   const root = path.join(dir, 'memory')
   const config = path.join(dir, 'cordis.yml')
   writeFileSync(config, JSON.stringify([
-    'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions',
-  ].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
+    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions']
+      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
+    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(dir, 'sessions'), compression: 'zstd' } },
+  ]))
   const ctx = await boot('phase3-l3-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
   t.after(async () => { await ctx.fiber.dispose() })
 
@@ -520,8 +524,10 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
   const root = path.join(dir, 'memory')
   const config = path.join(dir, 'cordis.yml')
   writeFileSync(config, JSON.stringify([
-    'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions',
-  ].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
+    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions']
+      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
+    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(dir, 'sessions'), compression: 'zstd' } },
+  ]))
   const ctx = await boot('phase3-quota-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
   t.after(async () => { await ctx.fiber.dispose() })
 
@@ -617,6 +623,7 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
   await owner.call('setRoute', [{ provider: 'mock', model: 'test-model' }])
 
   const seedTurns = async (
+    targetCtx: typeof ctx,
     targetOwner: typeof owner,
     _targetPort: typeof port,
     _targetResults: typeof hostResults,
@@ -624,6 +631,22 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
     cwdPath: string,
     count: number,
   ) => {
+    const baseAt = Date.now()
+    const handle = await targetCtx.sessionPersistence.create({ version: 4, id: SessionId(sid), createdAt: baseAt, cwd: cwdPath, isSeeded: false })
+    try {
+      const events = []
+      for (let turn = 1; turn <= count; turn++) {
+        const fromSeq = (turn - 1) * 3
+        events.push(
+          { seq: SessionSeq(fromSeq), time: baseAt + fromSeq, type: 'turn/start' as const, data: { turn } },
+          { seq: SessionSeq(fromSeq + 1), time: baseAt + fromSeq + 1, type: 'user/message' as const, data: createUserMessage({ content: [{ type: 'text', text: `I submit my weekly report every Friday. Turn ${turn}.` }], source: { kind: 'user' } }), surfaceOp: 'append' as const },
+          { seq: SessionSeq(fromSeq + 2), time: baseAt + fromSeq + 2, type: 'turn/end' as const, data: { turn, reason: { kind: 'completed' as const } } },
+        )
+      }
+      await handle.append(events)
+    } finally {
+      await handle.close()
+    }
     for (let turn = 1; turn <= count; turn++) {
       const at = Date.now()
       const text = `I submit my weekly report every Friday. Turn ${turn}.`
@@ -650,7 +673,7 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
 
   // First produce one real daily note so Dream consolidation has input to process.
   mode = 'note-ok'
-  await seedTurns(owner, port, hostResults, randomUUID(), dir, 5)
+  await seedTurns(ctx, owner, port, hostResults, randomUUID(), dir, 5)
   assert.ok(await eventually(() => bgCalls.some(c => c.stage === 'note'), { timeoutMs: 10_000 }), 'initial daily note must run')
   assert.ok(await eventually(() => readEffects(WRITE_NOTE).length === 0, { timeoutMs: 10_000 }), 'initial daily note effect must settle')
   const noteCallsBeforeFg = bgCalls.filter(c => c.stage === 'note').length
@@ -665,7 +688,7 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
   await fgStarted.promise
 
   const noteSession = randomUUID()
-  await seedTurns(owner, port, hostResults, noteSession, dir, 5)
+  await seedTurns(ctx, owner, port, hostResults, noteSession, dir, 5)
   assert.ok(await eventually(() => readEffects(WRITE_NOTE).length > 0, { timeoutMs: 5_000 }))
   await delay(250)
   const deferredNotes = readEffects(WRITE_NOTE)
@@ -737,7 +760,7 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
   assert.ok(await eventually(() => ownerC.ready(), { timeoutMs: 10_000 }))
   await ownerC.call('setRoute', [{ provider: 'mock', model: 'test-model' }])
   const failAtNote = Date.now()
-  await seedTurns(ownerC, portC, hostResultsC, randomUUID(), dirC, 5)
+  await seedTurns(ctxC, ownerC, portC, hostResultsC, randomUUID(), dirC, 5)
   const readEffectsC = (kind: string) => {
     const db = new DatabaseSync(path.join(rootC, 'memory.db'), { readOnly: true })
     try {
@@ -777,7 +800,7 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
   t.after(async () => { await ownerD.close() })
   assert.ok(await eventually(() => ownerD.ready(), { timeoutMs: 10_000 }))
   await ownerD.call('setRoute', [{ provider: 'mock', model: 'test-model' }])
-  await seedTurns(ownerD, portD, hostResultsD, randomUUID(), dirD, 5)
+  await seedTurns(ctxD, ownerD, portD, hostResultsD, randomUUID(), dirD, 5)
   const readEffectsD = () => {
     const db = new DatabaseSync(path.join(rootD, 'memory.db'), { readOnly: true })
     try {
@@ -815,7 +838,7 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
   t.after(async () => { await ownerE.close() })
   assert.ok(await eventually(() => ownerE.ready(), { timeoutMs: 10_000 }))
   await ownerE.call('setRoute', [{ provider: 'mock', model: 'test-model' }])
-  await seedTurns(ownerE, portE, hostResultsE, randomUUID(), dirE, 5)
+  await seedTurns(ctxE, ownerE, portE, hostResultsE, randomUUID(), dirE, 5)
   const readEffectsE = (kind: string) => {
     const db = new DatabaseSync(path.join(rootE, 'memory.db'), { readOnly: true })
     try {
@@ -851,8 +874,10 @@ test('Dream edited in-flight preserves Retry-After cooldown on newer generation 
   const root = path.join(dir, 'memory')
   const config = path.join(dir, 'cordis.yml')
   writeFileSync(config, JSON.stringify([
-    'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions',
-  ].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
+    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions']
+      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
+    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(dir, 'sessions'), compression: 'zstd' } },
+  ]))
   const ctx = await boot('phase3-p14-p24', config, [], undefined, new URL('../package.json', import.meta.url).href)
   t.after(async () => { await ctx.fiber.dispose() })
 
@@ -951,6 +976,22 @@ test('Dream edited in-flight preserves Retry-After cooldown on newer generation 
   const summarizerPending = summarizerIter.next()
 
   const sid = randomUUID()
+  const baseAt2 = Date.now()
+  const h2 = await ctx.sessionPersistence.create({ version: 4, id: SessionId(sid), createdAt: baseAt2, cwd: dir, isSeeded: false })
+  try {
+    const evs = []
+    for (let turn = 1; turn <= 5; turn++) {
+      const fromSeq = (turn - 1) * 3
+      evs.push(
+        { seq: SessionSeq(fromSeq), time: baseAt2 + fromSeq, type: 'turn/start' as const, data: { turn } },
+        { seq: SessionSeq(fromSeq + 1), time: baseAt2 + fromSeq + 1, type: 'user/message' as const, data: createUserMessage({ content: [{ type: 'text', text: `Compaction probe turn ${turn}` }], source: { kind: 'user' } }), surfaceOp: 'append' as const },
+        { seq: SessionSeq(fromSeq + 2), time: baseAt2 + fromSeq + 2, type: 'turn/end' as const, data: { turn, reason: { kind: 'completed' as const } } },
+      )
+    }
+    await h2.append(evs)
+  } finally {
+    await h2.close()
+  }
   for (let turn = 1; turn <= 5; turn++) {
     const at = Date.now()
     const text = `Compaction probe turn ${turn}`
