@@ -25,7 +25,7 @@ import type { TextSpan } from '../contracts/text-spans.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
-  turn: number, live?: boolean, derived?: boolean, cwd?: string | null, task?: boolean }
+  turn: number, live?: boolean, derived?: boolean, cwd?: string | null, task?: boolean, deferMissingAlias?: boolean }
 export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number, sourceIds: readonly string[],
   assistant: string, completed: boolean, at: number, timezone: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route'> & {
@@ -74,6 +74,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE INDEX IF NOT EXISTS owner_alias_wire ON owner_aliases(session,wire_hash);
     CREATE TABLE IF NOT EXISTS owner_messages(
       id TEXT PRIMARY KEY,session TEXT NOT NULL,source TEXT NOT NULL,hash TEXT NOT NULL,kind TEXT NOT NULL,project TEXT,spans TEXT);
+    CREATE INDEX IF NOT EXISTS owner_messages_session_hash ON owner_messages(session,hash);
     CREATE TABLE IF NOT EXISTS owner_turns(session TEXT NOT NULL,turn INTEGER NOT NULL,seq INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(session,turn));
     CREATE TABLE IF NOT EXISTS owner_operations(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,state TEXT NOT NULL,payload TEXT);
     CREATE TABLE IF NOT EXISTS owner_skip_assistant(session TEXT NOT NULL,turn INTEGER NOT NULL,PRIMARY KEY(session,turn));
@@ -200,15 +201,25 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const source = store.readSource(input.sourceId)
     if (source && (source.conversation !== input.conversation || source.hash !== null && source.hash !== memoryHash(input.text)
       || (source.project?.kind === 'project' ? source.project.id : undefined) !== project?.id)) throw new MemoryDomainError('operation.conflict')
+    const wireHash = hash(input.wireText)
+    let terminalStatus: 'ignored' | undefined
     store.tx(() => {
       assertCurrent()
       const old = db.prepare('SELECT fingerprint FROM owner_aliases WHERE id=?').get(input.operationId)
       if (old && old.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
       bindSession(input.session, resolved, context.kind === 'task', input.conversation)
+      // Indexed check (owner_messages_session_hash): avoid re-inserting an orphan alias row
+      // if this wire message was already consumed or finalized as ignored after grace expiry.
+      const finalized = db.prepare("SELECT source, kind FROM owner_messages WHERE session=? AND hash=? AND (source=? OR kind='ignored')")
+        .get(input.session, wireHash, input.sourceId) as { source: string, kind: string } | undefined
+      if (finalized) {
+        if (finalized.kind === 'ignored') terminalStatus = 'ignored'
+        return
+      }
       db.prepare('INSERT OR IGNORE INTO owner_aliases VALUES (?,?,?,?,?,?)')
-        .run(input.operationId, fingerprint, input.session, hash(input.wireText), JSON.stringify(saved), input.sourceId)
+        .run(input.operationId, fingerprint, input.session, wireHash, JSON.stringify(saved), input.sourceId)
     })
-    return { sourceId: input.sourceId }
+    return terminalStatus ? { sourceId: input.sourceId, status: terminalStatus } : { sourceId: input.sourceId }
   }
 
   /** Native log events may be delivered again after a crash. Keep their identity and original scope. */
@@ -231,8 +242,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const ignored = !scoped || Boolean(options.hostNamespace && !mapped)
       const kind = known?.kind ?? (ignored ? 'ignored' : mapped?.origin === 'derived' || input.derived ? 'derived' : 'original')
       // The durable session replay gets a second chance to match an authenticated host mapping.
-      if (input.live === true && !known && scoped && options.hostNamespace && !mapped) {
-        return { sourceId, text: '', handledIntent: true }
+      if ((input.live === true || input.deferMissingAlias === true) && !known && scoped && options.hostNamespace && !mapped) {
+        return { sourceId, text: '', handledIntent: true, ...(input.deferMissingAlias ? { awaitingAlias: true } : {}) }
       }
       if ((!scoped || kind !== 'original') && input.turn > 0) {
         db.prepare('INSERT OR IGNORE INTO owner_skip_assistant VALUES (?,?)').run(session, input.turn)
@@ -523,17 +534,21 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const existing = store.readSource(sourceId)
         if (existing) {
           if (existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
-            || existing.requestId !== input.requestId || existing.conversation !== input.conversation) throw new Error('Answer operation identity conflicts')
+            || existing.requestId !== input.requestId || existing.conversation !== input.conversation) {
+            throw new MemoryDomainError('operation.conflict', 'Answer operation identity conflicts')
+          }
           return { sourceId }
         }
         const { session, turn } = input
         const context = sessionContext(session)
         if (context.conversation !== input.conversation || context.project?.id !== input.project?.id
-          || db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND turn=?').get(session, turn)) throw new Error('Answer context is unavailable')
+          || db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND turn=?').get(session, turn)) {
+          throw new MemoryDomainError('not.found', 'Answer context is unavailable')
+        }
         const question = input.cards.find(card => card.id === input.questionId)
         if (!question || input.cards.some(card => [card.question, card.header,
           ...card.options.flatMap(option => [option.label, option.description ?? ''])].some(looksSecret))) {
-          throw new Error('Question cannot be retained')
+          throw new MemoryDomainError('credentials', 'Question cannot be retained')
         }
         store.tx(() => {
           assertIntakeCurrent()
@@ -542,38 +557,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
               ...(input.questionAt !== undefined ? { questionAt: input.questionAt } : {}),
               ...(input.questionProfileGen !== undefined ? { questionProfileGen: input.questionProfileGen } : {}) },
             { deferAutomatic: true, at: (options.now ?? Date.now)(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
-          if (!runtime.sourceCurrent(sourceId)) throw new Error('Answer cannot be retained')
+          if (!runtime.sourceCurrent(sourceId)) throw new MemoryDomainError('credentials', 'Answer cannot be retained')
           db.prepare('INSERT INTO owner_answer_sources VALUES (?,?,?)').run(session, String(turn), sourceId)
         })
         return { sourceId }
-      }
-      case 'prefetchRecall': {
-        const input = command.input
-        const resolved = resolveIntakeScope(input.cwd)
-        const origin = sessionContext(input.session)
-        const project = input.project ?? (resolved.status === 'project' ? resolved.project : undefined)
-        const scopeCurrent = scopeMatches(input.session, resolved)
-        const readScope = scopeCurrent
-          ? { ...origin, ...(input.context ? { context: input.context } : {}), project }
-          : { ...origin, project: undefined, context: input.context ?? { kind: 'user' as const } }
-        let startRevision = store.revision()
-        let result: AutomaticRecallResult = await runtime.automaticRecall(
-          { session: input.session, question: input.query }, readScope, () => state === 'ready' && !replayingWrites, signal,
-        )
-        let endRevision = store.revision()
-        if (result.status === 'hit' && startRevision !== endRevision) {
-          if (!signal?.aborted && state === 'ready' && !replayingWrites) {
-            startRevision = endRevision
-            result = await runtime.automaticRecall(
-              { session: input.session, question: input.query }, readScope, () => state === 'ready' && !replayingWrites, signal,
-            )
-            endRevision = store.revision()
-          }
-          if (result.status === 'hit' && startRevision !== endRevision) {
-            result = { status: 'timeout' }
-          }
-        }
-        return { epoch, revision: endRevision, result }
       }
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)

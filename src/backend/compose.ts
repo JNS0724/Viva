@@ -23,7 +23,9 @@ import path from 'node:path'
 import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { createVivaMemoryClient } from './memory-client.ts'
-import { createDesktopMemoryOwner } from './desktop-memory-owner.ts'
+import { MemoryOwnerUnavailable } from './remote-memory-channel.ts'
+import { createRequestBudget } from '../shared/request-budget.ts'
+import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod, MemorySourceAlias } from '../memory/contracts/host.ts'
 import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
 import { resolveMemoryProject } from '../memory/node/project-scope.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
@@ -162,23 +164,80 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   const embeddingRoot = path.extname(APP_ROOT) === '.asar'
     ? path.join(path.dirname(APP_ROOT), 'memory-embedding') : path.join(APP_ROOT, 'build', 'memory-embedding', 'prepared')
   const embedding = { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime') }
-  const memoryRoot = path.join(userData, 'memory')
   let defaultWorkspace: string | undefined
   function historyWorkspace(cwd: string | null | undefined) {
     return cwd && defaultWorkspace && sameDir(cwd, defaultWorkspace) ? null : cwd
   }
-  const memoryOwner = createDesktopMemoryOwner({ root: memoryRoot, embedding, dailyNotes }, {
-    onChanged: () => emitToRenderer({ type: 'memory_changed' }),
-    onNotice: () => emitToRenderer({ type: 'memory_changed' }),
-    onContextUsed: notice => {
-      const context = sessions.context()
-      if (notice.session === context.sessionId && notice.conversation === context.conversationId && notice.pushed.length) {
-        emitToRenderer({ type: 'memory_context', injected: [{ at: notice.at, pushed: notice.pushed }], context })
+  const MAX_PENDING_ALIASES = 256
+  const MAX_INFLIGHT_ALIASES = 16
+  const ALIAS_RETRY_DELAY_MS = 250
+  const pendingAliases = new Map<string, { alias: MemorySourceAlias, nextAttemptAt: number }>()
+  const inflightAliases = new Set<string>()
+  let aliasRetryTimer: ReturnType<typeof setTimeout> | null = null
+  function clearAliasRetryTimer() {
+    if (aliasRetryTimer) { clearTimeout(aliasRetryTimer); aliasRetryTimer = null }
+  }
+  function drainPendingAliases() {
+    if (closed) return
+    const bridge = dsh.current
+    if (!bridge || !bridge.memory.ready()) return
+    const now = Date.now()
+    let minDelay = Infinity
+    for (const [operationId, entry] of pendingAliases) {
+      if (inflightAliases.size >= MAX_INFLIGHT_ALIASES) break
+      if (inflightAliases.has(operationId)) continue
+      if (entry.nextAttemptAt > now) {
+        minDelay = Math.min(minDelay, entry.nextAttemptAt - now)
+        continue
       }
-    },
-  })
-  const memory = createVivaMemoryClient(memoryOwner.channel.call, memoryOwner.channel.readBatch)
-  const memoryOffline = () => !memoryOwner.channel.ready()
+      inflightAliases.add(operationId)
+      void bridge.memory.callIntake('sourceAlias', entry.alias).then(
+        () => { pendingAliases.delete(operationId) },
+        error => {
+          emitDiagnosticFailure('memory.intake', error)
+          if (objectOf(error)?.domainCode === 'operation.conflict') pendingAliases.delete(operationId)
+          else {
+            const currentEntry = pendingAliases.get(operationId)
+            if (currentEntry) currentEntry.nextAttemptAt = Date.now() + ALIAS_RETRY_DELAY_MS
+          }
+        },
+      ).finally(() => {
+        inflightAliases.delete(operationId)
+        drainPendingAliases()
+      })
+    }
+    if (minDelay < Infinity && !aliasRetryTimer && !closed) {
+      aliasRetryTimer = setTimeout(() => {
+        aliasRetryTimer = null
+        drainPendingAliases()
+      }, Math.max(10, minDelay))
+    }
+  }
+  function enqueueAlias(alias: MemorySourceAlias) {
+    if (pendingAliases.size >= MAX_PENDING_ALIASES && !pendingAliases.has(alias.operationId)) {
+      const oldest = pendingAliases.keys().next()
+      if (!oldest.done) pendingAliases.delete(oldest.value)
+      emitDiagnosticFailure('memory.intake', new Error('Pending memory alias queue overflow'))
+    }
+    pendingAliases.set(alias.operationId, { alias, nextAttemptAt: 0 })
+    drainPendingAliases()
+  }
+  function replayPendingAliases() {
+    clearAliasRetryTimer()
+    for (const entry of pendingAliases.values()) entry.nextAttemptAt = 0
+    drainPendingAliases()
+  }
+  const memoryCall: HostMemoryCaller = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) => {
+    const bridge = dsh.current
+    if (!bridge) return Promise.reject(new MemoryOwnerUnavailable())
+    return bridge.memory.call(method, input)
+  }
+  const memoryReadBatch = <T>(work: (read: HostMemoryCaller) => Promise<T>, options?: { budgetMs?: number, signal?: AbortSignal }) => {
+    const bridge = dsh.current
+    if (!bridge) return Promise.reject(new MemoryOwnerUnavailable())
+    return bridge.memory.readBatch(work, options)
+  }
+  const memory = createVivaMemoryClient(memoryCall, memoryReadBatch)
   /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
   let traceDb: ReturnType<typeof openTraceDb> | null = null
   /** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
@@ -315,6 +374,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     onGone: () => {
       retireForegroundRequests()
       taskRuntime?.dsh.gone(); unattended.gone()
+      emitToRenderer({ type: 'memory_changed' })
       // Retired generations cannot deliver a final error/turn_end. Settle the foreground here too,
       // including deliberate model/key restarts, before publishing the replacement's readiness.
       if (turn.active) {
@@ -486,7 +546,25 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   function createBridge(config: Config, cwd: string, lifetime: DshLifetime): Bridge {
     return createAcpBridge({
       prewarmSessions: true,
-      memoryOwner,
+      readyMemory: () => {
+        if (!lifetime.isCurrent()) return
+        replayPendingAliases()
+      },
+      memoryStateChanged: () => {
+        if (!lifetime.isCurrent()) return
+        emitToRenderer({ type: 'memory_changed' })
+      },
+      memoryNotice: () => {
+        if (!lifetime.isCurrent()) return
+        emitToRenderer({ type: 'memory_changed' })
+      },
+      memoryContextUsed: notice => {
+        if (!lifetime.isCurrent()) return
+        const context = sessions.context()
+        if (notice.session === context.sessionId && notice.conversation === context.conversationId && notice.pushed.length) {
+          emitToRenderer({ type: 'memory_context', injected: [{ at: notice.at, pushed: notice.pushed }], context })
+        }
+      },
       dshBin: config.dshBin,
       nodeBin: config.nodeBin,
       ...prepareProfile(config),
@@ -500,37 +578,67 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         return saved === undefined || saved === projectScopeKey(cwd)
       },
       recordSource: ({ session, sourceId, text, wireText, wireSpans, task }) => {
-        if (memoryOffline()) return
+        if (!lifetime.isCurrent()) return
         const selected = sessions.context()
         const conversation = task ? historyDb.bySession(session)?.id ?? session : selected.sessionId === session ? selected.conversationId : null
         if (!conversation) return
         const operationId = randomUUID()
-        void memoryOwner.channel.callIntake('sourceAlias', { operationId, sourceId: sourceId ?? operationId, session, conversation, text, wireText,
+        enqueueAlias({ operationId, sourceId: sourceId ?? operationId, session, conversation, text, wireText,
           wireSpans, origin: sourceId ? 'original' : 'derived', ...(task ? { context: { kind: 'task', id: session } } : {}) })
-          .catch(error => emitDiagnosticFailure('memory.intake', error))
       },
       allowGeneralQuestion: (_session, turn) => Boolean(turn),
       admitTaskWaitResume: (kind, id) => {
         const slot = taskRuntime?.dsh.reserveWaitResume(kind, id)
         return !slot || !('problem' in slot)
       },
-      onQuestionAnswer: (entry, answers, operation) => {
+      onQuestionAnswer: async (entry, answers, operation) => {
         const conversation = entry.taskId ? historyDb.bySession(entry.sessionId)?.id : entry.context?.conversationId
         if (!conversation) return
         const answerContext: MemoryScope = entry.taskId ? { kind: 'task', id: entry.sessionId } : { kind: 'user' }
         const answerSources = Object.create(null) as Record<string, string>
         const requestOperation = operation ?? randomUUID()
+        const bridge = lifetime.isCurrent() ? dsh.current : null
+        const items: Array<{ id: string, operationId: string, text: string }> = []
         for (const answer of answers) {
           const text = answer.custom?.trim(), question = entry.question.questions.find(card => card.id === answer.id)
           if (!text || !question) continue
           const digest = createHash('sha256').update(JSON.stringify([requestOperation, answer.id])).digest('hex')
           const operationId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
-          answerSources[answer.id] = operationId
-          if (entry.turn !== undefined && !memoryOffline()) void memoryOwner.channel.callIntake('acceptQuestionAnswer', { operationId, text,
-            session: entry.sessionId, turn: entry.turn, conversation, cards: entry.question.questions,
-            requestId: entry.question.id, questionId: answer.id,
-            context: answerContext, questionAt: entry.askedAt,
-            ...(entry.questionProfileGen !== undefined ? { questionProfileGen: entry.questionProfileGen } : {}) }).catch(error => emitDiagnosticFailure('memory.intake', error))
+          items.push({ id: answer.id, operationId, text })
+        }
+        if (items.length && entry.turn !== undefined && bridge) {
+          const budget = createRequestBudget(500)
+          try {
+            if (!bridge.memory.ready()) {
+              try { await bridge.memory.waitReady(budget.remainingMs()) }
+              catch (error) { emitDiagnosticFailure('memory.intake', error) }
+            }
+            if (bridge.memory.ready()) {
+              let budgetMs = 0
+              try { budgetMs = budget.remainingMs() } catch { budgetMs = 0 }
+              if (budgetMs > 0) {
+                for (const item of items) answerSources[item.id] = item.operationId
+                await Promise.all(items.map(item =>
+                  bridge.memory.callIntake('acceptQuestionAnswer', {
+                    operationId: item.operationId, text: item.text,
+                    session: entry.sessionId, turn: entry.turn!, conversation, cards: entry.question.questions,
+                    requestId: entry.question.id, questionId: item.id,
+                    context: answerContext, questionAt: entry.askedAt,
+                    ...(entry.questionProfileGen !== undefined ? { questionProfileGen: entry.questionProfileGen } : {}),
+                  }, { budgetMs })
+                    .catch(error => {
+                      emitDiagnosticFailure('memory.intake', error)
+                      const err = objectOf(error)
+                      // Delete sourceId only when definitely unsent or explicitly rejected by worker;
+                      // keep deterministic ID when outcome is unknown (timeout or disconnect after send).
+                      if (err?.unsent === true || (err?.code !== 'timeout' && err?.code !== 'unavailable')) {
+                        delete answerSources[item.id]
+                      }
+                    }),
+                ))
+              }
+            }
+          } finally { budget.close() }
         }
         if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
         return { sourceIds: answerSources }
@@ -1667,7 +1775,6 @@ ${question}` : question
     openHistory(config)
     openPersonal(config)
     routeSignals(core)
-    void memoryOwner.prepare().catch(error => emitDiagnosticFailure('memory.owner', error))
   }
 
   /** The computer back from sleep, or unlocked: schedules due meanwhile run. */
@@ -1679,7 +1786,9 @@ ${question}` : question
   function close() {
     retireForegroundRequests()
     closed = true
-    void memoryOwner.close().catch(error => emitDiagnosticFailure('shutdown', error))
+    clearAliasRetryTimer()
+    pendingAliases.clear()
+    inflightAliases.clear()
     for (const timer of historyPurgeTimers) clearTimeout(timer)
     historyPurgeTimers.clear()
     scheduleRuns?.close()
@@ -1713,7 +1822,7 @@ ${question}` : question
       if (added.made) feedChanged()
     },
     agentPid: () => dsh.current?.pid() ?? null,
-    memoryOwnerPid: memoryOwner.pid,
+    memoryOwnerPid: () => dsh.current?.memoryOwnerPid() ?? null,
     publishAutomation: (value: unknown) => {
       if (!host.automation) throw new Error('Only available to external automation')
       if (!value || typeof value !== 'object') throw new Error('Invalid automation event')
@@ -1727,11 +1836,10 @@ ${question}` : question
     markQuitting() {
       dsh.markQuitting()
     },
-    /** Quitting stops both supervised processes. A regular dsh restart leaves the owner available. */
+    /** Quitting stops dsh and its supervised child memory worker. */
     async stop() {
       clearReportWake()
       await dsh.stopWithin()
-      if (dsh.isQuitting()) await memoryOwner.close()
     },
     wakeReports: wakeEffects,
     close: () => { clearReportWake(); close() },

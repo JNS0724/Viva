@@ -2,13 +2,10 @@ import { randomUUID } from 'node:crypto'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
-import { ChildProcess } from 'node:child_process'
-import { ownerRpcFrame } from '../../src/memory/contracts/owner-rpc.ts'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { TestContext } from 'node:test'
 import { createAcpBridge } from '../../src/backend/acp-bridge.ts'
-import { createDesktopMemoryOwner } from '../../src/backend/desktop-memory-owner.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../../src/backend/app-plugins.ts'
 import { DSH_PROFILE } from '../../src/backend/config.ts'
 import { ensureDshProfile, vivaLayerFile } from '../../src/backend/dsh-profile.ts'
@@ -70,14 +67,12 @@ export async function startHarness(t: TestContext, { mcpServers = [], prewarmSes
   const pnpmCommand = pnpmLauncher({ dir: path.join(dir, 'bin'), appRoot: ROOT, runtime: RUNTIME })
   const writeProfile = () => ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA, models: models?.(llm), imagesDir: imagesDir?.(dir), pnpmCommand })
   writeProfile()
-  const memoryOwner = createDesktopMemoryOwner({ root: path.join(userData, 'memory'), dailyNotes: true }, {})
   const bridges: Bridge[] = []
   const closers: Array<() => void> = []
   t.after(async () => {
     // dsh runs in the workspace: on Windows it cannot go until the process has exited.
     try {
       await Promise.all(bridges.map((bridge) => bridge.dispose()))
-      await memoryOwner.close()
       for (const close of [...closers].reverse()) close()
       await llm.close()
     } finally {
@@ -98,13 +93,12 @@ export async function startHarness(t: TestContext, { mcpServers = [], prewarmSes
       mcpServers: () => mcpServers,
       prewarmSessions,
       configActions,
-      memoryOwner,
-      recordSource: async ({ session, sourceId, text, wireText, wireSpans, task }) => {
-        if (!memoryOwner.channel.ready()) return
+      recordSource: ({ session, sourceId, text, wireText, wireSpans, task }) => {
+        if (!created.memory.ready()) return
         const operationId = randomUUID()
-        await memoryOwner.channel.callIntake('sourceAlias', { operationId, sourceId: sourceId ?? operationId, session,
+        void created.memory.callIntake('sourceAlias', { operationId, sourceId: sourceId ?? operationId, session,
           conversation: session, text, wireText, wireSpans, cwd: workspace, origin: sourceId ? 'original' : 'derived',
-          ...(task ? { context: { kind: 'task', id: session } } : {}) })
+          ...(task ? { context: { kind: 'task', id: session } } : {}) }).catch(() => {})
       },
 
       emit: (event) => {
@@ -116,7 +110,6 @@ export async function startHarness(t: TestContext, { mcpServers = [], prewarmSes
     })
     const start = created.start
     created.start = async input => {
-      await memoryOwner.prepare()
       const result = await start(input)
       await created.memory.waitReady()
       return result
@@ -169,21 +162,4 @@ export async function eventually<T>(read: () => T, { timeoutMs = 15_000, interva
     if (value || Date.now() > deadline) return value
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
-}
-
-/** Simulate a slow owner receipt without delaying ACP output, turn completion, or other RPCs. */
-export function delayNativeOutputReceipts(t: TestContext, pid: () => number | null | undefined, delayMs: number) {
-  const emit = ChildProcess.prototype.emit
-  let count = 0
-  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    const frame = this.pid === pid() && event === 'message' ? ownerRpcFrame(args[0]) : null
-    const method = frame?.kind === 'request' && frame.method === 'adapter' ? objectOf(frame.input)?.method : null
-    if (method === 'finishNativeOutput') {
-      count++
-      setTimeout(() => Reflect.apply(emit, this, [event, ...args]), delayMs)
-      return true
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
-  return () => count
 }

@@ -8,10 +8,40 @@ import { isDailyMemoryStage, memoryComputeFailure } from '../../../src/memory/co
 import { memorySource } from './source.ts'
 import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
 import type { MemoryComputeTools } from '../../../src/memory/contracts/compute.ts'
+import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
 
-export function memoryProviderFailure(code: unknown) {
+export const MAX_RETRY_AFTER_MS = 3_600_000
+
+function parseRetryAfterMs(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined
+  return Math.min(MAX_RETRY_AFTER_MS, Math.ceil(raw))
+}
+
+export function memoryProviderFailure(input: unknown): MemoryComputeError | undefined {
+  if (typeof input === 'string') {
+    if (input === CONTEXT_WINDOW_EXCEEDED_CODE) return new MemoryComputeError('context-window-exceeded')
+    if (input === 'TIMEOUT') return new MemoryComputeError('timeout')
+    if (input === 'RATE_LIMIT') return new MemoryComputeError('rate-limited')
+    if (input === 'SERVER' || input === 'TRANSPORT' || input === 'STREAM_CLOSED') return new MemoryComputeError('provider-overloaded')
+    return undefined
+  }
+  const obj = objectOf(input)
+  if (!obj) return undefined
+  const nested = objectOf(obj.failure)
+  const source = nested ?? obj
+  const code = source.code ?? obj.code
+  const status = typeof source.status === 'number' ? source.status : typeof obj.status === 'number' ? obj.status : undefined
+  const retryAfterMs = parseRetryAfterMs(source.providerRetryAfterMs ?? obj.providerRetryAfterMs)
   if (code === CONTEXT_WINDOW_EXCEEDED_CODE) return new MemoryComputeError('context-window-exceeded')
   if (code === 'TIMEOUT') return new MemoryComputeError('timeout')
+  if (code === 'RATE_LIMIT' || status === 429) {
+    return new MemoryComputeError('rate-limited', retryAfterMs !== undefined ? { retryAfterMs } : undefined)
+  }
+  if (code === 'SERVER' || code === 'TRANSPORT' || code === 'STREAM_CLOSED'
+    || (status !== undefined && status >= 500 && status <= 599)) {
+    return new MemoryComputeError('provider-overloaded', retryAfterMs !== undefined ? { retryAfterMs } : undefined)
+  }
+  return undefined
 }
 
 /** Each job owns native message/reasoning replay; no state is shared across dream units. */
@@ -48,7 +78,7 @@ export async function completeMemoryModel(ctx: Pick<Context, 'llm'>, job: Memory
     }
     if (assembler.finish?.kind !== 'tool-calls' || !capability || !calls.length) {
       if (assembler.finish?.kind === 'error') {
-        const error = memoryProviderFailure(assembler.finish.failure.code)
+        const error = memoryProviderFailure(assembler.finish.failure)
         if (error) throw error
       }
       const parsed = memoryComputeFailure.safeParse(assembler.finish?.kind)

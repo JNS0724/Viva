@@ -2,6 +2,7 @@ import type { MemoryRuntimeResources } from './ports/runtime.ts'
 import { beginDiagnosticOperation } from '../../diagnostics/operation.ts'
 import { guardDiagnosticPort, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
 import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
+import { MemoryComputeError } from '../contracts/compute.ts'
 import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
 import { NOTE_SYSTEM, WRITE_NOTE, noteReply } from './memory-notes.ts'
@@ -200,14 +201,29 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       try {
         const outcome = await job(effect)
         outcomes.set(effect.key, outcome)
-        observation.end(outcome === 'retry' ? 'failed' : 'completed', {
-          stage: outcome === 'wait' ? 'waiting' : outcome === 'retry' ? 'queued' : 'checkpoint',
-          reason: outcome === 'retry' ? 'retry' : outcome === 'wait' ? 'external_wake' : 'normal' })
+        const isRetry = outcome === 'retry' || (typeof outcome === 'object' && outcome.kind === 'retry')
+        const isWait = outcome === 'wait' || (typeof outcome === 'object' && outcome.kind === 'defer')
+        observation.end(isRetry ? 'failed' : 'completed', {
+          stage: isWait ? 'waiting' : isRetry ? 'queued' : 'checkpoint',
+          reason: isRetry ? 'retry' : isWait ? 'external_wake' : 'normal' })
       } catch (error) {
+        if (error instanceof MemoryComputeError && error.reason === 'deferred') {
+          const delayMs = error.retryAfterMs ?? 3_000
+          observation.end('completed', { stage: 'waiting', reason: 'external_wake' })
+          diagnostics.emit({ event: 'operation.progress', operation: 'memory.daily', stage: 'waiting', reason: 'external_wake',
+            identities: { jobId: effect.key, generation: effect.generation }, metrics: { attempt: effect.attempts, retryDelayMs: delayMs } })
+          outcomes.set(effect.key, { kind: 'defer', delayMs })
+          continue
+        }
+        const retryAfterMs = error instanceof MemoryComputeError ? error.retryAfterMs : undefined
+        const retryOutcome: Outcome = retryAfterMs !== undefined
+          ? { kind: 'retry', delayMs: retryAfterMs, cooldown: true }
+          : 'retry'
+        const delayMs = retryAfterMs ?? Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** effect.attempts)
         observation.fail(error)
         diagnostics.emit({ event: 'operation.progress', operation: 'memory.daily', stage: 'queued', reason: safeDiagnosticReason(error),
-          identities: { jobId: effect.key, generation: effect.generation }, metrics: { attempt: effect.attempts, retryDelayMs: Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** effect.attempts) } })
-        outcomes.set(effect.key, 'retry')
+          identities: { jobId: effect.key, generation: effect.generation }, metrics: { attempt: effect.attempts, retryDelayMs: delayMs } })
+        outcomes.set(effect.key, retryOutcome)
       }
     }
     return outcomes

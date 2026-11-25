@@ -1,6 +1,5 @@
 import type { SessionWaits } from '../shared/ipc-results.ts'
 import { diagnosticHub } from '../diagnostics/node/hub.ts'
-import { emitDiagnosticFailure } from '../diagnostics/node/context.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -17,8 +16,7 @@ import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk, interjection, NO_PLUGIN } from './steer-channel.ts'
-import { createRemoteMemoryChannel, MemoryOwnerUnavailable } from './remote-memory-channel.ts'
-import type { DesktopMemoryOwner } from './desktop-memory-owner.ts'
+import { createRemoteMemoryChannel } from './remote-memory-channel.ts'
 import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
 import { withRequestSource } from '../shared/request-routing/header.ts'
 import { withTaskRequestSource } from '../shared/request-routing/task-header.ts'
@@ -91,7 +89,7 @@ export function createAcpBridge({
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
   launch = null as object | null, routing, onQuestionAnswer, admitTaskWaitResume, onSessionCreated, projectMatches, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed,
-  allowGeneralQuestion, recordSource, memoryOwner,
+  allowGeneralQuestion, recordSource,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -116,7 +114,6 @@ export function createAcpBridge({
   allowGeneralQuestion?: (session: string, turn: string | undefined, questions: readonly import('./question-channel.ts').Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') =>
     import('./question-channel.ts').QuestionAdmission | Promise<import('./question-channel.ts').QuestionAdmission>,
   readyMemory?: () => void,
-  memoryOwner?: DesktopMemoryOwner,
   memoryContextUsed?: (notice: import('../memory/contracts/host.ts').MemoryOwnerContextUsed) => void,
   memoryNotice?: (notice: import('../memory/contracts/host.ts').MemoryOwnerChange) => void,
   memoryStateChanged?: (state: import('../memory/contracts/host.ts').MemoryOwnerState) => void,
@@ -162,8 +159,10 @@ export function createAcpBridge({
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.turn(id) ? operations.context(id) : null : undefined
+  let currentProfileDeletionGen: number | undefined
+  let currentMemoryOwnerPid: number | null = null
   const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer,
-    profileDeletionGen: () => memoryOwner?.profileDeletionGen(),
+    profileDeletionGen: () => currentProfileDeletionGen,
     allowGeneralQuestion: async (session, cards, waiting, phase) => {
       if (taskSessions.isUnattended(session)) return false
       if (!allowGeneralQuestion) return true
@@ -194,20 +193,25 @@ export function createAcpBridge({
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: activeToolSession })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: activeToolSession })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update) })
-  const legacyMemory = memoryOwner ? undefined : createRemoteMemoryChannel({ send: toPlugins, onReady: readyMemory, onChanged: memoryStateChanged,
-    onNotice: memoryNotice, onContextUsed: memoryContextUsed })
-  const ownerChannel = memoryOwner?.channel ?? legacyMemory!
-  let adapterLink: ReturnType<DesktopMemoryOwner['bindDsh']> | undefined
-  let foregroundMemory: { session: string, lifetime: AbortController } | undefined
-  function foregroundMemoryLifetime(id: string) {
-    if (foregroundMemory?.session !== id) foregroundMemory = { session: id, lifetime: new AbortController() }
-    return foregroundMemory.lifetime
-  }
+  const ownerChannel = createRemoteMemoryChannel({
+    send: toPlugins,
+    onReady: readyMemory,
+    onChanged: state => {
+      if (state.profileDeletionGen !== undefined) currentProfileDeletionGen = state.profileDeletionGen
+      currentMemoryOwnerPid = state.state === 'unavailable' ? null : (state.pid ?? currentMemoryOwnerPid)
+      memoryStateChanged?.(state)
+    },
+    onNotice: memoryNotice,
+    onContextUsed: memoryContextUsed,
+  })
   const memory = {
-    call: ownerChannel.call, state: ownerChannel.state, readBatch: ownerChannel.readBatch,
-    ready: () => memoryOwner ? adapterLink?.ready() === true : ownerChannel.ready(),
-    waitReady: () => adapterLink ? adapterLink.waitReady() : ownerChannel.waitReady(),
-    receive: (raw: unknown) => legacyMemory?.receive(raw) ?? false,
+    call: ownerChannel.call,
+    callIntake: ownerChannel.callIntake,
+    state: ownerChannel.state,
+    readBatch: ownerChannel.readBatch,
+    ready: ownerChannel.ready,
+    waitReady: ownerChannel.waitReady,
+    receive: ownerChannel.receive,
   }
   // The main conversation routes every request (the viva-routing plugin); its role is bound before each prompt.
   const routingDesk = createRoutingDesk({ send: toPlugins, handlers: routing })
@@ -269,19 +273,8 @@ export function createAcpBridge({
 
   function spawnRuntime() {
     const { command, args } = dshLaunch(dshBin, nodeBin, profile, overlay)
-    const proc = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-      ...(memoryOwner ? { serialization: 'advanced' } : {}),
-    })
+    const proc = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
     child = proc
-    try {
-      adapterLink = memoryOwner?.bindDsh(frame => {
-        if (!proc.connected || !proc.send) throw new MemoryOwnerUnavailable('dsh disconnected from memory owner')
-        proc.send(frame, () => {})
-      }, new Promise<void>(resolve => {
-        proc.once('close', () => resolve())
-        proc.once('exit', () => resolve())
-      }), id => id === sessionId ? foregroundMemoryLifetime(id).signal : undefined, readyMemory)
-    } catch (error) { emitDiagnosticFailure('memory.owner', error, { stage: 'unavailable' }) }
     const diagnostics = diagnosticHub()?.attach('dsh', (message, settled) => {
       if (proc.connected && proc.send) proc.send(message, settled)
       else settled(new Error('Diagnostic child disconnected'))
@@ -290,8 +283,8 @@ export function createAcpBridge({
     if (launch) proc.send?.(launch, (err) => { if (err) console.error('[dsh] launch not sent:', err.message) })
     proc.on('message', (message) => {
       if (diagnostics?.receive(message)) return
-      // Allow a retiring plugin to complete its last memory sends until the actual process exit.
-      if (adapterLink?.receive(message) || disposed || toolWatchdog.receive(message)) return
+      if (disposed || toolWatchdog.receive(message)) return
+      if (ownerChannel.receive(message)) return
       const traceMessage = objectOf(message)
       if (traceMessage?.type === 'trace_model_call' && traceMessage.version === 1 && typeof traceMessage.sessionId === 'string') {
         const id = traceMessage.sessionId
@@ -311,7 +304,6 @@ export function createAcpBridge({
       void historyDesk.receive(message)
       pluginsDesk.receive(message)
       streams.receive(message)
-      legacyMemory?.receive(message)
       routingDesk.receive(message)
       mcpDesk.receive(message)
     })
@@ -324,8 +316,9 @@ export function createAcpBridge({
       toolWatchdog.clear()
       fresh.dispose()
       operations.dispose()
-      legacyMemory?.close()
-      legacyMemory?.processExited()
+      currentMemoryOwnerPid = null
+      ownerChannel.processExited()
+      ownerChannel.close()
       taskSessions.dispose()
       pluginsDesk.close()
       routingDesk.close()
@@ -373,25 +366,17 @@ export function createAcpBridge({
     preparePrompt: async (id, text) => {
       const wrapped = withTaskRequestSource(text, randomUUID())
       recordSource?.({ session: id, text, wireText: wrapped.text, wireSpans: wrapped.spans, task: true })
-      memoryOwner?.startPrefetch({ requestId: wrapped.requestId, sessionId: id, queryText: text, cwd: sessionCwd, context: { kind: 'task', id } })
       return wrapped.text
     },
     steer: async (id, text) => {
       const wrapped = withTaskRequestSource(text, randomUUID())
       recordSource?.({ session: id, text, wireText: wrapped.text, wireSpans: wrapped.spans, task: true })
-      memoryOwner?.startPrefetch({ requestId: wrapped.requestId, sessionId: id, queryText: text, cwd: sessionCwd, context: { kind: 'task', id } })
-      const steered = await steering.steer(wrapped.text, id)
-      if (!steered.ok && steered.reason !== NO_PLUGIN) memoryOwner?.cancelPrefetch(id, wrapped.requestId)
-      return steered
+      return steering.steer(wrapped.text, id)
     },
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
-  const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask: closeTaskSession, steerTask } = taskSessions
-  const closeTask = (taskId: string) => {
-    memoryOwner?.clearSessionPrefetches(taskId)
-    return closeTaskSession(taskId)
-  }
+  const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
 
   async function openSession(beforeOpen?: () => Promise<unknown>) {
     const measure = sessionTiming(onTiming)
@@ -519,9 +504,6 @@ export function createAcpBridge({
     if (asked && request) recordSource?.({ session: asked, sourceId, text: effectiveSourceText, wireText: words, wireSpans: routed?.spans })
     if (held && !held()) throw new ForegroundRequestRetired()
     if (asked !== sessionId || isSwitching() || disposed || recoveryRequired) throw new Error(switchingMessage())
-    if (asked && routed) {
-      memoryOwner?.startPrefetch({ requestId: routed.requestId, sessionId: asked, queryText: effectiveSourceText, cwd: sessionCwd })
-    }
     routed?.register()
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
@@ -530,21 +512,13 @@ export function createAcpBridge({
     await operations.run({
       sessionId: asked, prompt: blocks, context, userTurn, held, onStart,
       prepare: asked ? () => routingDesk.bind(asked) : undefined,
-      onCancelled: () => {
-        if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
-      },
       onEnd: (response, finalReply) => {
-        if (asked && routed) {
-          if (response.stopReason === 'cancelled') memoryOwner?.cancelPrefetch(asked, routed.requestId)
-          else memoryOwner?.finishPrefetch?.(asked, routed.requestId)
-        }
         if (asked === sessionId) toolWatchdog.clear()
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
         else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason,
           ...(response.stopReason === 'end_turn' && finalReply !== undefined ? { finalReply } : {}), ...scoped(context) })
       },
       onError: error => {
-        if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
         if (asked === sessionId) toolWatchdog.clear()
         const message = describeError(error, stderrTail)
         if (isTask(asked)) { if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message }) }
@@ -563,7 +537,6 @@ export function createAcpBridge({
     return operations.cancelInTime(asked, () => {
       if (asked !== sessionId || disposed) return
       recoveryRequired = true
-      foregroundMemoryLifetime(asked).abort(new MemoryOwnerUnavailable('Foreground memory session was stopped'))
       settle('cancel_unconfirmed')
     }, {
       onRequested() {
@@ -597,7 +570,6 @@ export function createAcpBridge({
         catch (err) { console.error('[acp-bridge] cancel failed; still closing session:', describeError(err)) }
       }
       await measure('session.close', () => live().closeSession({ sessionId: id }))
-      memoryOwner?.clearSessionPrefetches(id)
     })()
     closing.set(id, cleanup)
     void cleanup.then(() => {
@@ -715,14 +687,12 @@ export function createAcpBridge({
     recordSource?.({ session: asked, sourceId, text, wireText: wrapped, wireSpans: spans })
     if (!held()) return retired()
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
-    memoryOwner?.startPrefetch({ requestId: request.requestId, sessionId: asked, queryText: text, cwd: sessionCwd })
     request.register()
     onDispatch?.()
     const result = await steering.steer(wrapped, asked, { fast: true })
     // A lost transport receipt leaves the request routable if the native inbox took it.
     if (!result.ok && result.reason !== NO_PLUGIN) {
       undelivered()
-      memoryOwner?.cancelPrefetch(asked, request.requestId)
     }
     return result
   }
@@ -774,7 +744,8 @@ export function createAcpBridge({
     toolWatchdog.clear()
     fresh.dispose()
     operations.dispose()
-    legacyMemory?.close()
+    currentMemoryOwnerPid = null
+    ownerChannel.close()
     taskSessions.dispose()
     broker.cancelAll()
     steering.closeAll()
@@ -800,6 +771,7 @@ export function createAcpBridge({
 
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
+  const memoryOwnerPid = () => (child && isRunning(child) ? currentMemoryOwnerPid : null)
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
@@ -822,5 +794,5 @@ export function createAcpBridge({
     }
   }
 
-  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, bindFeedSourceSession, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, needsRecovery: () => recoveryRequired, isSwitching, dispose, pid, memory }
+  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, bindFeedSourceSession, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, needsRecovery: () => recoveryRequired, isSwitching, dispose, pid, memoryOwnerPid, memory }
 }

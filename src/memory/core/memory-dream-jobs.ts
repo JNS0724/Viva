@@ -40,6 +40,7 @@ export type DreamCalculate = (request: {
   sourceIds: () => readonly string[], current: () => boolean,
   observe?: (signal?: AbortSignal) => Promise<() => boolean>,
   tools?: MemoryComputeTools,
+  manual?: boolean,
 }) => Promise<string | undefined>
 
 type FileRef = {
@@ -640,7 +641,20 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     const today = todayAt(now(), timezone)
     const from = new Date(Date.parse(today) - (scanDays - 1) * DAY_MS).toISOString().slice(0, 10)
     let scanRetry = false
+    let cooldownDelayMs: number | undefined
+    let deferDelayMs: number | undefined
     let deferredRetry = false
+    const isManualJob = () => Boolean(store.meta(MANUAL_JOB))
+    const recordComputeFailure = (error: unknown) => {
+      if (error instanceof MemoryComputeError && error.reason === 'deferred') {
+        deferDelayMs = Math.max(deferDelayMs ?? 0, error.retryAfterMs ?? 3_000)
+        return
+      }
+      if (error instanceof MemoryComputeError && error.retryAfterMs !== undefined) {
+        cooldownDelayMs = Math.max(cooldownDelayMs ?? 0, error.retryAfterMs)
+      }
+      scanRetry = true
+    }
     let waitingForAdmission = false
     let processedAny = false
     let oversizedAny = false
@@ -1422,6 +1436,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               job, stage: 'consolidate', system: DREAM_CONSOLIDATE_SYSTEM, input,
               sourceIds: () => [...readSources.keys()], current, observe,
               tools: { tools: tools.tools, executeTool: tools.executeTool },
+              manual: isManualJob(),
             })
             if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; scanRetry = true; return }
             if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
@@ -1625,7 +1640,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (error instanceof MemoryDreamStaleError) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
             if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'consolidate', attempt)
             stopPass = true
-            scanRetry = true
+            recordComputeFailure(error)
             return
           }
         }
@@ -1773,6 +1788,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                     job, stage: 'consolidate', system: DREAM_PROFILE_SYSTEM, input: profileInput,
                     sourceIds: () => profileReadRefs.map(ref => ref.id),
                     current: profileCurrent, observe: profileObserve,
+                    manual: isManualJob(),
                   })
                   if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; scanRetry = true; return }
                   if (!await profileInputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
@@ -1858,7 +1874,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   if (error instanceof MemoryDreamStaleError) { progress(job, 'source_changed', 'consolidate', attempt); scanRetry = true; return }
                   if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'consolidate', attempt)
                   stopPass = true
-                  scanRetry = true
+                  recordComputeFailure(error)
                   return
                 }
               }
@@ -1940,9 +1956,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       for (const batch of batchDreamNotes(candidates, dreamBatchBytes)) await consume(batch)
     }
 
+    if (cooldownDelayMs !== undefined) return { kind: 'retry', delayMs: cooldownDelayMs, cooldown: true }
     if (!effects.holds(job)) return 'done'
     if (waitingForAdmission) return 'wait'
     if (scanRetry) return 'retry'
+    if (deferDelayMs !== undefined) return { kind: 'defer', delayMs: deferDelayMs }
     let followupQueued = false
     transaction(() => {
       const at = now()
@@ -1983,7 +2001,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const outcome = await runJob(job)
         if (outcome === 'wait') waitingGeneration = job.generation
         outcomes.set(job.key, outcome)
-        progress(job, outcome === 'retry' ? 'retry' : outcome === 'wait' ? 'external_wake' : 'normal')
+        const isRetry = outcome === 'retry' || (typeof outcome === 'object' && outcome.kind === 'retry')
+        const isWait = outcome === 'wait' || (typeof outcome === 'object' && outcome.kind === 'defer')
+        progress(job, isRetry ? 'retry' : isWait ? 'external_wake' : 'normal')
       } catch (error) { progress(job, safeDiagnosticReason(error)); outcomes.set(job.key, 'retry') }
       finally { active = false }
     }

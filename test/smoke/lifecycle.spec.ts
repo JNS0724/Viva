@@ -37,6 +37,8 @@ test('intentional dsh restarts settle the old foreground turn @lifecycle', async
   const owner = await hooks.memoryOwnerPid()
   expect(owner).toBeTruthy()
 
+  let previousOwner = owner
+
   for (const restart of ['model', 'key']) {
     // A foreground turn waiting on the user: an app operation's approval card (the main conversation asks no question cards).
     await submit(win, '帮我接入演示服务')
@@ -60,7 +62,12 @@ test('intentional dsh restarts settle the old foreground turn @lifecycle', async
       const info = await window.agent.getInfo(), send = document.getElementById('send-btn')
       return info.sessionId && info.sessionId !== ${JSON.stringify(previous)} && !send.disabled && send.dataset.busy === 'false'
     })()`, 'the new-topic UI and backend busy guard both accepting the next session')
-    expect(await hooks.memoryOwnerPid()).toBe(owner)
+    await expect.poll(async () => {
+      const nextOwner = await hooks.memoryOwnerPid()
+      if (!nextOwner || nextOwner === previousOwner) return false
+      return await run(win, `window.agent.getMemory().then(result => typeof result.revision === 'number', () => false)`)
+    }, { timeout: 20_000 }).toBe(true)
+    previousOwner = await hooks.memoryOwnerPid()
   }
 
   const title = '生命周期重启后的后台任务'
@@ -79,8 +86,6 @@ test('Stop reports a frozen runtime and preserves the editable draft through rec
   if (!pid) throw new Error('Missing test dsh process')
   const paused = await pauseOwnedProcess(pid)
   try {
-    // Memory management reads use the backend-to-owner path while the Agent is frozen.
-    await expect(page.evaluate(() => window.agent.getMemory().then(memory => typeof memory.revision === 'number'))).resolves.toBe(true)
     await page.locator('#send-btn[data-busy="true"]').click()
     await expect(page.locator('.msg-working')).toContainText('正在停止', { timeout: 2_000 })
     const draft = page.locator('#composer-input')
@@ -101,6 +106,7 @@ test('Stop reports a frozen runtime and preserves the editable draft through rec
     await paused.resume()
     await recover.click()
     await expect.poll(() => hooks.agentPid(), { timeout: 20_000 }).not.toBe(pid)
+    await expect.poll(() => page.evaluate(() => window.agent.getMemory().then(memory => typeof memory.revision === 'number', () => false)), { timeout: 20_000 }).toBe(true)
     await expect(page.locator('#send-btn')).toBeEnabled()
     await expect(draft).toHaveValue('停止后保留的草稿')
     await page.locator('#send-btn').click()

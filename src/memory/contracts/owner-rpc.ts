@@ -5,7 +5,7 @@ export const OWNER_RPC_MAX_BUDGET_MS = 3_600_000
 export const OWNER_RPC_DEFAULT_BUDGET_MS = 5_000
 export const OWNER_RPC_MAX_ACTIVE = 64
 
-type Failure = { message: string, code?: string, reason?: string, details?: MemoryDomainErrorDetails }
+type Failure = { message: string, code?: string, reason?: string, retryAfterMs?: number, details?: MemoryDomainErrorDetails }
 type Envelope = { type: typeof MEMORY_OWNER_RPC }
 export type OwnerRpcFrame = Envelope & (
   | { kind: 'request', id: string, method: string, input: unknown, budgetMs: number }
@@ -31,6 +31,8 @@ export function ownerRpcFrame(value: unknown): OwnerRpcFrame | null {
       if (value.ok === true) return value as OwnerRpcFrame
       if (value.ok === false && 'error' in value && value.error && typeof value.error === 'object'
         && 'message' in value.error && typeof value.error.message === 'string') {
+        if ('retryAfterMs' in value.error && value.error.retryAfterMs !== undefined
+          && (typeof value.error.retryAfterMs !== 'number' || !Number.isInteger(value.error.retryAfterMs) || value.error.retryAfterMs <= 0)) return null
         if ('details' in value.error && value.error.details !== undefined
           && !memoryDomainErrorDetails.safeParse(value.error.details).success) return null
         return value as OwnerRpcFrame

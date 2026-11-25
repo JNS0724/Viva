@@ -22,10 +22,15 @@ const state = (epoch: string, status = 'ready') => ({ type: 'memory_owner_state'
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 function channelFixture() {
   const sent: Array<Record<string, unknown>> = []
-  const channel = createRemoteMemoryChannel({ send: message => sent.push(message as Record<string, unknown>) })
+  const cancels: Array<Record<string, unknown>> = []
+  const channel = createRemoteMemoryChannel({ send: message => {
+    const record = message as Record<string, unknown>
+    if (record.type === 'memory_host_cancel') cancels.push(record)
+    else sent.push(record)
+  } })
   channel.receive(state('owner'))
   const answer = (index: number, result: unknown = index) => channel.receive({ type: 'memory_host_result', requestId: sent[index]!.requestId, epoch: sent[index]!.epoch, ok: true, result })
-  return { channel, sent, answer }
+  return { channel, sent, cancels, answer }
 }
 
 test('two expired callers retain actual read slots; late terminals settle before a third fresh retry', async t => {

@@ -54,7 +54,7 @@ for (const finish of ['stop', 'max-tokens', 'missing', 'timeout', 'context-windo
     const result = completeMemoryModel(ctx, job, new AbortController().signal)
     if (finish === 'stop') assert.equal(await result, 'partial or complete')
     else {
-      const expected = finish === 'missing' ? 'missing-finish' : finish === 'auth' || finish === 'rate-limit' ? 'error' : finish
+      const expected = finish === 'missing' ? 'missing-finish' : finish === 'rate-limit' ? 'rate-limited' : finish === 'auth' ? 'error' : finish
       await assert.rejects(result, error => error instanceof MemoryComputeError && error.reason === expected)
     }
   } finally { dispose() }

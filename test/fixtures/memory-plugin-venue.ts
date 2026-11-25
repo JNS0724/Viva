@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { NOTE_SYSTEM } from '../../src/memory/core/memory-notes.ts'
-import { DREAM_CONSOLIDATE_SYSTEM } from '../../src/memory/core/memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM, DREAM_PROFILE_SYSTEM } from '../../src/memory/core/memory-dream-prompts.ts'
 
 export const venue = Object.freeze({
   topic: '萤火读书会活动场地',
@@ -42,14 +42,15 @@ export function createVenueModelFixture() {
       const invoked = messages.flatMap(message => message.role === 'assistant' ? parts(message.content).filter(part => part.type === 'tool_use') : [])
       if (!invoked.length && notes.length) stages.push('consolidate')
       if (!notes.length) return { text: JSON.stringify({ operations: [] }) }
-      const actions = [
-        { name: 'node_search', input: { query: venue.archive } },
-        ...notes.map(note => ({ name: 'read', input: { path: note.path } })),
-      ]
+      const readActions = notes.map(note => ({ name: 'read' as const, input: { path: note.path } }))
       const results = messages.flatMap(message => message.role === 'user' ? parts(message.content).filter(part => part.type === 'tool_result') : [])
       let existingTarget = false
-      for (const [index, call] of invoked.entries()) {
-        const expected = actions[index]
+      let searchDone = false
+      let readIndex = 0
+      for (const call of invoked) {
+        const expected: { name: 'node_search', input: { query: string } } | { name: 'read', input: { path: string } } | undefined = !searchDone
+          ? { name: 'node_search', input: { query: venue.archive } }
+          : readActions[readIndex]
         assert.ok(expected && call.id && call.name === expected.name, 'the consolidate transcript contains the expected tool identity')
         const replies = results.filter(result => result.tool_use_id === call.id)
         assert.equal(replies.length, 1, `${call.name} must have exactly one real execution result`)
@@ -57,18 +58,22 @@ export function createVenueModelFixture() {
         assert.notEqual(result.is_error, true, `${call.name} execution failed`)
         const parsed: unknown = JSON.parse(typeof result.content === 'string' ? result.content : text(result.content as Part[]))
         if (call.name === 'node_search') {
-          const list = Array.isArray(parsed) ? parsed : (json(parsed)?.nodes as unknown[] | undefined)
+          const obj = json(parsed)
+          const list = Array.isArray(parsed) ? parsed : (obj?.nodes as unknown[] | undefined)
           assert.ok(Array.isArray(list), 'node_search must return its actual node list')
           if (list.some(item => json(item)?.path === venue.target)) existingTarget = true
+          if (obj?.partial !== true) searchDone = true
         } else {
           const value = json(parsed)
           assert.ok(value && 'path' in expected.input && value.path === expected.input.path, `${call.name} returned the wrong document`)
           const markdown = value.markdown
           assert.ok(typeof markdown === 'string' && venue.facts.every(fact => markdown.includes(fact)), 'read must return the actual source daily body')
+          readIndex++
         }
         if (!succeeded.has(call.id)) { succeeded.add(call.id); tools.push(call.name!) }
       }
-      const nextAction = actions[invoked.length]
+      if (!searchDone) return { tool: { name: 'node_search', input: { query: venue.archive } } }
+      const nextAction = readActions[readIndex]
       if (nextAction) return { tool: nextAction }
       if (existingTarget && !invoked.some(call => call.name === 'read' && results.some(result => result.tool_use_id === call.id && String(result.content).includes(venue.target)))) {
         return { tool: { name: 'read', input: { path: venue.target } } }
@@ -87,6 +92,7 @@ export function createVenueModelFixture() {
         }),
       }
     }
+    if (system === DREAM_PROFILE_SYSTEM) return { text: JSON.stringify({ action: 'NOOP' }) }
     return null
   }
   return { decide, report: () => ({ stages: [...stages], tools: [...tools] }) }

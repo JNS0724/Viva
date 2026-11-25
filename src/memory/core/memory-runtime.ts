@@ -597,7 +597,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       let diagnosticReason: DiagnosticReason | undefined = 'denied'
       try {
         const result = compute({ id, sourceId: sources[0]!, stage: 'dream', generation: request.job.generation,
-          ...model, system: request.system, input: JSON.stringify(request.input) }, undefined, request.tools)
+          ...model, system: request.system, input: JSON.stringify(request.input),
+          ...(request.manual ? { manual: true } : {}) }, undefined, request.tools)
         if (!result) return
         const text = await result
         const valid = await fresh() && !closed && request.sourceIds().every(fileSourceCurrent) && store.revision() === snapshotRevision

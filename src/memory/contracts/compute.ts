@@ -9,9 +9,11 @@ export interface MemoryComputeTools {
 
 export class MemoryComputeError extends Error {
   readonly reason: MemoryComputeFailure | 'oversize-reply' | 'missing-reply' | 'context-window-exceeded'
+  readonly retryAfterMs?: number
 
-  constructor(reason: MemoryComputeError['reason']) {
+  constructor(reason: MemoryComputeError['reason'], options?: { retryAfterMs?: number }) {
     super('memory model computation did not finish')
     this.reason = reason
+    if (options?.retryAfterMs !== undefined) this.retryAfterMs = options.retryAfterMs
   }
 }

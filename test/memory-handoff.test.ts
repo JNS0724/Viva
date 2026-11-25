@@ -2,7 +2,7 @@ import { ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import { objectOf } from '../src/shared/unknown-value.ts'
 import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
 import assert from 'node:assert/strict'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { ChildProcess } from 'node:child_process'
 import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -125,6 +125,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   openBackend()
   await call('models:add', { name: 'Local fixture', api: 'anthropic-messages', baseURL: model.url, models: [{ id: 'deepseek-chat', image }], key: 'test-gateway-key' })
   assert.ok(await eventually(() => call<AgentInfo>('agent:info').sessionId))
+  assert.ok(await eventually(() => backend?.memoryOwnerPid() !== null))
   const prompts = new Map<string, { result: IpcResults['agent:prompt'], requestOffset: number, eventOffset: number }>()
   // This fixture only sends the synthetic text below. Keep failure evidence to
   // that prompt's model messages and host events, without transport credentials.
@@ -169,7 +170,10 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     } while (cursor)
     return result
   }
-  const restart = () => call<Promise<unknown>>('settings:set-permission', 'workspace-write')
+  const restart = async () => {
+    await call<Promise<unknown>>('settings:set-permission', 'workspace-write')
+    assert.ok(await eventually(() => backend?.memoryOwnerPid() !== null))
+  }
   async function schedule(text: string) {
     const sourceId = await ask(text)
     const proposal = events.findLast(event => event.type === 'schedule_propose')?.proposal
@@ -194,7 +198,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   }
   return { ask, call, defer, directory, events, feed, files, model, newTopic, recallOld, replace, restart, schedule, stopBackend, tasks,
     startBackend: () => openBackend().startBridge(),
-    wake: () => backend?.signal({ kind: 'system.woke' }), agentPid: () => backend?.agentPid() }
+    wake: () => backend?.signal({ kind: 'system.woke' }), agentPid: () => backend?.agentPid(), memoryOwnerPid: () => backend?.memoryOwnerPid() ?? null }
 }
 
 function messageTexts(request: Request) {
@@ -1085,6 +1089,7 @@ test('deleting a memory file preserves the original chat and the task and report
   assert.equal(result.status, 'applied')
   await app.stopBackend()
   await app.startBackend()
+  assert.ok(await eventually(() => app.memoryOwnerPid() !== null))
   assert.equal(await app.call('memory:read-file', file.identity), null)
   assert.equal(history.prepare('SELECT text FROM messages WHERE source_id=?').get(sourceId)?.text, oldFact)
   assert.deepEqual(reports(), before)
@@ -1194,7 +1199,7 @@ for (const hold of ['request', 'receipt'] as const) test(`memory alias ${hold} n
   const operationId = randomUUID()
   const words = '这段真人原话无需等待记忆回执'
   let release: (() => void) | undefined
-  let frameId: string | undefined
+  let requestId: string | undefined
   let cancelled = false
   let dispatchedBeforeTimeout = false
   let ownerResponse: { ok?: boolean } | undefined
@@ -1203,22 +1208,21 @@ for (const hold of ['request', 'receipt'] as const) test(`memory alias ${hold} n
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { sourceId?: string } } }
-        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
-          && frame.input?.method === 'sourceAlias' && frame.input.input?.sourceId === operationId) {
-          frameId = frame.id
+        const frame = message as { type?: string, requestId?: string, method?: string, input?: { sourceId?: string } }
+        if (frame?.type === 'memory_host_request' && frame.method === 'sourceAlias' && frame.input?.sourceId === operationId) {
+          requestId = frame.requestId
           if (hold === 'request') {
             release = () => { Reflect.apply(send, this, [message, ...rest]) }
             return true
           }
         }
-        if (frame?.type === 'routing_bind' && frameId && !cancelled) dispatchedBeforeTimeout = true
-        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'cancel' && frame.id === frameId) cancelled = true
+        if (frame?.type === 'routing_bind' && requestId && !cancelled) dispatchedBeforeTimeout = true
+        if (frame?.type === 'memory_host_cancel' && frame.requestId === requestId) cancelled = true
         return Reflect.apply(send, this, [message, ...rest]) as boolean
       })
     }
-    const frame = args[0] as { type?: string, kind?: string, id?: string, ok?: boolean } | undefined
-    if (event === 'message' && frameId && frame?.type === 'memory_owner_rpc' && frame.kind === 'result' && frame.id === frameId) {
+    const frame = args[0] as { type?: string, requestId?: string, ok?: boolean } | undefined
+    if (event === 'message' && requestId && frame?.type === 'memory_host_result' && frame.requestId === requestId) {
       ownerResponse = frame
       if (hold === 'receipt') {
         release = () => { Reflect.apply(emit, this, [event, ...args]) }
@@ -1245,48 +1249,20 @@ for (const hold of ['request', 'receipt'] as const) test(`memory alias ${hold} n
   } finally { database.close() }
 })
 
-test('DSH restarts and chats while the memory worker is reconciling its old adapter', { timeout: 45_000 }, async t => {
-  let hold = false
-  let release: (() => void) | undefined
-  let frameId: string | undefined
-  let retired = false
-  const emit = ChildProcess.prototype.emit
-  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    if (event === 'spawn' && this.send && this.spawnargs.includes('--memory-owner-ipc')) {
-      const send = this.send
-      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, method?: string, id?: string }
-        if (hold && !release && frame.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'adapterExited') {
-          frameId = frame.id
-          release = () => { Reflect.apply(send, this, [message, ...rest]) }
-          return true
-        }
-        if (frame.type === 'memory_owner_rpc' && frame.kind === 'cancel' && frame.id === frameId) retired = true
-        return Reflect.apply(send, this, [message, ...rest]) as boolean
-      })
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
+test('DSH restarts cleanly with a replacement memory worker while continuing chat', { timeout: 45_000 }, async t => {
   const app = await setup(t, () => null)
-  app.defer(() => { release?.() })
+  const firstOwner = app.memoryOwnerPid()
+  assert.ok(firstOwner)
   await app.ask('重启前的对话')
-  hold = true
   await app.restart()
-  assert.ok(release, 'the previous adapter is still waiting for memory reconciliation')
-  assert.equal(retired, false, 'DSH became ready before the memory RPC could time out')
-  const words = '记忆还在恢复时继续聊天'
+  assert.ok(await eventually(() => app.memoryOwnerPid() !== null && app.memoryOwnerPid() !== firstOwner))
+  const words = '重启后继续聊天'
   await app.ask(words)
   assert.ok(app.model.requests.some(request => questionOf(request.messages) === words))
 })
 
 test('owner replacement finishes an in-flight trusted original once from the persisted DSH turn', { timeout: 45_000 }, async t => {
   const words = '记忆进程退出期间完成的真人原话'
-  let current: ChildProcess | undefined
-  const emit = ChildProcess.prototype.emit
-  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    if (event === 'spawn' && this.spawnargs?.includes('--memory-owner-ipc')) current = this
-    return Reflect.apply(emit, this, [event, ...args])
-  })
   let started = false, release!: () => void
   const hold = new Promise<void>(resolve => { release = resolve })
   const app = await setup(t, request => {
@@ -1299,16 +1275,16 @@ test('owner replacement finishes an in-flight trusted original once from the per
   const original = randomUUID()
   const sending = app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', words, [], original)
   assert.ok(await eventually(() => started))
-  const first = current
-  assert.ok(first?.pid)
+  const firstPid = app.memoryOwnerPid()
+  assert.ok(firstPid)
   const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   app.defer(() => memory.close())
   const registered = () => memory.prepare('SELECT 1 FROM owner_aliases WHERE source=? UNION ALL SELECT 1 FROM memory_sources WHERE id=?').get(original, original)
   assert.ok(await eventually(registered))
-  first.kill('SIGKILL')
+  process.kill(firstPid, 'SIGKILL')
   release()
   await sending
-  assert.ok(await eventually(() => current && current !== first))
+  assert.ok(await eventually(() => app.memoryOwnerPid() !== null && app.memoryOwnerPid() !== firstPid))
   assert.ok(await eventually(() => memory.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(original)?.outcome === 'recorded'))
   assert.equal(memory.prepare('SELECT count(*) AS n FROM memory_sources WHERE text=?').get(words)?.n, 1)
 })
@@ -1322,6 +1298,7 @@ test('a new memory database starts after existing DSH events and resumes from a 
   const root = join(app.directory, 'memory')
   fs.renameSync(root, join(app.directory, 'old-memory'))
   await app.startBackend()
+  assert.ok(await eventually(() => app.memoryOwnerPid() !== null))
   assert.equal(app.call<AgentInfo>('agent:info').sessionId, session)
   const first = await app.ask('新记忆库中的第一轮真人原话')
   const read = <T>(work: (db: DatabaseSync) => T) => {
@@ -1335,6 +1312,7 @@ test('a new memory database starts after existing DSH events and resumes from a 
   assert.ok(firstCursor > 0)
   await app.stopBackend()
   await app.startBackend()
+  assert.ok(await eventually(() => app.memoryOwnerPid() !== null))
   assert.equal(cursor(), firstCursor)
   const second = await app.ask('owner 重连之后的第二轮真人原话')
   assert.ok(await eventually(() => cursor() > firstCursor && turnSaved(cursor())))
@@ -1379,23 +1357,6 @@ test('an Updates draft keeps the result identity until dispatch and never become
   const prompt = '核对这份日报'
   const uniqueMemoryMarker = 'SCHED_UNIQUE_MARKER_P27'
   const draft = `派生内容已核对 ${oldValue}`
-  let heldAliasRelease: (() => void) | undefined
-  const emit = ChildProcess.prototype.emit
-  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    if (event === 'spawn' && this.send) {
-      const send = this.send
-      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { text?: string } } }
-        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
-          && frame.input?.method === 'sourceAlias' && frame.input.input?.text === prompt && !heldAliasRelease) {
-          heldAliasRelease = () => { Reflect.apply(send, this, [message, ...rest]) }
-          return true
-        }
-        return Reflect.apply(send, this, [message, ...rest]) as boolean
-      })
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
   const app = await setup(t, request => {
     const question = questionOf(request.messages)
     const tool = JSON.stringify(request.messages.at(-1)).includes('tool_result')
@@ -1418,14 +1379,12 @@ test('an Updates draft keeps the result identity until dispatch and never become
   app.wake()
   const item = await eventually(() => app.feed().find(item => item.title === title))
   assert.ok(item)
-  assert.ok(heldAliasRelease, 'sourceAlias for scheduled prompt was delayed while first model request ran')
   const firstPromptRequest = (app.model.requests as Request[]).find(request =>
     questionOf(request.messages) === prompt && !JSON.stringify(request.messages).includes('"tool_result"'))
   assert.ok(firstPromptRequest, 'expected first model request for scheduled prompt before any tool_result')
   const firstPromptText = JSON.stringify(firstPromptRequest.messages)
   assert.match(firstPromptText, /<memory-recall turn=\\"\d+\\" ref=\\"[A-Za-z0-9-]+\\">/, 'first scheduled model request must include anchored L3 memory-recall')
-  assert.ok(firstPromptText.includes(uniqueMemoryMarker), 'first scheduled model request must carry unique memory-only marker even while sourceAlias is delayed')
-  heldAliasRelease()
+  assert.ok(firstPromptText.includes(uniqueMemoryMarker), 'first scheduled model request must carry unique memory-only marker via verified sourceAlias')
   const text = await app.call<Promise<string>>('feed:continue', item.id)
   assert.ok(text.endsWith(draft), JSON.stringify({ body: item.body, text }))
   await app.newTopic()
@@ -1447,27 +1406,18 @@ test('an Updates draft keeps the result identity until dispatch and never become
   assert.ok(app.feed().some(row => row.id === item.id && row.body === draft))
 })
 
-test('consecutive identical task prompts claim distinct requestId prefetches with exactly two retrievals (P2-7)', { timeout: 30_000 }, async t => {
+test('consecutive identical task prompts run distinct single-hop L3 retrievals with unique refs (P2-7)', { timeout: 30_000 }, async t => {
   const sameText = '重复检查发布清单'
   const uniqueMarker = 'TASK_REPEAT_MARKER_P27'
-  let prefetchCount = 0
-  let fallbackCount = 0
+  let contextUsedCount = 0
   const emit = ChildProcess.prototype.emit
   t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    if (event === 'spawn' && this.send) {
-      const send = this.send
-      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { query?: string }, args?: unknown[] } }
-        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
-          && frame.input?.method === 'prefetchRecall' && frame.input.input?.query === sameText) {
-          prefetchCount++
-        }
-        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'adapter'
-          && frame.input?.method === 'automaticRecall') {
-          fallbackCount++
-        }
-        return Reflect.apply(send, this, [message, ...rest]) as boolean
-      })
+    if (event === 'message') {
+      const msg = args[0] as { type?: string, pushed?: Array<{ text?: string }> }
+      if (msg?.type === 'memory_owner_context_used' && Array.isArray(msg.pushed)
+        && msg.pushed.some(hit => typeof hit.text === 'string' && hit.text.includes(uniqueMarker))) {
+        contextUsedCount++
+      }
     }
     return Reflect.apply(emit, this, [event, ...args]) as boolean
   })
@@ -1514,9 +1464,8 @@ test('consecutive identical task prompts claim distinct requestId prefetches wit
     assert.ok(currentRecallText.includes(uniqueMarker), `delivery ${idx + 1} L3 message itself (ref=${currentRef}) must contain unique memory marker`)
     return currentRef
   })
-  assert.notEqual(refs[0], refs[1], 'consecutive identical task deliveries must claim distinct requestIds')
-  assert.equal(prefetchCount, 2, 'exactly two host prefetches must be executed for two identical task deliveries')
-  assert.equal(fallbackCount, 0, 'no fallback automaticRecall should trigger when both prefetches are claimed')
+  assert.notEqual(refs[0], refs[1], 'consecutive identical task deliveries must carry distinct requestId refs')
+  assert.ok(await eventually(() => contextUsedCount === 2, { timeoutMs: 5_000 }), `expected 2 context_used notices with ${uniqueMarker}, got ${contextUsedCount}`)
 })
 
 
@@ -1541,15 +1490,15 @@ test('a generated task brief stays derived while the answer keeps its task scope
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
-        const frame = ownerRpcFrame(raw)
-        if (frame?.kind === 'request' && frame.method === 'host' && objectOf(frame.input)?.method === 'acceptQuestionAnswer') {
-          answerRequest = frame.id
+        const frame = objectOf(raw)
+        if (frame?.type === 'memory_host_request' && frame.method === 'acceptQuestionAnswer' && typeof frame.requestId === 'string') {
+          answerRequest = frame.requestId
         }
         return Reflect.apply(send, this, [raw, ...rest]) as boolean
       })
     }
-    const frame = event === 'message' ? ownerRpcFrame(args[0]) : null
-    if (frame?.kind === 'result' && frame.id === answerRequest && frame.ok) {
+    const frame = event === 'message' ? objectOf(args[0]) : null
+    if (frame?.type === 'memory_host_result' && frame.requestId === answerRequest && frame.ok === true) {
       withheldReceipt = true
       return true
     }
@@ -1759,4 +1708,250 @@ test('main session oversees background tasks across git repos while background t
       return parsed.task?.cwd === repoA
     } catch { return false }
   }), JSON.stringify({ nestedGetResults }))
+})
+
+test('custom ask_user_question answer while memory owner stays unavailable past budget omits unbacked sourceId without blocking Q&A (P1-3)', { timeout: 30_000 }, async t => {
+  let dropReady = false
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'message') {
+      const frame = objectOf(args[0])
+      if (dropReady && frame?.type === 'memory_owner_state' && frame.state === 'ready') return true
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  const brief = '离线验证提问回答不发布空来源'
+  const app = await setup(t, request => {
+    if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
+    if (questionOf(request.messages) === brief) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'offline-city', question: '这项任务在哪个城市？', header: '城市', options: [{ label: '上海', description: '使用上海' }], multiSelect: false },
+    ] } } }
+    return null
+  })
+  await app.ask(`后台做：${brief}`)
+  const event = await eventually(() => app.events.find(item => item.type === 'task_question'))
+  assert.ok(event && 'questionId' in event && typeof event.questionId === 'string' && 'taskId' in event && typeof event.taskId === 'string')
+
+  // Force memory-worker unavailable and suppress its ready transition past onQuestionAnswer's 500ms budget.
+  dropReady = true
+  const workerPid = app.memoryOwnerPid()
+  assert.ok(typeof workerPid === 'number' && workerPid > 0)
+  process.kill(workerPid, 'SIGKILL')
+  await delay(100)
+
+  const answer = '这项任务在成都进行'
+  assert.equal(await app.call('agent:answer', event.questionId, [{ id: 'offline-city', selected: [], custom: answer }], randomUUID()), true)
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === event.taskId && task.endedAt)))
+
+  const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
+  try {
+    const row = history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer) as { source_id: string | null } | undefined
+    assert.ok(row, 'Q&A custom answer must still be recorded in conversation history')
+    assert.equal(row.source_id, null, 'unbacked sourceId must NOT be published when memory owner stayed unavailable')
+  } finally { history.close() }
+})
+
+test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_ACTIVE and drains >64 queued aliases (P2-1)', { timeout: 30_000 }, async t => {
+  let dropReady = false
+  let inflight = 0
+  let maxInflight = 0
+  let succeeded = 0
+  const aliasIds = new Set<string>()
+  const capturedAliases = new Map<string, { session: string, wireText: string }>()
+  const heldReadyFrames: Array<{ child: ChildProcess, frame: unknown }> = []
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
+        const frame = objectOf(raw)
+        if (frame?.type === 'memory_host_request' && frame.method === 'sourceAlias' && typeof frame.requestId === 'string') {
+          aliasIds.add(frame.requestId)
+          const input = objectOf(frame.input)
+          if (typeof input?.sourceId === 'string' && typeof input.session === 'string' && typeof input.wireText === 'string') {
+            capturedAliases.set(input.sourceId, { session: input.session, wireText: input.wireText })
+          }
+          inflight++
+          maxInflight = Math.max(maxInflight, inflight)
+        }
+        return Reflect.apply(send, this, [raw, ...rest]) as boolean
+      })
+    }
+    if (event === 'message') {
+      const frame = objectOf(args[0])
+      if (dropReady && frame?.type === 'memory_owner_state' && frame.state === 'ready') {
+        heldReadyFrames.push({ child: this, frame: args[0] })
+        return true
+      }
+      if (frame?.type === 'memory_host_result' && typeof frame.requestId === 'string' && aliasIds.delete(frame.requestId)) {
+        inflight = Math.max(0, inflight - 1)
+        if (frame.ok === true) succeeded++
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  const app = await setup(t, () => null)
+
+  // Drop ready while worker restarts, queue 70 prompts (each enqueues a pending sourceAlias while not ready), then release ready.
+  dropReady = true
+  const workerPid = app.memoryOwnerPid()
+  assert.ok(typeof workerPid === 'number' && workerPid > 0)
+  process.kill(workerPid, 'SIGKILL')
+  assert.ok(await eventually(() => heldReadyFrames.length > 0, { timeoutMs: 10_000 }))
+
+  const beforeSucceeded = succeeded
+  const submittedIds: string[] = []
+  const submittedTexts: string[] = []
+  for (let i = 0; i < 70; i++) {
+    const id = randomUUID()
+    const text = `批量别名队列项 ${i}`
+    submittedIds.push(id)
+    submittedTexts.push(text)
+    await app.call<Promise<unknown>>('agent:prompt', text, [], id).catch(() => {})
+  }
+  dropReady = false
+  for (const held of heldReadyFrames.splice(0)) {
+    Reflect.apply(emit, held.child, ['message', held.frame])
+  }
+  assert.ok(await eventually(() => succeeded - beforeSucceeded >= 70, { timeoutMs: 15_000 }),
+    `expected all 70 queued aliases to drain cleanly, drained=${succeeded - beforeSucceeded}`)
+  assert.ok(maxInflight <= 16, `pending alias replay must cap concurrency <= 16, saw ${maxInflight}`)
+  assert.equal(submittedIds.every(id => capturedAliases.has(id)), true, 'all 70 submitted aliases must have been sent over IPC')
+  const placeholders = submittedIds.map(() => '?').join(',')
+  assert.ok(await eventually(() => {
+    const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+    try {
+      const secretRow = memoryDb.prepare("SELECT value FROM memory_meta WHERE key = 'secret'").get() as { value: string } | undefined
+      if (!secretRow?.value) return false
+      const leftover = memoryDb.prepare(`SELECT COUNT(*) AS n FROM owner_aliases WHERE source IN (${placeholders})`).get(...submittedIds) as { n: number }
+      if (leftover.n !== 0) return false
+      const checkRow = memoryDb.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND ((kind = 'original' AND source = ?) OR (kind = 'ignored' AND hash = ?))")
+      for (const sourceId of submittedIds) {
+        const sent = capturedAliases.get(sourceId)!
+        const wireHash = createHmac('sha256', secretRow.value).update(JSON.stringify(sent.wireText)).digest('hex')
+        const match = checkRow.get(sent.session, sourceId, wireHash) as { n: number }
+        if (match.n !== 1) return false
+      }
+      return true
+    } finally { memoryDb.close() }
+  }, { timeoutMs: 10_000 }), 'every single one of the 70 submitted aliases must settle to exactly 1 terminal owner_messages row (original or ignored) with 0 leftover owner_aliases rows')
+})
+
+test('custom ask_user_question answer recovers across unavailable(A)->recovering(B)->ready(B) within budget and preserves sourceId on post-commit disconnect (R2 P1-3, P2-1)', { timeout: 30_000 }, async t => {
+  let mode: 'recover-within-budget' | 'disconnect-after-commit' = 'recover-within-budget'
+  let answerReqId: string | undefined
+  let injectedDisconnect = false
+  const heldRecoveryFrames: Array<{ child: ChildProcess, frame: unknown }> = []
+  let holdRecovery = false
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
+        const frame = objectOf(raw)
+        if (frame?.type === 'memory_host_request' && frame.method === 'acceptQuestionAnswer' && typeof frame.requestId === 'string') {
+          answerReqId = frame.requestId
+        }
+        return Reflect.apply(send, this, [raw, ...rest]) as boolean
+      })
+    }
+    if (event === 'message') {
+      const frame = objectOf(args[0])
+      if (mode === 'recover-within-budget' && holdRecovery && frame?.type === 'memory_owner_state' && (frame.state === 'recovering' || frame.state === 'ready')) {
+        heldRecoveryFrames.push({ child: this, frame: args[0] })
+        return true
+      }
+      if (mode === 'disconnect-after-commit' && frame?.type === 'memory_host_result' && frame.requestId === answerReqId && frame.ok === true && !injectedDisconnect) {
+        injectedDisconnect = true
+        // Worker already committed acceptQuestionAnswer; drop ACK and inject unavailable instead!
+        Reflect.apply(emit, this, ['message', {
+          type: 'memory_owner_state',
+          protocol: frame.protocol,
+          epoch: frame.epoch,
+          state: 'unavailable',
+          revision: 1,
+          coreEpoch: 1,
+          pid: 0,
+        }])
+        return true
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+
+  const brief1 = '预算内换代恢复写入回答'
+  const brief2 = '提交后断连保留确定性来源编号'
+  const brief3 = '敏感问题被worker明确拒绝不落空链接'
+  const app = await setup(t, request => {
+    if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
+    const q = questionOf(request.messages)
+    if (q === brief1) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'rec-city', question: '恢复测试城市？', header: '城市', options: [{ label: '上海', description: '使用上海' }], multiSelect: false },
+    ] } } }
+    if (q === brief2) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'disc-city', question: '断连测试城市？', header: '城市', options: [{ label: '北京', description: '使用北京' }], multiSelect: false },
+    ] } } }
+    if (q === brief3) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'sec-key', question: '请确认密钥 sk-1234567890abcdefghijklmnop 的用途？', header: '敏感', options: [{ label: '测试', description: '测试' }], multiSelect: false },
+    ] } } }
+    return null
+  })
+
+  // Case 1 (R2 P1-3): kill worker -> unavailable(A) -> hold recovering(B)+ready(B) briefly -> submit answer -> release recovering(B) then ready(B) within 500ms budget!
+  await app.ask(`后台做：${brief1}`)
+  const ev1 = await eventually(() => app.events.find(item => item.type === 'task_question'))
+  assert.ok(ev1 && 'questionId' in ev1 && typeof ev1.questionId === 'string' && 'taskId' in ev1 && typeof ev1.taskId === 'string')
+  holdRecovery = true
+  const pid1 = app.memoryOwnerPid()
+  assert.ok(typeof pid1 === 'number' && pid1 > 0)
+  process.kill(pid1, 'SIGKILL')
+  assert.ok(await eventually(() => heldRecoveryFrames.some(item => objectOf(item.frame)?.state === 'ready'), { timeoutMs: 10_000 }))
+
+  const answer1 = '预算内恢复在南京进行'
+  const answerPromise1 = app.call<Promise<boolean>>('agent:answer', ev1.questionId, [{ id: 'rec-city', selected: [], custom: answer1 }], randomUUID())
+  setTimeout(() => {
+    holdRecovery = false
+    for (const held of heldRecoveryFrames.splice(0)) Reflect.apply(emit, held.child, ['message', held.frame])
+  }, 40)
+  assert.equal(await answerPromise1, true)
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev1.taskId && task.endedAt)))
+
+  // Case 3 (R3 P2-1): worker explicitly rejects secret-bearing question -> must NOT publish unbacked source_id in history!
+  const evOffset3 = app.events.length
+  await app.ask(`后台做：${brief3}`)
+  const ev3 = await eventually(() => app.events.slice(evOffset3).find(item => item.type === 'task_question'))
+  assert.ok(ev3 && 'questionId' in ev3 && typeof ev3.questionId === 'string' && 'taskId' in ev3 && typeof ev3.taskId === 'string')
+  const answer3 = '这是敏感问题的回答文本'
+  assert.equal(await app.call('agent:answer', ev3.questionId, [{ id: 'sec-key', selected: [], custom: answer3 }], randomUUID()), true)
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev3.taskId && task.endedAt)))
+
+  // Case 2 (R2 P2-1): commit succeeds in worker, then unavailable arrives before ACK -> sourceId must still match memory_sources.id!
+  mode = 'disconnect-after-commit'
+  const evOffset = app.events.length
+  await app.ask(`后台做：${brief2}`)
+  const ev2 = await eventually(() => app.events.slice(evOffset).find(item => item.type === 'task_question'))
+  assert.ok(ev2 && 'questionId' in ev2 && typeof ev2.questionId === 'string' && 'taskId' in ev2 && typeof ev2.taskId === 'string')
+  const answer2 = '提交后断连在苏州进行'
+  assert.equal(await app.call('agent:answer', ev2.questionId, [{ id: 'disc-city', selected: [], custom: answer2 }], randomUUID()), true)
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev2.taskId && task.endedAt)))
+  assert.equal(injectedDisconnect, true, 'must have injected post-commit unavailable disconnect')
+
+  const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
+  try {
+    const src1 = await eventually(() => memory.prepare("SELECT id, conversation FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer1)))
+    assert.ok(src1, 'answer submitted during unavailable(A)->recovering(B)->ready(B) within budget must persist in memory_sources')
+    assert.equal(history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer1)?.source_id, src1.id)
+
+    assert.equal(memory.prepare("SELECT id FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer3)), undefined,
+      'secret-bearing question answer rejected by worker must not exist in memory_sources')
+    const hist3 = history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer3) as { source_id: string | null } | undefined
+    assert.ok(hist3, 'rejected answer text must still be recorded in conversation history')
+    assert.equal(hist3.source_id, null, 'explicit worker rejection must NOT publish an unbacked source_id in history')
+
+    const src2 = await eventually(() => memory.prepare("SELECT id, conversation FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer2)))
+    assert.ok(src2, 'post-commit disconnect answer must exist in memory_sources')
+    assert.equal(history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer2)?.source_id, src2.id,
+      'history message must keep deterministic source_id when disconnect occurs after send/commit')
+  } finally { memory.close(); history.close() }
 })
