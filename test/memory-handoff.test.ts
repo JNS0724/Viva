@@ -1357,22 +1357,6 @@ test('an Updates draft keeps the result identity until dispatch and never become
   const prompt = '核对这份日报'
   const uniqueMemoryMarker = 'SCHED_UNIQUE_MARKER_P27'
   const draft = `派生内容已核对 ${oldValue}`
-  let heldAliasRelease: (() => void) | undefined
-  const emit = ChildProcess.prototype.emit
-  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    if (event === 'spawn' && this.send) {
-      const send = this.send
-      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, method?: string, input?: { text?: string } }
-        if (frame?.type === 'memory_host_request' && frame.method === 'sourceAlias' && frame.input?.text === prompt && !heldAliasRelease) {
-          heldAliasRelease = () => { Reflect.apply(send, this, [message, ...rest]) }
-          return true
-        }
-        return Reflect.apply(send, this, [message, ...rest]) as boolean
-      })
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
   const app = await setup(t, request => {
     const question = questionOf(request.messages)
     const tool = JSON.stringify(request.messages.at(-1)).includes('tool_result')
@@ -1395,14 +1379,12 @@ test('an Updates draft keeps the result identity until dispatch and never become
   app.wake()
   const item = await eventually(() => app.feed().find(item => item.title === title))
   assert.ok(item)
-  assert.ok(heldAliasRelease, 'sourceAlias for scheduled prompt was delayed while first model request ran')
   const firstPromptRequest = (app.model.requests as Request[]).find(request =>
     questionOf(request.messages) === prompt && !JSON.stringify(request.messages).includes('"tool_result"'))
   assert.ok(firstPromptRequest, 'expected first model request for scheduled prompt before any tool_result')
   const firstPromptText = JSON.stringify(firstPromptRequest.messages)
   assert.match(firstPromptText, /<memory-recall turn=\\"\d+\\" ref=\\"[A-Za-z0-9-]+\\">/, 'first scheduled model request must include anchored L3 memory-recall')
-  assert.ok(firstPromptText.includes(uniqueMemoryMarker), 'first scheduled model request must carry unique memory-only marker even while sourceAlias is delayed')
-  heldAliasRelease()
+  assert.ok(firstPromptText.includes(uniqueMemoryMarker), 'first scheduled model request must carry unique memory-only marker via verified sourceAlias')
   const text = await app.call<Promise<string>>('feed:continue', item.id)
   assert.ok(text.endsWith(draft), JSON.stringify({ body: item.body, text }))
   await app.newTopic()
@@ -1726,4 +1708,101 @@ test('main session oversees background tasks across git repos while background t
       return parsed.task?.cwd === repoA
     } catch { return false }
   }), JSON.stringify({ nestedGetResults }))
+})
+
+test('custom ask_user_question answer while memory owner stays unavailable past budget omits unbacked sourceId without blocking Q&A (P1-3)', { timeout: 30_000 }, async t => {
+  let dropReady = false
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'message') {
+      const frame = objectOf(args[0])
+      if (dropReady && frame?.type === 'memory_owner_state' && frame.state === 'ready') return true
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  const brief = '离线验证提问回答不发布空来源'
+  const app = await setup(t, request => {
+    if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
+    if (questionOf(request.messages) === brief) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'offline-city', question: '这项任务在哪个城市？', header: '城市', options: [{ label: '上海', description: '使用上海' }], multiSelect: false },
+    ] } } }
+    return null
+  })
+  await app.ask(`后台做：${brief}`)
+  const event = await eventually(() => app.events.find(item => item.type === 'task_question'))
+  assert.ok(event && 'questionId' in event && typeof event.questionId === 'string' && 'taskId' in event && typeof event.taskId === 'string')
+
+  // Force memory-worker unavailable and suppress its ready transition past onQuestionAnswer's 500ms budget.
+  dropReady = true
+  const workerPid = app.memoryOwnerPid()
+  assert.ok(typeof workerPid === 'number' && workerPid > 0)
+  process.kill(workerPid, 'SIGKILL')
+  await delay(100)
+
+  const answer = '这项任务在成都进行'
+  assert.equal(await app.call('agent:answer', event.questionId, [{ id: 'offline-city', selected: [], custom: answer }], randomUUID()), true)
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === event.taskId && task.endedAt)))
+
+  const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
+  try {
+    const row = history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer) as { source_id: string | null } | undefined
+    assert.ok(row, 'Q&A custom answer must still be recorded in conversation history')
+    assert.equal(row.source_id, null, 'unbacked sourceId must NOT be published when memory owner stayed unavailable')
+  } finally { history.close() }
+})
+
+test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_ACTIVE and drains >64 queued aliases (P2-1)', { timeout: 30_000 }, async t => {
+  let dropReady = false
+  let inflight = 0
+  let maxInflight = 0
+  let succeeded = 0
+  const aliasIds = new Set<string>()
+  const heldReadyFrames: Array<{ child: ChildProcess, frame: unknown }> = []
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
+        const frame = objectOf(raw)
+        if (frame?.type === 'memory_host_request' && frame.method === 'sourceAlias' && typeof frame.requestId === 'string') {
+          aliasIds.add(frame.requestId)
+          inflight++
+          maxInflight = Math.max(maxInflight, inflight)
+        }
+        return Reflect.apply(send, this, [raw, ...rest]) as boolean
+      })
+    }
+    if (event === 'message') {
+      const frame = objectOf(args[0])
+      if (dropReady && frame?.type === 'memory_owner_state' && frame.state === 'ready') {
+        heldReadyFrames.push({ child: this, frame: args[0] })
+        return true
+      }
+      if (frame?.type === 'memory_host_result' && typeof frame.requestId === 'string' && aliasIds.delete(frame.requestId)) {
+        inflight = Math.max(0, inflight - 1)
+        if (frame.ok === true) succeeded++
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  const app = await setup(t, () => null)
+
+  // Drop ready while worker restarts, queue 70 prompts (each enqueues a pending sourceAlias while not ready), then release ready.
+  dropReady = true
+  const workerPid = app.memoryOwnerPid()
+  assert.ok(typeof workerPid === 'number' && workerPid > 0)
+  process.kill(workerPid, 'SIGKILL')
+  assert.ok(await eventually(() => heldReadyFrames.length > 0, { timeoutMs: 10_000 }))
+
+  const beforeSucceeded = succeeded
+  for (let i = 0; i < 70; i++) {
+    await app.call<Promise<unknown>>('agent:prompt', `批量别名队列项 ${i}`, [], randomUUID()).catch(() => {})
+  }
+  dropReady = false
+  for (const held of heldReadyFrames.splice(0)) {
+    Reflect.apply(emit, held.child, ['message', held.frame])
+  }
+  assert.ok(await eventually(() => succeeded - beforeSucceeded >= 70, { timeoutMs: 15_000 }),
+    `expected all 70 queued aliases to drain cleanly, drained=${succeeded - beforeSucceeded}`)
+  assert.ok(maxInflight <= 16, `pending alias replay must cap concurrency <= 16, saw ${maxInflight}`)
 })

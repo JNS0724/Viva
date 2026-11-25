@@ -157,8 +157,8 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
   // A caller operation already owns this wait; do not create a second proxy span inside each read step.
   const call = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) => diagnosticContext() ? execute(method, input)
     : withOperation('memory.owner', () => execute(method, input), { identities: { methodId: method, ownerEpoch: current?.epoch ?? '' } })
-  async function callIntake<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) {
-    const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
+  async function callIntake<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], options?: { budgetMs?: number }) {
+    const budget = createRequestBudget(options?.budgetMs ?? DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
     // Send the intake frame before dispatching the agent request on its separate channel.
     try {
       const pending = execute(method, input, undefined, budget)
@@ -230,11 +230,12 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
     }
     return true
   }
-  function waitReady(): Promise<void> {
+  function waitReady(budgetMs?: number): Promise<void> {
     if (current?.state === 'ready' && !closed) return Promise.resolve()
     if (closed) return Promise.reject(new MemoryOwnerUnavailable())
+    const limit = Math.max(0, Math.min(timeoutMs, budgetMs ?? timeoutMs))
     return new Promise((resolve, reject) => {
-      const waiter = { resolve, reject, timer: setTimeout(() => { waiters.delete(waiter); reject(new MemoryOwnerUnavailable('Memory owner did not become ready')) }, timeoutMs) }
+      const waiter = { resolve, reject, timer: setTimeout(() => { waiters.delete(waiter); reject(new MemoryOwnerUnavailable('Memory owner did not become ready')) }, limit) }
       waiters.add(waiter)
     })
   }

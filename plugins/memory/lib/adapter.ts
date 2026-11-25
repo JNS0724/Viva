@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-log-deepseek'
@@ -45,13 +45,6 @@ function extractCorrelationRequestId(text: string): string | undefined {
   const routed = requestsIn(text)
   if (routed.length > 0) return routed[routed.length - 1]!.id
   return undefined
-}
-
-function isAgentLoopRequest(options: GenerateOptions): boolean {
-  if (!options.sessionId) return false
-  const first = options.messages[0]
-  if (first && first.role === 'user' && first.source?.kind === 'viva-memory') return false
-  return true
 }
 
 export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}, port = process) {
@@ -125,7 +118,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   }, port)
   const owner = createRemoteMemoryOwner(connection)
   const available = () => !lifetime.signal.aborted && owner.ready()
-  const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session))
+  const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session), { host: Boolean(config.host) })
   let cachedProfile: MemoryProfileSnapshot | undefined
   let currentRevision: number | undefined
   let observedEpoch: string | undefined
@@ -139,6 +132,13 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     signal: lifetime.signal,
     getEpoch: () => owner.epoch,
     enabled: Boolean(config.host),
+    onHostSuccess(method, input) {
+      if (method !== 'sourceAlias' || !input || typeof input !== 'object' || !('session' in input)) return
+      const targetId = (input as { session?: unknown }).session
+      if (typeof targetId !== 'string') return
+      const session = ctx.sessions.list().find(item => String(item.id) === targetId)
+      if (session) observe(session)
+    },
   })
   const sendParent = hostRelay.sendParent
 
@@ -281,7 +281,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const budget = createRequestBudget(left, signal)
     try {
       const reply = await budget.run(() => owner.call('automaticRecall', [
-        { session: sessionId, turn, question: cleanQuery },
+        { session: sessionId, turn, question: config.host ? '' : cleanQuery },
         cwd,
         config.host ? [msg] : undefined,
       ], { signal: budget.signal, budgetMs: budget.remainingMs() }))

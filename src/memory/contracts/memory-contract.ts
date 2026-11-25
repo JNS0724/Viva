@@ -15,13 +15,17 @@ const session = z.string().min(1).max(128)
 const query = z.string().trim().min(1).max(200)
 const text = z.string().trim().min(1).max(MAX_MESSAGE_CHARS)
 export const MEMORY_SEMANTIC_TIMEOUT_MS = 6000
-export const memoryRequest = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('context'), session, turn: z.number().int().positive(), question: z.string().max(MAX_MESSAGE_CHARS) }),
+export const memorySidecarRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('recall'), session, query, scope: z.literal('project').optional(), asOf: z.iso.date().optional(), deep: z.boolean().optional(),
     limit: z.number().int().optional(), min_score: z.number().optional(), start_date: z.iso.date().optional(), end_date: z.iso.date().optional() }),
   z.object({ op: z.literal('file_read'), session, id: z.string().min(1).max(200), start_line: z.number().int().positive().optional(), end_line: z.number().int().positive().optional() }),
   z.object({ op: z.literal('node_search'), session, query, limit: z.number().int().positive().max(50).optional() }),
   z.object({ op: z.literal('remember'), session, text }),
+])
+export type MemorySidecarRequest = z.infer<typeof memorySidecarRequest>
+export const memoryRequest = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('context'), session, turn: z.number().int().positive(), question: z.string().max(MAX_MESSAGE_CHARS) }),
+  ...memorySidecarRequest.options,
 ])
 export type MemoryRequest = z.infer<typeof memoryRequest>
 export const memoryCompute = z.object({

@@ -24,6 +24,7 @@ import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { createVivaMemoryClient } from './memory-client.ts'
 import { MemoryOwnerUnavailable } from './remote-memory-channel.ts'
+import { createRequestBudget } from '../shared/request-budget.ts'
 import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod, MemorySourceAlias } from '../memory/contracts/host.ts'
 import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
 import { resolveMemoryProject } from '../memory/node/project-scope.ts'
@@ -168,14 +169,49 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     return cwd && defaultWorkspace && sameDir(cwd, defaultWorkspace) ? null : cwd
   }
   const MAX_PENDING_ALIASES = 256
-  const pendingAliases = new Map<string, MemorySourceAlias>()
-  function flushAlias(alias: MemorySourceAlias) {
+  const MAX_INFLIGHT_ALIASES = 16
+  const ALIAS_RETRY_DELAY_MS = 250
+  const pendingAliases = new Map<string, { alias: MemorySourceAlias, nextAttemptAt: number }>()
+  const inflightAliases = new Set<string>()
+  let aliasRetryTimer: ReturnType<typeof setTimeout> | null = null
+  function clearAliasRetryTimer() {
+    if (aliasRetryTimer) { clearTimeout(aliasRetryTimer); aliasRetryTimer = null }
+  }
+  function drainPendingAliases() {
+    if (closed) return
     const bridge = dsh.current
     if (!bridge || !bridge.memory.ready()) return
-    void bridge.memory.callIntake('sourceAlias', alias).then(
-      () => { pendingAliases.delete(alias.operationId) },
-      error => emitDiagnosticFailure('memory.intake', error),
-    )
+    const now = Date.now()
+    let minDelay = Infinity
+    for (const [operationId, entry] of pendingAliases) {
+      if (inflightAliases.size >= MAX_INFLIGHT_ALIASES) break
+      if (inflightAliases.has(operationId)) continue
+      if (entry.nextAttemptAt > now) {
+        minDelay = Math.min(minDelay, entry.nextAttemptAt - now)
+        continue
+      }
+      inflightAliases.add(operationId)
+      void bridge.memory.callIntake('sourceAlias', entry.alias).then(
+        () => { pendingAliases.delete(operationId) },
+        error => {
+          emitDiagnosticFailure('memory.intake', error)
+          if (objectOf(error)?.domainCode === 'operation.conflict') pendingAliases.delete(operationId)
+          else {
+            const currentEntry = pendingAliases.get(operationId)
+            if (currentEntry) currentEntry.nextAttemptAt = Date.now() + ALIAS_RETRY_DELAY_MS
+          }
+        },
+      ).finally(() => {
+        inflightAliases.delete(operationId)
+        drainPendingAliases()
+      })
+    }
+    if (minDelay < Infinity && !aliasRetryTimer && !closed) {
+      aliasRetryTimer = setTimeout(() => {
+        aliasRetryTimer = null
+        drainPendingAliases()
+      }, Math.max(10, minDelay))
+    }
   }
   function enqueueAlias(alias: MemorySourceAlias) {
     if (pendingAliases.size >= MAX_PENDING_ALIASES && !pendingAliases.has(alias.operationId)) {
@@ -183,11 +219,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       if (!oldest.done) pendingAliases.delete(oldest.value)
       emitDiagnosticFailure('memory.intake', new Error('Pending memory alias queue overflow'))
     }
-    pendingAliases.set(alias.operationId, alias)
-    flushAlias(alias)
+    pendingAliases.set(alias.operationId, { alias, nextAttemptAt: 0 })
+    drainPendingAliases()
   }
   function replayPendingAliases() {
-    for (const alias of [...pendingAliases.values()]) flushAlias(alias)
+    clearAliasRetryTimer()
+    for (const entry of pendingAliases.values()) entry.nextAttemptAt = 0
+    drainPendingAliases()
   }
   const memoryCall: HostMemoryCaller = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) => {
     const bridge = dsh.current
@@ -560,23 +598,43 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         const answerSources = Object.create(null) as Record<string, string>
         const requestOperation = operation ?? randomUUID()
         const bridge = lifetime.isCurrent() ? dsh.current : null
-        const receipts: Promise<unknown>[] = []
+        const items: Array<{ id: string, operationId: string, text: string }> = []
         for (const answer of answers) {
           const text = answer.custom?.trim(), question = entry.question.questions.find(card => card.id === answer.id)
           if (!text || !question) continue
           const digest = createHash('sha256').update(JSON.stringify([requestOperation, answer.id])).digest('hex')
           const operationId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
-          answerSources[answer.id] = operationId
-          if (entry.turn !== undefined && bridge?.memory.ready()) {
-            receipts.push(bridge.memory.callIntake('acceptQuestionAnswer', { operationId, text,
-              session: entry.sessionId, turn: entry.turn, conversation, cards: entry.question.questions,
-              requestId: entry.question.id, questionId: answer.id,
-              context: answerContext, questionAt: entry.askedAt,
-              ...(entry.questionProfileGen !== undefined ? { questionProfileGen: entry.questionProfileGen } : {}) })
-              .catch(error => emitDiagnosticFailure('memory.intake', error)))
-          }
+          items.push({ id: answer.id, operationId, text })
         }
-        if (receipts.length) await Promise.all(receipts)
+        if (items.length && entry.turn !== undefined && bridge) {
+          const budget = createRequestBudget(500)
+          try {
+            if (!bridge.memory.ready()) {
+              try { await bridge.memory.waitReady(budget.remainingMs()) }
+              catch (error) { emitDiagnosticFailure('memory.intake', error) }
+            }
+            if (bridge.memory.ready()) {
+              let budgetMs = 0
+              try { budgetMs = budget.remainingMs() } catch { budgetMs = 0 }
+              if (budgetMs > 0) {
+                for (const item of items) answerSources[item.id] = item.operationId
+                await Promise.all(items.map(item =>
+                  bridge.memory.callIntake('acceptQuestionAnswer', {
+                    operationId: item.operationId, text: item.text,
+                    session: entry.sessionId, turn: entry.turn!, conversation, cards: entry.question.questions,
+                    requestId: entry.question.id, questionId: item.id,
+                    context: answerContext, questionAt: entry.askedAt,
+                    ...(entry.questionProfileGen !== undefined ? { questionProfileGen: entry.questionProfileGen } : {}),
+                  }, { budgetMs })
+                    .catch(error => {
+                      emitDiagnosticFailure('memory.intake', error)
+                      if (objectOf(error)?.code === 'unavailable') delete answerSources[item.id]
+                    }),
+                ))
+              }
+            }
+          } finally { budget.close() }
+        }
         if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
         return { sourceIds: answerSources }
       },
@@ -1723,7 +1781,9 @@ ${question}` : question
   function close() {
     retireForegroundRequests()
     closed = true
+    clearAliasRetryTimer()
     pendingAliases.clear()
+    inflightAliases.clear()
     for (const timer of historyPurgeTimers) clearTimeout(timer)
     historyPurgeTimers.clear()
     scheduleRuns?.close()

@@ -71,6 +71,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const dropDone = db.prepare('DELETE FROM effects WHERE kind = ? AND key = ? AND generation = ?')
   const putOff = db.prepare('UPDATE effects SET due_at = MAX(due_at, ?), attempts = attempts + 1 WHERE kind = ? AND key = ? AND generation = ?')
   const putOffCooldown = db.prepare('UPDATE effects SET cooldown_until = MAX(cooldown_until, :deadline), due_at = MAX(due_at, cooldown_until, :deadline), attempts = attempts + 1 WHERE kind = :kind AND key = :key AND generation = :generation')
+  const applyRowCooldown = db.prepare('UPDATE effects SET cooldown_until = MAX(cooldown_until, :deadline), due_at = MAX(due_at, cooldown_until, :deadline) WHERE kind = :kind AND key = :key')
   const deferEffect = db.prepare('UPDATE effects SET due_at = MAX(due_at, ?) WHERE kind = ? AND key = ? AND generation = ?')
   const registered = 'kind IN (SELECT value FROM json_each(?))'
   const due = db.prepare(`SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE due_at <= ? AND ${registered} ORDER BY due_at, rowid`)
@@ -193,9 +194,14 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     if (typeof outcome === 'object' && outcome.kind === 'retry') {
       const wait = Math.max(0, Math.trunc(outcome.delayMs))
       const deadline = now() + wait
-      const result = apply('effect.retry', { ...data, waitMs: wait, ...(outcome.cooldown ? { cooldown: true } : {}) }, () => outcome.cooldown
-        ? putOffCooldown.run({ deadline, kind: effect.kind, key: effect.key, generation: effect.generation })
-        : putOff.run(deadline, effect.kind, effect.key, effect.generation)).value
+      const result = apply('effect.retry', { ...data, waitMs: wait, ...(outcome.cooldown ? { cooldown: true } : {}) }, () => {
+        if (!outcome.cooldown) return putOff.run(deadline, effect.kind, effect.key, effect.generation)
+        const matched = putOffCooldown.run({ deadline, kind: effect.kind, key: effect.key, generation: effect.generation })
+        if (matched.changes > 0) return matched
+        // If a concurrent edit re-queued (kind, key) as G+1 while G was in flight, still apply
+        // the provider cooldown floor to the live row without incrementing G+1's attempts.
+        return applyRowCooldown.run({ deadline, kind: effect.kind, key: effect.key })
+      }).value
       if (result.changes) emitDiagnostic({ event: 'retry.scheduled', operation: 'effects', identities: { jobId: effect.key, generation: effect.generation, methodId: effect.kind }, metrics: { attempt: effect.attempts + 1, retryDelayMs: wait } })
       return
     }

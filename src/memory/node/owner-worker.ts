@@ -4,7 +4,7 @@ import { parseDiagnosticContext, safeDiagnosticEvent, type DiagnosticPort } from
 import { diagnosticContext, diagnosticPort, installDiagnosticPort, newDiagnosticContext, withRemoteOperation } from '../../diagnostics/node/context.ts'
 import { MemoryComputeError, type MemoryComputeTools } from '../contracts/compute.ts'
 import { MEMORY_HOST_PROTOCOL } from '../contracts/host.ts'
-import { isDailyMemoryStage, memoryComputeFailure, memoryRequest } from '../contracts/memory-contract.ts'
+import { isDailyMemoryStage, memoryComputeFailure, memorySidecarRequest } from '../contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../contracts/memory-daily-defaults.ts'
 import { OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
@@ -133,8 +133,8 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
     advanceIntake: (session, nextSeq) => current.advanceIntake(idSchema.parse(session), z.int().nonnegative().parse(nextSeq)),
     rememberStandaloneFile: current.rememberStandaloneFile,
     forgetStandaloneFile: (session, id, operation) => current.forgetStandaloneFile(session, id, operation, signal),
-    sidecarRequest: (raw, cwd, originals) => {
-      const request = memoryRequest.parse(raw)
+    sidecarRequest: (raw, cwd) => {
+      const request = memorySidecarRequest.parse(raw)
       const session = request.session
       return (async () => {
         if (!current.ready() || signal.aborted) return null
@@ -149,10 +149,6 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
             : { status: 'rejected', reason: 'no-explicit-user-source' })
         }
         const readScope = scopeCurrent ? { ...origin, project } : { ...origin, project: undefined, context: { kind: 'user' as const } }
-        if (request.op === 'context' && originals) {
-          request.question = current.intakeQuery(session, readScope.project, originals)
-          if (!request.question) return null
-        }
         return current.runtime.handleModelRequest(request, readScope, current.ready, signal)
       })()
     },
@@ -169,7 +165,7 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
         const project = resolved.status === 'project' ? resolved.project : undefined
         const scopeCurrent = current.scopeMatches(session, resolved)
         const readScope = scopeCurrent ? { ...origin, project } : { ...origin, project: undefined, context: { kind: 'user' as const } }
-        const question = originals ? current.intakeQuery(session, readScope.project, originals, request.question) : request.question
+        const question = originals ? current.intakeQuery(session, readScope.project, originals) : request.question
         if (!question.trim()) {
           return { epoch, revision: current.runtime.revision(), stale: false, result: { status: 'skipped' as const } }
         }

@@ -104,16 +104,54 @@ test('parent IPC host relay supports cancel-before-budget, deadlineAt, MemoryDom
     (error: unknown) => objectOf(error)?.domainCode === 'operation.conflict',
   )
 
-  // 2. sidecarRequest rejects host-only methods
+  // 2. sidecarRequest rejects host-only methods and legacy 'context' op outside §4.2 allowlist (P2-3)
   await assert.rejects(
     connection.callAdapter('sidecarRequest', [{ op: 'deleteAll' } as unknown as Parameters<typeof connection.callAdapter<'sidecarRequest'>>[1][0], dir]),
     /invalid|unsupported|parse|Expected/i,
   )
+  await assert.rejects(
+    connection.callAdapter('sidecarRequest', [{ op: 'context', session: randomUUID(), turn: 1, question: 'legacy' } as unknown as Parameters<typeof connection.callAdapter<'sidecarRequest'>>[1][0], dir]),
+    /invalid|unsupported|parse|Expected/i,
+  )
 
-  // 3. readBatch abort before budget expiry emits memory_host_cancel while holding execution slot until terminal result
-  const heldSent: unknown[] = []
-  const heldChannel = createRemoteMemoryChannel({ send: msg => { heldSent.push(msg) } })
-  t.after(() => heldChannel.close())
+  // 3. Real attachHostMemoryRelay propagates memory_host_cancel to owner signal and holds read slot until terminal result (P2-6)
+  const relayPort = createMockParentPort()
+  const callStarted = deferred<void>()
+  const releaseCall = deferred<void>()
+  let capturedSignal: AbortSignal | undefined
+  const fakeConnection = {
+    callHost(_method: unknown, _input: unknown, options?: { signal?: AbortSignal }) {
+      capturedSignal = options?.signal
+      callStarted.resolve()
+      return releaseCall.promise.then(() => {
+        capturedSignal?.throwIfAborted()
+        return { files: [] }
+      })
+    },
+  }
+  const cancelLifetime = new AbortController()
+  const cancelRelay = attachHostMemoryRelay({
+    connection: fakeConnection as unknown as Parameters<typeof attachHostMemoryRelay>[0]['connection'],
+    port: relayPort as unknown as NodeJS.Process,
+    signal: cancelLifetime.signal,
+    getEpoch: () => 'e-cancel',
+    enabled: true,
+  })
+  const heldChannel = createRemoteMemoryChannel({
+    send: msg => { relayPort.emit('message', msg) },
+  })
+  relayPort.send = (msg, cb) => {
+    relayPort.sent.push(msg)
+    heldChannel.receive(msg)
+    cb?.(null)
+    return true
+  }
+  t.after(() => {
+    releaseCall.resolve()
+    cancelLifetime.abort()
+    cancelRelay.close()
+    heldChannel.close()
+  })
   heldChannel.receive({
     type: 'memory_owner_state',
     protocol: MEMORY_HOST_PROTOCOL,
@@ -125,14 +163,16 @@ test('parent IPC host relay supports cancel-before-budget, deadlineAt, MemoryDom
   })
   const abort = new AbortController()
   const batchPromise = heldChannel.readBatch(read => read('listFiles', { args: [{}] }), { signal: abort.signal, budgetMs: 5_000 })
-  await Promise.resolve()
-  const reqMsg = heldSent.find(m => objectOf(m)?.type === 'memory_host_request')
-  assert.ok(reqMsg, 'must send memory_host_request')
-  const reqId = String(objectOf(reqMsg)!.requestId)
+  await callStarted.promise
+  assert.equal(heldChannel.readState().executions, 1, 'active readBatch must occupy 1 execution slot')
   abort.abort(new Error('caller cancelled'))
   await assert.rejects(batchPromise, /caller cancelled/)
-  const cancelMsg = heldSent.find(m => objectOf(m)?.type === 'memory_host_cancel')
-  assert.ok(cancelMsg && objectOf(cancelMsg)!.requestId === reqId, 'must emit memory_host_cancel on abort before budget expiry')
+  assert.ok(await eventually(() => capturedSignal?.aborted === true, { timeoutMs: 3_000 }),
+    'real attachHostMemoryRelay must propagate memory_host_cancel to worker/owner AbortSignal')
+  assert.equal(heldChannel.readState().executions, 1, 'execution slot must remain occupied until terminal memory_host_result arrives')
+  releaseCall.resolve()
+  assert.ok(await eventually(() => heldChannel.readState().executions === 0, { timeoutMs: 3_000 }),
+    'terminal memory_host_result must release the execution slot')
 
   // Retiring channel processExited rejects pending cleanly and ignores late frames
   heldChannel.processExited()
@@ -140,7 +180,7 @@ test('parent IPC host relay supports cancel-before-budget, deadlineAt, MemoryDom
   assert.equal(heldChannel.receive({
     type: 'memory_host_result',
     protocol: MEMORY_HOST_PROTOCOL,
-    requestId: reqId,
+    requestId: 'late-req',
     epoch: 'e-cancel',
     ok: true,
     result: {},
@@ -231,7 +271,7 @@ test('L2 3-step boot, late-subscriber replay, unavailable immediate clear, empty
   assert.match(await readHostL2(), /偏好简短结论/, 'replacement worker must rebuild L2 resident profile before ready')
 })
 
-test('single-hop agent/pre-step detects worker-side mid-recall revision skew and performs at-most-once refresh', { timeout: 25_000 }, async t => {
+test('single-hop agent/pre-step detects real mid-recall file disable (no frame mutation) and refreshes at most once (P2-5)', { timeout: 25_000 }, async t => {
   const { dir } = scratch(t, 'phase3-l3-stale-')
   const root = path.join(dir, 'memory')
   const config = path.join(dir, 'cordis.yml')
@@ -253,9 +293,14 @@ test('single-hop agent/pre-step detects worker-side mid-recall revision skew and
   }
   ctx.llm.registerAdapter(['mock'], new CaptureAdapter())
 
-  // Intercept the FIRST automaticRecall result from memory-worker and mark it stale: true to trigger at-most-once refresh!
+  // Observe real automaticRecall RPCs without mutating any reply frame:
+  // when unmodified recall #1 returns its hit, disable the matched file via real setFileEnabled host RPC,
+  // and release unmodified reply #1 only after the real worker commits the disable & broadcasts memory_owner_change.
   let recallCalls = 0
-  const recallIds = new Set<string>()
+  let firstRecallId: string | undefined
+  let firstRecallReply: Record<string, unknown> | undefined
+  const firstRecallArrived = deferred<void>()
+  const disableCommitted = deferred<void>()
   const origEmit = ChildProcess.prototype.emit
   t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
     if (this.spawnargs?.includes('--memory-owner-ipc')) {
@@ -265,15 +310,22 @@ test('single-hop agent/pre-step detects worker-side mid-recall revision skew and
           const frame = ownerRpcFrame(msg)
           if (frame?.kind === 'request' && frame.method === 'adapter' && objectOf(frame.input)?.method === 'automaticRecall') {
             recallCalls++
-            if (recallCalls === 1) recallIds.add(frame.id)
+            if (recallCalls === 1) firstRecallId = frame.id
           }
           return Reflect.apply(origSend, this, [msg, ...rest]) as boolean
         })
       } else if (event === 'message') {
         const frame = ownerRpcFrame(args[0])
-        if (frame?.kind === 'result' && frame.ok && recallIds.delete(frame.id)) {
-          const mutated = { ...frame, result: { ...objectOf(frame.result), stale: true } }
-          return Reflect.apply(origEmit, this, [event, mutated]) as boolean
+        if (frame?.kind === 'result' && frame.ok && frame.id === firstRecallId) {
+          firstRecallId = undefined
+          firstRecallReply = objectOf(frame.result) ?? undefined
+          firstRecallArrived.resolve()
+          const child = this
+          void disableCommitted.promise.then(() => {
+            // Deliver the exact unmodified worker reply frame after the real disable committed.
+            Reflect.apply(origEmit, child, [event, args[0]])
+          })
+          return true
         }
       }
     }
@@ -282,11 +334,14 @@ test('single-hop agent/pre-step detects worker-side mid-recall revision skew and
 
   const port = createMockParentPort()
   const hostResults = new Map<string, ReturnType<typeof deferred<{ ok: boolean, result?: unknown }>>>()
+  let latestChangeRev = 0
   port.send = (raw, cb) => {
     const msg = objectOf(raw)
     if (msg?.type === 'memory_host_result' && typeof msg.requestId === 'string') {
       hostResults.get(msg.requestId)?.resolve({ ok: Boolean(msg.ok), result: msg.result })
       hostResults.delete(msg.requestId)
+    } else if (msg?.type === 'memory_owner_change' && typeof msg.revision === 'number') {
+      latestChangeRev = Math.max(latestChangeRev, msg.revision)
     }
     cb?.(null)
     return true
@@ -307,7 +362,23 @@ test('single-hop agent/pre-step detects worker-side mid-recall revision skew and
     method: 'createFile',
     input: { args: [{ operationId: randomUUID(), title: '刷新校验', text: 'STALE_REFRESH_MARKER_P3 发布清单规范' }] },
   })
-  assert.equal((await waiter.promise).ok, true)
+  const createdRes = await waiter.promise
+  assert.equal(createdRes.ok, true)
+  const createdFile = objectOf(createdRes.result) as { identity: { workspace: string, path: string, id: string }, contentRevision: string }
+  const readReqId = randomUUID()
+  const readWaiter = deferred<{ ok: boolean, result?: unknown }>()
+  hostResults.set(readReqId, readWaiter)
+  port.emit('message', {
+    type: 'memory_host_request',
+    protocol: MEMORY_HOST_PROTOCOL,
+    requestId: readReqId,
+    epoch: owner.epoch!,
+    method: 'readFile',
+    input: { args: [createdFile.identity] },
+  })
+  const detailRes = await readWaiter.promise
+  assert.equal(detailRes.ok, true)
+  const fileVersion = objectOf(detailRes.result)!.version
 
   const sessionId = SessionId(randomUUID())
   const handle = await ctx.agents.create({ sessionId, agentOptions: { provider: 'mock', model: 'test-model' } })
@@ -335,15 +406,47 @@ test('single-hop agent/pre-step detects worker-side mid-recall revision skew and
   })
   assert.equal((await aliasWaiter.promise).ok, true)
 
+  const disableTask = firstRecallArrived.promise.then(async () => {
+    assert.equal(objectOf(firstRecallReply?.result)?.status, 'hit', 'unmodified first recall must be a hit before disable')
+    const revBeforeDisable = latestChangeRev
+    const disableReqId = randomUUID()
+    const disableWaiter = deferred<{ ok: boolean, result?: unknown }>()
+    hostResults.set(disableReqId, disableWaiter)
+    port.emit('message', {
+      type: 'memory_host_request',
+      protocol: MEMORY_HOST_PROTOCOL,
+      requestId: disableReqId,
+      epoch: owner.epoch!,
+      method: 'setFileEnabled',
+      input: {
+        args: [{
+          operationId: randomUUID(),
+          identity: createdFile.identity,
+          version: fileVersion,
+          enabled: false,
+        }],
+      },
+    })
+    assert.equal((await disableWaiter.promise).ok, true)
+    assert.ok(await eventually(() => latestChangeRev > revBeforeDisable, { timeoutMs: 3_000 }))
+    disableCommitted.resolve()
+  })
+
   const done = deferred<void>()
   const off = ctx.on('session/event', (session, event) => {
     if (session.id === handle.agent.session.id && event.type === 'turn/end') { off(); done.resolve() }
   })
   handle.agent.send(createUserMessage({ content: [{ type: 'text', text: '查询发布清单规范' }], source: { kind: 'user' } }), 'next-turn', true)
-  await done.promise
+  await Promise.all([done.promise, disableTask])
 
-  assert.equal(recallCalls, 2, 'stale first automaticRecall must trigger exactly one refresh')
-  assert.match(seenMessages[0] ?? '', /STALE_REFRESH_MARKER_P3/, 'refreshed non-stale recall must be adopted')
+  assert.equal(recallCalls, 2, 'mid-recall file disable must trigger exactly one refresh without frame mutation')
+  assert.ok(firstRecallReply, 'must have captured unmodified first recall reply')
+  assert.ok(
+    firstRecallReply.stale === true || Number(firstRecallReply.revision) < latestChangeRev,
+    'unmodified worker reply must either be worker-flagged stale or carry pre-disable revision',
+  )
+  assert.equal((seenMessages[0] ?? '').includes('STALE_REFRESH_MARKER_P3'), false,
+    'final LLM prompt must exclude the disabled file after at-most-once refresh')
 })
 
 test('memoryProviderFailure classifies 429 Retry-After (both LlmFailure and thrown LlmError) and 503 overload', () => {
@@ -706,4 +809,360 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
     return rows.length > 0 && rows[0]!.cooldown_until >= failAtProfile + 44_000
   }, { timeoutMs: 10_000 }), '429 Retry-After on Dream profile pass (assembler.finish.failure) must persist cooldown_until >= failAt + 45_000')
   assert.equal(readEffectsE(DREAM)[0]!.attempts, 1)
+})
+
+test('hosted ingestion defers missing alias until late sourceAlias, skips unmatched L3, supports >20k wireText, and avoids orphan alias rows (P1-1, P1-2, P2-2)', { timeout: 30_000 }, async t => {
+  const { dir } = scratch(t, 'phase3-hosted-alias-')
+  const root = path.join(dir, 'memory')
+  const config = path.join(dir, 'cordis.yml')
+  writeFileSync(config, JSON.stringify([
+    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions']
+      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
+    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(dir, 'sessions'), compression: 'zstd' } },
+  ]))
+  const ctx = await boot('phase3-alias-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
+  t.after(async () => { await ctx.fiber.dispose() })
+
+  const seenPrompts: string[] = []
+  class EchoAdapter extends LlmAdapter {
+    override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+      seenPrompts.push(JSON.stringify(options.messages))
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: 'noted' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: 'noted' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  ctx.llm.registerAdapter(['mock'], new EchoAdapter())
+
+  const port = createMockParentPort()
+  const hostResults = new Map<string, ReturnType<typeof deferred<{ ok: boolean, result?: unknown }>>>()
+  port.send = (raw, cb) => {
+    const msg = objectOf(raw)
+    if (msg?.type === 'memory_host_result' && typeof msg.requestId === 'string') {
+      hostResults.get(msg.requestId)?.resolve({ ok: Boolean(msg.ok), result: msg.result })
+      hostResults.delete(msg.requestId)
+    }
+    cb?.(null)
+    return true
+  }
+  const owner = applyMemoryAdapter(ctx, { host: true, dataRoot: root, dailyNotes: true }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  assert.ok(await eventually(() => owner.ready(), { timeoutMs: 10_000 }))
+
+  const sendHost = async (method: string, input: unknown) => {
+    const requestId = randomUUID()
+    const waiter = deferred<{ ok: boolean, result?: unknown }>()
+    hostResults.set(requestId, waiter)
+    port.emit('message', { type: 'memory_host_request', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch: owner.epoch!, method, input })
+    const res = await waiter.promise
+    assert.equal(res.ok, true, `${method} must succeed`)
+    return res.result
+  }
+
+  await sendHost('createFile', {
+    args: [{
+      operationId: randomUUID(),
+      title: '别名隔离与超长验证',
+      text: 'HOSTED_ONLY_MARKER_P12 查询超长消息别名标记 发布核对暗号',
+    }],
+  })
+
+  // 1. P1-1 + P1-2 (unmatched draft): complete a full turn BEFORE sourceAlias arrives.
+  const sessionId = SessionId(randomUUID())
+  const handle = await ctx.agents.create({ sessionId, meta: { cwd: dir }, agentOptions: { provider: 'mock', model: 'test-model' } })
+  t.after(async () => { await handle.dispose() })
+  const lateText = '发布核对暗号：我每周五提交周报'
+  const turn1Done = deferred<void>()
+  const off1 = ctx.on('session/event', (session, event) => {
+    if (session.id === handle.agent.session.id && event.type === 'turn/end') { off1(); turn1Done.resolve() }
+  })
+  handle.agent.send(createUserMessage({ content: [{ type: 'text', text: lateText }], source: { kind: 'user' } }), 'next-turn', true)
+  await turn1Done.promise
+
+  // Unmatched hosted prompt MUST NOT inject L3 recall (P1-2)!
+  assert.equal((seenPrompts[0] ?? '').includes('HOSTED_ONLY_MARKER_P12'), false,
+    'unmatched hosted prompt must skip L3 recall and never query raw unverified text')
+
+  // Immediately after turn/end before sourceAlias, ingestion must defer (NOT permanently mark ignored)!
+  const queryDb = () => new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+  await delay(80)
+  {
+    const db = queryDb()
+    try {
+      const ignored = db.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND kind = 'ignored'").get(String(sessionId)) as { n: number }
+      assert.equal(ignored.n, 0, 'completed turn before late sourceAlias must defer instead of writing ignored')
+    } finally { db.close() }
+  }
+
+  // Send late sourceAlias -> onHostSuccess wakes ingestion -> verified original lands ONCE!
+  const lateAlias = {
+    operationId: randomUUID(),
+    sourceId: randomUUID(),
+    session: String(sessionId),
+    conversation: String(sessionId),
+    text: lateText,
+    wireText: lateText,
+    cwd: dir,
+    origin: 'original' as const,
+  }
+  await sendHost('sourceAlias', lateAlias)
+  assert.ok(await eventually(() => {
+    const db = queryDb()
+    try {
+      const row = db.prepare("SELECT COUNT(*) AS n FROM memory_sources WHERE id = ? AND author = 'user'").get(lateAlias.sourceId) as { n: number }
+      return row.n === 1
+    } finally { db.close() }
+  }, { timeoutMs: 5_000 }), 'late sourceAlias must wake deferred ingestion and ingest original exactly once')
+
+  // 2. P2-2: replaying already-consumed sourceAlias returns { sourceId } without re-inserting orphan row into owner_aliases!
+  const replayResult = await sendHost('sourceAlias', lateAlias)
+  assert.deepEqual(replayResult, { sourceId: lateAlias.sourceId })
+  {
+    const db = queryDb()
+    try {
+      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(String(sessionId)) as { n: number }
+      assert.equal(aliases.n, 0, 'replaying an already-consumed sourceAlias must not leave an orphan row in owner_aliases')
+    } finally { db.close() }
+  }
+
+  // 3. P1-2 (>20,000-char wireText with short verified sourceAlias): must pass automaticRecall without hitting 20k schema cap!
+  const longWireText = `${'背景草稿片段。'.repeat(3_200)}\n查询超长消息别名标记`
+  assert.ok(longWireText.length > 20_000)
+  await sendHost('sourceAlias', {
+    operationId: randomUUID(),
+    sourceId: randomUUID(),
+    session: String(sessionId),
+    conversation: String(sessionId),
+    text: '查询超长消息别名标记',
+    wireText: longWireText,
+    cwd: dir,
+    origin: 'original' as const,
+  })
+  const promptOffset = seenPrompts.length
+  const turn2Done = deferred<void>()
+  const off2 = ctx.on('session/event', (session, event) => {
+    if (session.id === handle.agent.session.id && event.type === 'turn/end') { off2(); turn2Done.resolve() }
+  })
+  handle.agent.send(createUserMessage({ content: [{ type: 'text', text: longWireText }], source: { kind: 'user' } }), 'next-turn', true)
+  await turn2Done.promise
+  assert.match(seenPrompts[promptOffset] ?? '', /HOSTED_ONLY_MARKER_P12/,
+    'hosted >20,000-char wireText with short verified sourceAlias must succeed in automaticRecall')
+})
+
+test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {
+  const { dir } = scratch(t, 'phase3-dream-race-p14-')
+  const root = path.join(dir, 'memory')
+  const config = path.join(dir, 'cordis.yml')
+  writeFileSync(config, JSON.stringify([
+    'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions',
+  ].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
+  const ctx = await boot('phase3-p14-p24', config, [], undefined, new URL('../package.json', import.meta.url).href)
+  t.after(async () => { await ctx.fiber.dispose() })
+
+  const dreamEntered = deferred<void>()
+  const releaseDream429 = deferred<void>()
+  const fgEntered = deferred<void>()
+  const releaseFg = deferred<void>()
+  const summarizerRelease = deferred<void>()
+  let dreamPhase: 'hold-429' | 'ok' = 'hold-429'
+  const stages: string[] = []
+
+  class RaceAdapter extends LlmAdapter {
+    override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+      const first = options.messages[0]
+      const isMemoryBg = Boolean(first && first.role === 'user' && first.source?.kind === 'viva-memory')
+      if (!isMemoryBg) {
+        if (JSON.stringify(options.messages).includes('compaction-summary-probe')) {
+          await summarizerRelease.promise
+        } else {
+          fgEntered.resolve()
+          await releaseFg.promise
+        }
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text: 'done' }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: 'done' } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
+      const sys = typeof options.system === 'string' ? options.system : ''
+      const isDreamConsolidate = sys.includes(DREAM_CONSOLIDATE_SYSTEM)
+      const isDreamProfile = sys.includes(DREAM_PROFILE_SYSTEM)
+      const stage = isDreamProfile ? 'dream_profile' : isDreamConsolidate ? 'dream_consolidate' : 'note'
+      stages.push(stage)
+      if (isDreamConsolidate && dreamPhase === 'hold-429') {
+        dreamEntered.resolve()
+        await releaseDream429.promise
+        throw new LlmError('429 during edit race', 'RATE_LIMIT', { status: 429, providerRetryAfterMs: 45_000 })
+      }
+      const text = isDreamConsolidate ? JSON.stringify({ operations: [] })
+        : isDreamProfile ? JSON.stringify({ action: 'NOOP' })
+        : JSON.stringify({ status: 'write', title: 'Daily Note', markdown: 'Weekly report on Friday.' })
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  ctx.llm.registerAdapter(['mock'], new RaceAdapter())
+
+  const port = createMockParentPort()
+  const hostResults = new Map<string, ReturnType<typeof deferred<{ ok: boolean, result?: unknown }>>>()
+  port.send = (raw, cb) => {
+    const msg = objectOf(raw)
+    if (msg?.type === 'memory_host_result' && typeof msg.requestId === 'string') {
+      hostResults.get(msg.requestId)?.resolve({ ok: Boolean(msg.ok), result: msg.result })
+      hostResults.delete(msg.requestId)
+    }
+    cb?.(null)
+    return true
+  }
+  const owner = applyMemoryAdapter(ctx, { host: true, dataRoot: root, dailyNotes: true }, port as unknown as NodeJS.Process)
+  t.after(async () => {
+    releaseDream429.resolve()
+    releaseFg.resolve()
+    summarizerRelease.resolve()
+    await owner.close()
+  })
+  assert.ok(await eventually(() => owner.ready(), { timeoutMs: 10_000 }))
+  await owner.call('setRoute', [{ provider: 'mock', model: 'test-model' }])
+
+  const sendHost = async (method: string, input: unknown) => {
+    const requestId = randomUUID()
+    const waiter = deferred<{ ok: boolean, result?: unknown }>()
+    hostResults.set(requestId, waiter)
+    port.emit('message', { type: 'memory_host_request', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch: owner.epoch!, method, input })
+    const res = await waiter.promise
+    assert.equal(res.ok, true)
+    return res.result
+  }
+  const readDream = () => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      return db.prepare('SELECT generation, due_at, attempts, cooldown_until FROM effects WHERE kind = ?').get(DREAM) as
+        { generation: number, due_at: number, attempts: number, cooldown_until: number } | undefined
+    } finally { db.close() }
+  }
+
+  // P2-4a: Hold a non-agent-loop stream WITH sessionId (like compaction summarizer); background Note must NOT be deferred!
+  const fakeSummarizerSession = SessionId(randomUUID())
+  const summarizerIter = ctx.llm.stream({
+    provider: 'mock',
+    model: 'test-model',
+    sessionId: fakeSummarizerSession,
+    messages: [createUserMessage({ content: [{ type: 'text', text: 'compaction-summary-probe' }], source: { kind: 'user' } })],
+  })[Symbol.asyncIterator]()
+  const summarizerPending = summarizerIter.next()
+
+  const sid = randomUUID()
+  for (let turn = 1; turn <= 5; turn++) {
+    const text = `Compaction probe turn ${turn}`
+    const sourceId = randomUUID()
+    await sendHost('sourceAlias', { operationId: sourceId, sourceId, session: sid, conversation: sid, text, wireText: text, cwd: dir, origin: 'original' })
+    const rec = await owner.call('receiveSource', [{ sessionId: sid, messageId: randomUUID(), text, at: Date.now(), timezone: 'UTC', turn, cwd: dir }])
+    await owner.call('completeTurn', [{ sessionId: sid, turn, eventSeq: turn * 2, sourceIds: [rec.sourceId], assistant: 'ok', completed: true, at: Date.now(), timezone: 'UTC' }])
+  }
+  assert.ok(await eventually(() => stages.includes('note'), { timeoutMs: 8_000 }),
+    'non-agent-loop stream carrying sessionId must NOT defer background Note')
+  summarizerRelease.resolve()
+  await summarizerPending
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try { return db.prepare('SELECT 1 FROM effects WHERE kind = ?').all(WRITE_NOTE).length === 0 }
+    finally { db.close() }
+  }, { timeoutMs: 8_000 }), 'initial daily note effect must settle before starting Dream')
+
+  // P1-4: Start Dream generation G, edit/create a memory file while G is in-flight (re-queuing Dream to G+1), then fail G with 429 Retry-After: 45s.
+  await sendHost('requestDream', { args: [randomUUID()] })
+  await dreamEntered.promise
+  const beforeRequeue = readDream()
+  assert.ok(beforeRequeue, 'Dream effect G must exist while running')
+
+  await sendHost('createFile', {
+    args: [{
+      operationId: randomUUID(),
+      title: '并发编辑触发 G+1',
+      text: 'In-flight edit that re-queues Dream to G+1',
+    }],
+  })
+  const afterRequeue = readDream()
+  assert.ok(afterRequeue && afterRequeue.generation > beforeRequeue.generation, 'in-flight file write must bump Dream to G+1')
+  assert.equal(afterRequeue.attempts, 0)
+
+  const failAt = Date.now()
+  releaseDream429.resolve()
+  assert.ok(await eventually(() => {
+    const row = readDream()
+    return Boolean(row && row.generation === afterRequeue.generation && row.cooldown_until >= failAt + 44_000)
+  }, { timeoutMs: 8_000 }), 'G 429 Retry-After must persist cooldown_until onto G+1 row')
+  const finalDream = readDream()!
+  assert.ok(finalDream.due_at >= finalDream.cooldown_until, 'G+1 due_at must be >= cooldown_until')
+  assert.equal(finalDream.attempts, 0, 'G 429 must NOT increment G+1 attempts')
+
+  // P2-4b: Anti-starvation batch exemption across 2-pass automatic Dream while foreground stream stays open > 30s.
+  let clockOffset = 0
+  const realDateNow = Date.now
+  t.mock.method(Date, 'now', () => realDateNow() + clockOffset)
+
+  dreamPhase = 'ok'
+  const fgSession = SessionId(randomUUID())
+  const fgHandle = await ctx.agents.create({ sessionId: fgSession, meta: { cwd: dir }, agentOptions: { provider: 'mock', model: 'test-model' } })
+  t.after(async () => { releaseFg.resolve(); await fgHandle.dispose() })
+  fgHandle.agent.send(createUserMessage({ content: [{ type: 'text', text: 'long foreground stream' }], source: { kind: 'user' } }), 'next-turn', true)
+  await fgEntered.promise
+
+  // Switch Dream back to automatic (clear dream.manualJob) and make it due now.
+  const consolidateBefore = stages.filter(s => s === 'dream_consolidate').length
+  const profileBefore = stages.filter(s => s === 'dream_profile').length
+  {
+    const db = new DatabaseSync(path.join(root, 'memory.db'))
+    try {
+      db.prepare("DELETE FROM memory_meta WHERE key IN ('dream.manualJob', 'dream.manualFollowup')").run()
+      db.prepare('UPDATE effects SET due_at = 0, cooldown_until = 0, attempts = 0 WHERE kind = ?').run(DREAM)
+    } finally { db.close() }
+  }
+  await owner.call('setRoute', [null])
+  await owner.call('setRoute', [{ provider: 'mock', model: 'test-model' }])
+  await delay(150)
+  assert.equal(stages.filter(s => s === 'dream_consolidate').length, consolidateBefore, 'automatic Dream must initially soft-yield')
+
+  // Advance Date.now beyond 30s MAX_SOFT_YIELD_MS while foreground stream is STILL open -> both passes must complete!
+  clockOffset = 35_000
+  {
+    const db = new DatabaseSync(path.join(root, 'memory.db'))
+    try {
+      db.prepare('UPDATE effects SET due_at = 0 WHERE kind = ?').run(DREAM)
+    } finally { db.close() }
+  }
+  await owner.call('setRoute', [null])
+  await owner.call('setRoute', [{ provider: 'mock', model: 'test-model' }])
+  assert.ok(await eventually(() =>
+    stages.filter(s => s === 'dream_consolidate').length > consolidateBefore
+    && stages.filter(s => s === 'dream_profile').length > profileBefore, { timeoutMs: 10_000 }),
+    'anti-starvation batch exemption must let both automatic Dream passes (consolidate + profile) complete while foreground stream remains open')
+  releaseFg.resolve()
+})
+
+test('createRemoteMemoryChannel.waitReady honors bounded budgetMs (P1-3)', async t => {
+  const channel = createRemoteMemoryChannel({ send() {} })
+  t.after(() => channel.close())
+
+  const started = performance.now()
+  await assert.rejects(() => channel.waitReady(60), /did not become ready|unavailable/i)
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 400, `bounded waitReady(60) must reject promptly, got ${elapsed}ms`)
+
+  const waiting = channel.waitReady(500)
+  setTimeout(() => {
+    channel.receive({
+      type: 'memory_owner_state',
+      protocol: MEMORY_HOST_PROTOCOL,
+      epoch: 'e-ready',
+      state: 'ready',
+      revision: 1,
+      coreEpoch: 1,
+      pid: 1,
+    })
+  }, 20)
+  await waiting
 })

@@ -2093,9 +2093,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       for (const batch of batchDreamNotes(candidates, dreamBatchBytes)) await consume(batch)
     }
 
+    if (cooldownDelayMs !== undefined) return { kind: 'retry', delayMs: cooldownDelayMs, cooldown: true }
     if (!effects.holds(job)) return 'done'
     if (waitingForAdmission) return 'wait'
-    if (cooldownDelayMs !== undefined) return { kind: 'retry', delayMs: cooldownDelayMs, cooldown: true }
     if (scanRetry) return 'retry'
     if (deferDelayMs !== undefined) return { kind: 'defer', delayMs: deferDelayMs }
     let followupQueued = false

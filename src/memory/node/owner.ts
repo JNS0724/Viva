@@ -25,7 +25,7 @@ import type { TextSpan } from '../contracts/text-spans.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
-  turn: number, live?: boolean, derived?: boolean, cwd?: string | null, task?: boolean }
+  turn: number, live?: boolean, derived?: boolean, cwd?: string | null, task?: boolean, deferMissingAlias?: boolean }
 export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number, sourceIds: readonly string[],
   assistant: string, completed: boolean, at: number, timezone: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route'> & {
@@ -172,27 +172,20 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return first && matching.every(alias => alias.sourceId === first.sourceId || alias.origin === 'derived' && first.origin === 'derived') ? first : undefined
   }
 
-  function intakeQuery(session: string, project: MemoryProject | undefined, messages: readonly { id: string, text: string }[], fallbackQuestion?: string) {
-    let matched = false
-    const resolved = messages.flatMap(({ id, text }) => {
+  function intakeQuery(session: string, project: MemoryProject | undefined, messages: readonly { id: string, text: string }[]) {
+    return messages.flatMap(({ id, text }) => {
       const wireHash = hash(text)
       const known = db.prepare('SELECT source,kind,project,spans FROM owner_messages WHERE session=? AND id=? AND hash=?').get(session, id, wireHash)
       if (known) {
-        matched = true
         if (known.project !== (project?.id ?? null)) return []
         if (known.kind === 'derived' && typeof known.spans === 'string') return [originalFromWire(text, JSON.parse(known.spans) as TextSpan[])]
         const source = known.kind === 'original' && store.readSource(String(known.source))
         return source && source.text ? [source.text] : []
       }
       const saved = aliasForWire(session, wireHash, project)
-      if (saved) {
-        matched = true
-        return [restoreAlias(saved, text).text]
-      }
+      if (saved) return [restoreAlias(saved, text).text]
       return options.hostNamespace ? [] : [text]
     }).filter(Boolean).join('\n').slice(0, 20_000)
-    if (!matched && options.hostNamespace && fallbackQuestion) return fallbackQuestion.slice(0, 20_000)
-    return resolved
   }
 
   function alias(input: MemorySourceAlias, assertCurrent: () => void) {
@@ -207,13 +200,19 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const source = store.readSource(input.sourceId)
     if (source && (source.conversation !== input.conversation || source.hash !== null && source.hash !== memoryHash(input.text)
       || (source.project?.kind === 'project' ? source.project.id : undefined) !== project?.id)) throw new MemoryDomainError('operation.conflict')
+    const wireHash = hash(input.wireText)
     store.tx(() => {
       assertCurrent()
       const old = db.prepare('SELECT fingerprint FROM owner_aliases WHERE id=?').get(input.operationId)
       if (old && old.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
       bindSession(input.session, resolved, context.kind === 'task', input.conversation)
+      // If the alias was already consumed into owner_messages and only its ACK was lost,
+      // avoid re-inserting a permanent orphan row into owner_aliases on replay.
+      const consumed = db.prepare('SELECT 1 FROM owner_messages WHERE session=? AND source=? AND hash=?')
+        .get(input.session, input.sourceId, wireHash)
+      if (consumed) return
       db.prepare('INSERT OR IGNORE INTO owner_aliases VALUES (?,?,?,?,?,?)')
-        .run(input.operationId, fingerprint, input.session, hash(input.wireText), JSON.stringify(saved), input.sourceId)
+        .run(input.operationId, fingerprint, input.session, wireHash, JSON.stringify(saved), input.sourceId)
     })
     return { sourceId: input.sourceId }
   }
@@ -238,8 +237,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const ignored = !scoped || Boolean(options.hostNamespace && !mapped)
       const kind = known?.kind ?? (ignored ? 'ignored' : mapped?.origin === 'derived' || input.derived ? 'derived' : 'original')
       // The durable session replay gets a second chance to match an authenticated host mapping.
-      if (input.live === true && !known && scoped && options.hostNamespace && !mapped) {
-        return { sourceId, text: '', handledIntent: true }
+      if ((input.live === true || input.deferMissingAlias === true) && !known && scoped && options.hostNamespace && !mapped) {
+        return { sourceId, text: '', handledIntent: true, ...(input.deferMissingAlias ? { awaitingAlias: true } : {}) }
       }
       if ((!scoped || kind !== 'original') && input.turn > 0) {
         db.prepare('INSERT OR IGNORE INTO owner_skip_assistant VALUES (?,?)').run(session, input.turn)

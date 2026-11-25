@@ -3,6 +3,7 @@ import {
   MEMORY_HOST_PROTOCOL,
   memoryHostRead,
   parseHostMemoryCommand,
+  type HostMemoryMethod,
 } from '../../../src/memory/contracts/host.ts'
 import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
 import type { OwnerCallOptions } from '../../../src/memory/node/owner-adapter.ts'
@@ -18,12 +19,14 @@ export function attachHostMemoryRelay({
   signal,
   getEpoch,
   enabled = true,
+  onHostSuccess,
 }: {
   connection: MemoryOwnerConnection
   port: HostRelayPort
   signal: AbortSignal
   getEpoch: () => string | undefined
   enabled?: boolean
+  onHostSuccess?: (method: HostMemoryMethod, input: unknown) => void
 }) {
   const hostRequests = new Map<string, { epoch: string, controller: AbortController }>()
 
@@ -88,6 +91,7 @@ export function attachHostMemoryRelay({
     }).then(
       result => {
         sendParent({ type: 'memory_host_result', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch, ok: true, result })
+        onHostSuccess?.(command.method, command.input)
       },
       error => {
         sendParent({ type: 'memory_host_result', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch, ok: false, error: memoryHostFailure(error) })
