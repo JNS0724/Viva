@@ -1465,6 +1465,97 @@ test('ingestion isolates live turn from deferred scan turn, keeps state across q
       return turns.n === 1 && aliases.n === 0
     } finally { db.close() }
   }, { timeoutMs: 5_000 }), 'wake -> release -> transient receiveSource failure must automatically retry and settle without manual wake')
+
+  // 7. R5 P1: completeTurn fails transiently BEFORE release() -> release() schedules retry from turn/end only and assistant text appears ONCE (never duplicated)!
+  const sess7 = randomUUID()
+  const msg7 = randomUUID()
+  const text7 = '释放前 completeTurn 临时失败不重复助手文本'
+  const assistantText7 = 'UNIQUE_ASSISTANT_CONCLUSION_R5P1'
+  let failCompleteBeforeRelease = true
+  const seenAssistants7: string[] = []
+  const flakyPreReleaseOwner = {
+    ...ownerApi,
+    async completeTurn(input: Parameters<typeof ownerApi.completeTurn>[0]) {
+      if (input.sessionId === sess7) {
+        if (failCompleteBeforeRelease) {
+          failCompleteBeforeRelease = false
+          throw new Error('Memory owner busy before release')
+        }
+        seenAssistants7.push(input.assistant)
+      }
+      return ownerApi.completeTurn(input)
+    },
+  }
+  const events7: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg7, source: { kind: 'user' }, content: [{ type: 'text', text: text7 }] } },
+    { seq: 2, time: Date.now(), type: 'assistant/message', data: { interrupted: false, message: { content: [{ type: 'text', text: assistantText7 }] } } },
+    { seq: 3, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const fakeSession7 = {
+    id: sess7,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events7.length },
+    snapshotEvents(from: number, end: number) { return events7.slice(from, end) },
+  }
+  const ing7 = createSessionIngestion(flakyPreReleaseOwner, async () => true, { host: true, aliasGraceMs: 1_500 })
+  t.after(() => ing7.drain())
+  await ing7.synchronize(fakeSession7 as unknown as Parameters<typeof ing7.synchronize>[0])
+  const src7 = randomUUID()
+  await connection.callHost('sourceAlias', {
+    operationId: src7, sourceId: src7, session: sess7, conversation: sess7,
+    text: text7, wireText: text7, cwd: dir, origin: 'original',
+  })
+  // Active scan consumes alias + accumulates assistant, then completeTurn throws before release()!
+  await assert.rejects(
+    () => ing7.synchronize(fakeSession7 as unknown as Parameters<typeof ing7.synchronize>[0]),
+    /Memory owner busy before release/,
+  )
+  // Now release(): must schedule retry from turn/end only and settle with assistantText7 appearing ONCE!
+  ing7.release(fakeSession7 as unknown as Parameters<typeof ing7.release>[0])
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess7) as { n: number }
+      const active = db.prepare('SELECT COUNT(*) AS n FROM owner_active_turns WHERE session = ?').get(sess7) as { n: number }
+      return turns.n === 1 && active.n === 0
+    } finally { db.close() }
+  }, { timeoutMs: 5_000 }), 'release() after pre-release completeTurn failure must retry and settle turn cleanly')
+  assert.deepEqual(seenAssistants7, [assistantText7], 'retried completeTurn must receive assistant text exactly once without duplication')
+
+  // 8. R5 P2: Released session with 4 missing-alias messages shares ONE releaseDeadline (does NOT multiply grace window per message)!
+  const sess8 = randomUUID()
+  const events8: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '无别名消息 1' }] } },
+    { seq: 2, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '无别名消息 2' }] } },
+    { seq: 3, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '无别名消息 3' }] } },
+    { seq: 4, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '无别名消息 4' }] } },
+    { seq: 5, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const fakeSession8 = {
+    id: sess8,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events8.length },
+    snapshotEvents(from: number, end: number) { return events8.slice(from, end) },
+  }
+  const ing8 = createSessionIngestion(ownerApi, async () => true, { host: true, aliasGraceMs: 150 })
+  t.after(() => ing8.drain())
+  const started8 = Date.now()
+  await ing8.synchronize(fakeSession8 as unknown as Parameters<typeof ing8.synchronize>[0])
+  ing8.release(fakeSession8 as unknown as Parameters<typeof ing8.release>[0])
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess8) as { n: number }
+      const ignored = db.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND kind = 'ignored'").get(sess8) as { n: number }
+      return turns.n === 1 && ignored.n === 4
+    } finally { db.close() }
+  }, { timeoutMs: 2_000 }), 'all 4 missing-alias messages in a released session must finalize once shared releaseDeadline expires')
+  const elapsed8 = Date.now() - started8
+  assert.ok(elapsed8 < 450, `4 missing-alias messages in released session must share one 150ms releaseDeadline (not 4x=600ms), got ${elapsed8}ms`)
 })
 
 test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {

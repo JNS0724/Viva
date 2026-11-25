@@ -129,7 +129,10 @@ export function createSessionIngestion(
           const msgId = String(event.data.id)
           const nowMs = Date.now()
           let firstSeen = state.awaitingSince.get(msgId)
-          const canDefer = host && (firstSeen === undefined || nowMs - firstSeen < aliasGraceMs)
+          const remaining = state.released && state.releaseDeadline !== null
+            ? state.releaseDeadline - nowMs
+            : firstSeen === undefined ? aliasGraceMs : aliasGraceMs - (nowMs - firstSeen)
+          const canDefer = host && remaining > 0
           const receipt = await original(state, state.turn, event.data, event.time, false, canDefer)
           if (receipt?.awaitingAlias) {
             if (firstSeen === undefined) {
@@ -139,7 +142,7 @@ export function createSessionIngestion(
             // Stop right at this event, preserving previously folded turn state (sources, assistant, receivedReport).
             state.nextSeq = event.seq
             state.pendingEvents = events.slice(idx)
-            const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, aliasGraceMs - (nowMs - firstSeen)))
+            const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, remaining))
             scheduleResume(state, waitMs)
             return
           }
@@ -154,10 +157,8 @@ export function createSessionIngestion(
         }
         state.nextSeq = event.seq + 1
       } catch (error) {
-        if (state.released) {
-          state.nextSeq = event.seq
-          state.pendingEvents = events.slice(idx)
-        }
+        state.nextSeq = event.seq
+        state.pendingEvents = events.slice(idx)
         throw error
       }
     }
@@ -266,6 +267,10 @@ export function createSessionIngestion(
         if (state.releaseDeadline === null) {
           const anchor = state.awaitingSince.size > 0 ? Math.min(...state.awaitingSince.values()) : Date.now()
           state.releaseDeadline = anchor + aliasGraceMs
+        }
+        if (state.inFlight === 0 && state.retryTimer === null && state.pendingEvents?.length) {
+          const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, state.releaseDeadline - Date.now()))
+          scheduleResume(state, waitMs)
         }
         return
       }
