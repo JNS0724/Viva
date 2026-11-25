@@ -22,10 +22,43 @@ export class MemoryFileError extends Error {
 export const memoryFileRevision = (text: string) => createHash('sha256').update(text).digest('hex')
 
 const MAX_PHYSICAL_FILE_BYTES = 4 * 1024 * 1024
+const MAX_PHYSICAL_FILE_BYTES_BIGINT = BigInt(MAX_PHYSICAL_FILE_BYTES)
 // Windows NTFS metadata + open/read chains on loaded runners routinely exceed 250 ms; stay below fileVerificationBudgetMs (2500 ms).
 const PHYSICAL_FILE_TIMEOUT_MS = process.platform === 'win32' ? 2_000 : 250
 const PHYSICAL_FILE_CONCURRENCY = 3
 const WIN32_TRANSIENT_OPEN_CODES = new Set(['EBUSY', 'EACCES', 'EPERM'])
+
+type PhysicalFileStat = {
+  dev: bigint
+  ino: bigint
+  size: bigint
+  mtimeNs: bigint
+  ctimeNs: bigint
+}
+
+const physicalStats = new WeakMap<MemoryPhysicalFile, PhysicalFileStat>()
+
+function rememberPhysicalStat(
+  file: MemoryPhysicalFile,
+  info: { dev: bigint, ino: bigint, size: bigint, mtimeNs: bigint, ctimeNs: bigint },
+): MemoryPhysicalFile {
+  physicalStats.set(file, {
+    dev: info.dev,
+    ino: info.ino,
+    size: info.size,
+    mtimeNs: info.mtimeNs,
+    ctimeNs: info.ctimeNs,
+  })
+  return file
+}
+
+function samePhysicalStat(cached: PhysicalFileStat, live: { dev: bigint, ino: bigint, size: bigint, mtimeNs: bigint, ctimeNs: bigint }): boolean {
+  return cached.dev === live.dev
+    && cached.ino === live.ino
+    && cached.size === live.size
+    && cached.mtimeNs === live.mtimeNs
+    && cached.ctimeNs === live.ctimeNs
+}
 
 async function openForRead(target: string, flags: number, signal: AbortSignal) {
   for (;;) {
@@ -56,25 +89,25 @@ export function createMemoryPhysicalFileReader(root: () => string) {
     const target = join(directory, ...parts)
     async function safeStat() {
       let cursor = directory
-      let info = await lstat(cursor)
+      let info = await lstat(cursor, { bigint: true })
       for (const part of parts) {
         signal.throwIfAborted()
         if (!info.isDirectory() || info.isSymbolicLink()) throw new MemoryFileError('path')
         cursor = join(cursor, part)
-        info = await lstat(cursor)
+        info = await lstat(cursor, { bigint: true })
       }
       signal.throwIfAborted()
-      if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_PHYSICAL_FILE_BYTES) throw new MemoryFileError('not-file')
+      if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_PHYSICAL_FILE_BYTES_BIGINT) throw new MemoryFileError('not-file')
       return info
     }
     const expected = await safeStat()
     const handle = await openForRead(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), signal)
     try {
       signal.throwIfAborted()
-      const stat = await handle.stat()
+      const stat = await handle.stat({ bigint: true })
       signal.throwIfAborted()
-      if (!stat.isFile() || stat.dev !== expected.dev || stat.ino !== expected.ino || stat.size > MAX_PHYSICAL_FILE_BYTES) throw new MemoryFileError('version')
-      const bytes = Buffer.allocUnsafe(stat.size + 1)
+      if (!stat.isFile() || stat.dev !== expected.dev || stat.ino !== expected.ino || stat.size > MAX_PHYSICAL_FILE_BYTES_BIGINT) throw new MemoryFileError('version')
+      const bytes = Buffer.allocUnsafe(Number(stat.size) + 1)
       let offset = 0
       while (offset < bytes.length) {
         const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset)
@@ -83,10 +116,10 @@ export function createMemoryPhysicalFileReader(root: () => string) {
         offset += bytesRead
       }
       const after = await safeStat()
-      if (offset !== stat.size || after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size
-        || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) throw new MemoryFileError('version')
+      if (BigInt(offset) !== stat.size || after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size
+        || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) throw new MemoryFileError('version')
       const markdown = bytes.subarray(0, offset).toString('utf8')
-      return { path, revision: memoryFileRevision(markdown), markdown }
+      return rememberPhysicalStat({ path, revision: memoryFileRevision(markdown), markdown }, after)
     } finally { await handle.close() }
   }
 
@@ -196,13 +229,46 @@ export async function removeAbandonedMemoryTemps(root: string, signal: AbortSign
   }
 }
 
-/** Synchronous compatibility check at the commit boundary for trusted write paths. */
-export function readMemoryFileAtCommit(root: string, workspace: string, path: string): MemoryPhysicalFile | null {
-  if (!/^[a-f0-9]{64}$/u.test(workspace)) throw new MemoryFileError('path')
+/** Synchronous compatibility check at the commit boundary for trusted write paths.
+ * When `cached` carries a prior `stat` snapshot and live `lstatSync` metadata matches
+ * (`dev`, `ino`, `size`, `mtimeNs`, `ctimeNs`), reuses `cached` without re-reading or re-hashing. */
+export function readMemoryFileAtCommit(
+  root: string,
+  workspace: string,
+  path: string,
+  cached?: MemoryPhysicalFile,
+): MemoryPhysicalFile | null {
+  if (!/^[a-f0-9]{64}$/u.test(workspace)
+    || !memoryFilePath.safeParse(path).success
+    || !(dailyPath.safeParse(path).success || digestPath.safeParse(path).success)) {
+    throw new MemoryFileError('path')
+  }
   const directory = join(root, workspace)
   try {
-    if (lstatSync(root).isSymbolicLink() || lstatSync(directory).isSymbolicLink()) throw new MemoryFileError('path')
-    return openMemoryFileStore(directory, { create: false }).read(path)
+    const rootInfo = lstatSync(root, { bigint: true })
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) throw new MemoryFileError('path')
+    const dirInfo = lstatSync(directory, { bigint: true })
+    if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) throw new MemoryFileError('path')
+    let cursor = directory
+    const parts = path.split('/')
+    let info = dirInfo
+    for (let i = 0; i < parts.length; i++) {
+      cursor = join(cursor, parts[i]!)
+      info = lstatSync(cursor, { bigint: true })
+      if (info.isSymbolicLink()) throw new MemoryFileError('path')
+      if (i < parts.length - 1 && !info.isDirectory()) throw new MemoryFileError('path')
+      if (i === parts.length - 1 && (!info.isFile() || info.size > MAX_PHYSICAL_FILE_BYTES_BIGINT)) {
+        throw new MemoryFileError('not-file')
+      }
+    }
+    const cachedStat = cached ? physicalStats.get(cached) : undefined
+    if (cached && cachedStat && cached.path === path && samePhysicalStat(cachedStat, info)) {
+      return cached
+    }
+    const markdown = readFileSync(cursor, 'utf8')
+    const file: MemoryPhysicalFile = { path, revision: memoryFileRevision(markdown), markdown }
+    if (BigInt(Buffer.byteLength(markdown, 'utf8')) === info.size) rememberPhysicalStat(file, info)
+    return file
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error

@@ -2,7 +2,6 @@ import type { MemoryFileIndexChanges } from '../core/ports/runtime.ts'
 import type { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { MemoryPhysicalReadError } from '../core/ports/documents.ts'
 import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentRevisionEntry, DocumentSourceRef, DocumentReadRef, DocumentUndoCandidate, DocumentManagementGuard, DocumentManualWrite, MemoryPhysicalFile } from '../core/ports/documents.ts'
 import { MEMORY_CONTRACT } from '../contracts/memory-contract.ts'
 import { digestPath } from '../contracts/memory-file-contract.ts'
@@ -152,23 +151,12 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (row.input !== hash(input)) throw new Error('memory-request-input-mismatch')
     return JSON.parse(row.receipt) as DocumentReceipt
   }
-  function read(scope: string, path: string, options: { includeDisabled?: boolean, physical?: MemoryPhysicalFile | null, throwOnPhysicalError?: boolean } = {}): DocumentSnapshot | null {
+  function read(scope: string, path: string, options: { includeDisabled?: boolean, physical?: MemoryPhysicalFile | null } = {}): DocumentSnapshot | null {
     workspace(scope)
     digestPath.parse(path)
     const row = rowByPath(scope, path)
     if (!row || row.forgotten || (!row.enabled && !options.includeDisabled) || !currentSources(scope, refsOf(row)) || !journal.visible(scope, path)) return null
-    let file: MemoryPhysicalFile | null
-    if (options.physical === undefined) {
-      if (options.throwOnPhysicalError) {
-        try { file = journal.files(scope).read(path) }
-        catch (error) { throw new MemoryPhysicalReadError('Memory document file is temporarily unavailable', { cause: error }) }
-        if (!file) throw new MemoryPhysicalReadError('Memory document file is missing')
-      } else {
-        file = journal.files(scope).read(path)
-      }
-    } else {
-      file = options.physical
-    }
+    const file = options.physical === undefined ? journal.files(scope).read(path) : options.physical
     // An external edit has no verified provenance. It is quarantined, never silently reinterpreted.
     if (!file || file.path !== path || file.revision !== row.revision) return null
     return { id: row.id, workspace: scope, path, revision: row.revision, usageVersion: row.usage_version, markdown: file.markdown, sources: refsOf(row), enabled: Boolean(row.enabled) }
@@ -423,6 +411,14 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       FROM memory_documents d WHERE d.workspace=? AND d.forgotten=0`).all(scope) as Array<Pick<Row, 'id' | 'workspace' | 'path' | 'revision' | 'usage_version' | 'enabled' | 'forgotten'>>)
       .map(row => ({ id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
         usageVersion: row.usage_version, state: row.forgotten ? 'forgotten' : row.enabled ? 'active' : 'disabled' })),
+    fileRegistration(scope, path) {
+      const row = db.prepare(`SELECT id,workspace,path,revision,usage_version,enabled,forgotten
+        FROM memory_documents WHERE workspace=? AND path=? AND forgotten=0`).get(scope, path) as Pick<Row, 'id' | 'workspace' | 'path' | 'revision' | 'usage_version' | 'enabled' | 'forgotten'> | undefined
+      return row
+        ? { id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
+            usageVersion: row.usage_version, state: row.enabled ? 'active' : 'disabled' }
+        : null
+    },
     workspaces: () => db.prepare('SELECT DISTINCT workspace FROM memory_documents').all().map(row => String(row.workspace)),
     indexFile(scope, id) {
       const row = rowById(id)

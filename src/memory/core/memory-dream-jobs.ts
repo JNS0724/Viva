@@ -11,7 +11,6 @@ import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import type { MemoryNotes } from './ports/notes.ts'
 import type { MemoryDreamStatus } from '../contracts/dream-status.ts'
 import type { MemoryStore, MemorySource } from './ports/store.ts'
-import { MemoryPhysicalReadError } from './ports/documents.ts'
 import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments, MemoryPhysicalFile, ReadMemoryPhysicalFile } from './ports/documents.ts'
 import type { MemoryFileIndex } from './ports/file-index.ts'
 import { memorySearchTokens } from './search-tokens.ts'
@@ -210,29 +209,38 @@ function normalizeDraftBody(
   return stripAccidentalFrontmatter(rawDraftBody)
 }
 
+function appendMissingSourceLinks(
+  rawBody: string,
+  existingLinks: readonly string[],
+  bodyLinks: readonly string[],
+  dailyPaths: readonly string[],
+  reuseSourcesHeading: boolean,
+): string {
+  const presentExact = new Set(bodyLinks)
+  const presentPaths = new Set(bodyLinks.map(link => link.split('#')[0]!))
+  const missingExisting = existingLinks.filter(link => !presentExact.has(link))
+  for (const link of missingExisting) presentPaths.add(link.split('#')[0]!)
+  const missingDaily = dailyPaths.filter(path => !presentPaths.has(path))
+  const missing = unique([...missingExisting, ...missingDaily])
+  const body = rawBody.trimEnd()
+  if (!missing.length) return body
+  const lines = missing.map(link => `- [[${link}]]`).join('\n')
+  const hasSourcesHeading = reuseSourcesHeading && /(?:^|\n)#{1,6}\s+(?:Sources|来源|来源依据)\s*(?:\n|$)/iu.test(body)
+  return hasSourcesHeading ? `${body}\n${lines}` : `${body}\n\n## Sources\n${lines}`
+}
+
 function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentView | null) {
   const beforeParsed = before ? parseMemoryDocument(before.markdown) : null
   const draftBody = normalizeDraftBody(
     operation.action,
-    operation.action === 'CREATE' ? operation.body : operation.body,
+    operation.body,
     operation.action === 'REFINE' ? operation.edits : undefined,
     beforeParsed?.body,
   )
   const existingLinks = before ? memoryDocumentLinks(before.markdown) : []
   // Wrap the body in empty frontmatter so a leading Markdown horizontal rule `---` is parsed as body, not frontmatter.
   const bodyLinks = memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: draftBody }))
-  const presentExact = new Set(bodyLinks)
-  const presentPaths = new Set(bodyLinks.map(link => link.split('#')[0]!))
-  const missingExisting = existingLinks.filter(link => !presentExact.has(link))
-  for (const link of missingExisting) presentPaths.add(link.split('#')[0]!)
-  const missingDaily = operation.dailyPaths.filter(path => !presentPaths.has(path))
-  const missing = unique([...missingExisting, ...missingDaily])
-  let body = draftBody.trimEnd()
-  if (missing.length) {
-    const lines = missing.map(link => `- [[${link}]]`).join('\n')
-    const hasSourcesHeading = /(?:^|\n)#{1,6}\s+(?:Sources|来源|来源依据)\s*(?:\n|$)/iu.test(body)
-    body = hasSourcesHeading ? `${body}\n${lines}` : `${body}\n\n## Sources\n${lines}`
-  }
+  const body = appendMissingSourceLinks(draftBody, existingLinks, bodyLinks, operation.dailyPaths, true)
   const previousMetadata = beforeParsed ? beforeParsed.metadata : {}
   return formatMemoryDocument({
     metadata: { ...previousMetadata, name: operation.name, description: operation.description },
@@ -262,17 +270,7 @@ function formatProfileMarkdown(
       throw new Error('dream-ungrounded-link')
     }
   }
-  const presentExact = new Set(bodyLinks)
-  const presentPaths = new Set(bodyLinks.map(link => link.split('#')[0]!))
-  const missingExisting = existingLinks.filter(link => !presentExact.has(link))
-  for (const link of missingExisting) presentPaths.add(link.split('#')[0]!)
-  const missingDaily = dailyPaths.filter(path => !presentPaths.has(path))
-  const missing = unique([...missingExisting, ...missingDaily])
-  let body = assembledBody.trimEnd()
-  if (missing.length) {
-    const lines = missing.map(link => `- [[${link}]]`).join('\n')
-    body = `${body}\n\n## Sources\n${lines}`
-  }
+  const body = appendMissingSourceLinks(assembledBody, existingLinks, bodyLinks, dailyPaths, false)
   const previousMetadata = beforeParsed ? beforeParsed.metadata : {}
   const name = typeof previousMetadata.name === 'string' && previousMetadata.name.trim()
     ? previousMetadata.name
@@ -343,7 +341,7 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 
 /** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate = async write => write(), readPhysicalFile, readFileAtCommit, readFileRevisionAtCommit, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
+  calculate, transaction, mutate = async write => write(), readPhysicalFile, readFileAtCommit, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
@@ -351,8 +349,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   digestNodes?: MemoryFileIndex['digestNodes'],
   searchDigestNodes?: (workspace: string, query: string, limit: number, offset: number, signal?: AbortSignal) => Promise<{ nodes: Array<{ id: string, path: string, score: number }>, partial: boolean }>,
   readPhysicalFile?: ReadMemoryPhysicalFile,
-  readFileAtCommit?: (workspace: string, path: string) => MemoryPhysicalFile | null,
-  readFileRevisionAtCommit?: (workspace: string, path: string) => string | undefined,
+  readFileAtCommit: (workspace: string, path: string, cached?: MemoryPhysicalFile) => MemoryPhysicalFile | null,
   allowsText?: (text: string, source: MemorySource) => boolean,
   diagnostics?: DiagnosticPort,
 }) {
@@ -372,23 +369,17 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   const { timezone, dreamTime, scanDays, dreamUnits, dreamBatchBytes } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(scanDays) || scanDays < 1 || !Number.isSafeInteger(dreamUnits) || dreamUnits < 1) throw new Error('invalid-dream-settings')
   const userWorkspace = userWorkspaceId(identity.hash)
-  const profileDeletedAt = (): number | null => {
-    const raw = store.meta(PROFILE_DELETED_AT)
+  const readMetaNumber = (key: string): number | null => {
+    const raw = store.meta(key)
     if (!raw) return null
     const parsed = Number(raw)
     return Number.isFinite(parsed) ? parsed : null
   }
-  const profileDeletedSourceSeq = (): number | null => {
-    const raw = store.meta(PROFILE_DELETED_SOURCE_SEQ)
-    if (!raw) return null
-    const parsed = Number(raw)
-    return Number.isFinite(parsed) ? parsed : null
-  }
+  const profileDeletedAt = (): number | null => readMetaNumber(PROFILE_DELETED_AT)
+  const profileDeletedSourceSeq = (): number | null => readMetaNumber(PROFILE_DELETED_SOURCE_SEQ)
   const profileDeletionGen = (): number => {
-    const raw = store.meta(PROFILE_DELETION_GEN)
-    if (!raw) return 0
-    const parsed = Number(raw)
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+    const parsed = readMetaNumber(PROFILE_DELETION_GEN)
+    return parsed !== null && parsed >= 0 ? parsed : 0
   }
   const sourceAllowedAfterProfileDeletion = (
     item: MemorySource,
@@ -685,27 +676,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       saveJobState(null, activeDeferred)
     }
 
-    const isPhysicalReadError = (error: unknown): boolean => {
-      if (error instanceof MemoryPhysicalReadError) return true
-      if (!error || typeof error !== 'object') return false
-      const code = (error as { code?: unknown }).code
-      return typeof code === 'string'
-        && /^(EACCES|EPERM|EBUSY|EIO|EMFILE|ENFILE|ENOENT|ENOTDIR|EISDIR|ESTALE|EAGAIN|ETIMEDOUT)$/u.test(code)
-    }
-
-    const livePhysicalState = (workspace: string, filePath: string):
-      | { kind: 'snapshot', file: MemoryPhysicalFile | null }
-      | { kind: 'revision', revision: string | undefined }
-      | { kind: 'unknown' } => {
-      if (readFileAtCommit) {
-        try { return { kind: 'snapshot', file: readFileAtCommit(workspace, filePath) } }
-        catch { return { kind: 'snapshot', file: null } }
-      }
-      if (readFileRevisionAtCommit) {
-        try { return { kind: 'revision', revision: readFileRevisionAtCommit(workspace, filePath) } }
-        catch { return { kind: 'revision', revision: undefined } }
-      }
-      return { kind: 'unknown' }
+    const readLiveSnapshot = (workspace: string, filePath: string, cached?: MemoryPhysicalFile | null): MemoryPhysicalFile | null => {
+      try { return readFileAtCommit(workspace, filePath, cached ?? undefined) }
+      catch { return null }
     }
 
     const classifyNoteMetadata = (file: FileRef): 'current' | 'already_processed' | 'stale' => {
@@ -743,47 +716,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const latest = notes.read(file.key, snap)
         return noteMatchesPolicy(latest, snap) ? 'current' : 'stale'
       }
-      const live = livePhysicalState(file.workspace, file.path)
-      if (live.kind === 'snapshot') {
-        if (!live.file) return 'unverifiable'
-        if (live.file.revision !== file.revision) return 'stale'
-        const latest = notes.read(file.key, live.file)
-        return noteMatchesPolicy(latest, live.file) ? 'current' : 'stale'
-      }
-      if (live.kind === 'revision') {
-        if (live.revision === undefined) return 'unverifiable'
-        if (live.revision !== file.revision) return 'stale'
-        const cached = fallbackBatch?.physical(file.workspace, file.path)
-        if (cached && cached.revision === live.revision) {
-          const latest = notes.read(file.key, cached)
-          return noteMatchesPolicy(latest, cached) ? 'current' : 'stale'
-        }
-        let latest: ReturnType<MemoryNotes['read']>
-        try {
-          latest = notes.read(file.key, undefined, { throwOnPhysicalError: true })
-        } catch (error) {
-          if (isPhysicalReadError(error)) return 'unverifiable'
-          throw error
-        }
-        if (latest) {
-          const snap: MemoryPhysicalFile = { path: latest.path, markdown: latest.document, revision: latest.fileRevision }
-          return noteMatchesPolicy(latest, snap) ? 'current' : 'stale'
-        }
-        // No-batch revision-only fallback: distinguish a file that disappeared before notes.read from an in-place change.
-        const afterMiss = livePhysicalState(file.workspace, file.path)
-        if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) return 'unverifiable'
-        return 'stale'
-      }
-      let latest: ReturnType<MemoryNotes['read']>
-      try {
-        latest = notes.read(file.key, undefined, { throwOnPhysicalError: true })
-      } catch (error) {
-        if (isPhysicalReadError(error)) return 'unverifiable'
-        throw error
-      }
-      if (!latest) return 'stale'
-      const snap: MemoryPhysicalFile = { path: latest.path, markdown: latest.document, revision: latest.fileRevision }
-      return noteMatchesPolicy(latest, snap) ? 'current' : 'stale'
+      const cachedFallback = fallbackBatch?.physical(file.workspace, file.path)
+      const live = readLiveSnapshot(file.workspace, file.path, cachedFallback)
+      if (!live) return 'unverifiable'
+      if (live.revision !== file.revision) return 'stale'
+      if (cachedFallback && live === cachedFallback) return 'current'
+      const latest = notes.read(file.key, live)
+      return noteMatchesPolicy(latest, live) ? 'current' : 'stale'
     }
 
     const classifyObservedRefs = (
@@ -792,9 +731,41 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       observedNotes: readonly ObservedNoteRef[] | undefined,
       batch?: MemoryDocumentReadBatch,
       fallbackBatch?: MemoryDocumentReadBatch,
+      txLiveCache?: Map<string, MemoryPhysicalFile | null>,
     ): 'current' | 'wait' | 'unverifiable' | 'stale' => {
       let hasUnverifiable = false
       let hasWait = false
+      const liveObserved = (filePath: string, cached?: MemoryPhysicalFile | null) => {
+        if (!txLiveCache) return readLiveSnapshot(workspace, filePath, cached)
+        const key = `${workspace}\0${filePath}`
+        if (txLiveCache.has(key)) return txLiveCache.get(key)!
+        const snap = readLiveSnapshot(workspace, filePath, cached)
+        txLiveCache.set(key, snap)
+        return snap
+      }
+      const verifyPhysical = <T>(
+        filePath: string,
+        expectedRevision: string,
+        readEntity: (physical: MemoryPhysicalFile) => T | null | undefined,
+        matches: (entity: T) => boolean,
+      ): 'ok' | 'unverifiable' | 'stale' => {
+        let physical: MemoryPhysicalFile | null
+        if (batch) {
+          const obsRev = batch.observedRevision(workspace, filePath)
+          if (obsRev === undefined || obsRev === null) return 'unverifiable'
+          if (obsRev !== expectedRevision) return 'stale'
+          physical = batch.physical(workspace, filePath)
+          if (!physical) return 'unverifiable'
+        } else {
+          const cached = fallbackBatch?.physical(workspace, filePath)
+          physical = liveObserved(filePath, cached)
+          if (!physical) return 'unverifiable'
+          if (physical.revision !== expectedRevision) return 'stale'
+          if (cached && physical === cached) return 'ok'
+        }
+        const entity = readEntity(physical)
+        return entity && matches(entity) ? 'ok' : 'stale'
+      }
       if (observedReads?.length) {
         const regById = new Map(documents.fileRegistry(workspace).map(row => [row.id, row]))
         for (const ref of observedReads) {
@@ -806,45 +777,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (!refsCurrent(ref.sources)) return 'stale'
             if (ref.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) hasWait = true
           }
-          let physical: MemoryPhysicalFile | null | undefined
-          let revisionOnlyNoBatch = false
-          if (batch) {
-            const obsRev = batch.observedRevision(workspace, row.path)
-            if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
-            if (obsRev !== ref.revision) return 'stale'
-            physical = batch.physical(workspace, row.path)
-          } else {
-            const live = livePhysicalState(workspace, row.path)
-            if (live.kind === 'snapshot') {
-              if (!live.file) { hasUnverifiable = true; continue }
-              if (live.file.revision !== ref.revision) return 'stale'
-              physical = live.file
-            } else if (live.kind === 'revision') {
-              if (live.revision === undefined) { hasUnverifiable = true; continue }
-              if (live.revision !== ref.revision) return 'stale'
-              const cached = fallbackBatch?.physical(workspace, row.path)
-              if (cached && cached.revision === live.revision) physical = cached
-              else revisionOnlyNoBatch = true
-            }
-          }
-          let doc: ReturnType<MemoryDocuments['read']>
-          try {
-            doc = documents.read(workspace, row.path, physical !== undefined ? { physical } : { throwOnPhysicalError: true })
-          } catch (error) {
-            if (physical === undefined && isPhysicalReadError(error)) {
-              hasUnverifiable = true
-              continue
-            }
-            throw error
-          }
-          if (!doc) {
-            if (revisionOnlyNoBatch) {
-              const afterMiss = livePhysicalState(workspace, row.path)
-              if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) { hasUnverifiable = true; continue }
-            }
-            return 'stale'
-          }
-          if (doc.id !== ref.id || doc.revision !== ref.revision || doc.usageVersion !== ref.usageVersion) return 'stale'
+          const state = verifyPhysical(
+            row.path,
+            ref.revision,
+            physical => documents.read(workspace, row.path, { physical }),
+            doc => doc.id === ref.id && doc.revision === ref.revision && doc.usageVersion === ref.usageVersion,
+          )
+          if (state === 'stale') return 'stale'
+          if (state === 'unverifiable') hasUnverifiable = true
         }
       }
       for (const obsNote of observedNotes ?? []) {
@@ -855,48 +795,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         }
         if (!refsCurrent(obsNote.sources)) return 'stale'
         if (obsNote.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) hasWait = true
-        let physical: MemoryPhysicalFile | null | undefined
-        let revisionOnlyNoBatch = false
-        if (batch) {
-          const obsRev = batch.observedRevision(workspace, obsNote.path)
-          if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
-          if (obsRev !== obsNote.revision) return 'stale'
-          physical = batch.physical(workspace, obsNote.path)
-        } else {
-          const live = livePhysicalState(workspace, obsNote.path)
-          if (live.kind === 'snapshot') {
-            if (!live.file) { hasUnverifiable = true; continue }
-            if (live.file.revision !== obsNote.revision) return 'stale'
-            physical = live.file
-          } else if (live.kind === 'revision') {
-            if (live.revision === undefined) { hasUnverifiable = true; continue }
-            if (live.revision !== obsNote.revision) return 'stale'
-            const cached = fallbackBatch?.physical(workspace, obsNote.path)
-            if (cached && cached.revision === live.revision) physical = cached
-            else revisionOnlyNoBatch = true
-          }
-        }
-        let latest: ReturnType<MemoryNotes['read']>
-        try {
-          latest = notes.read(obsNote.key, physical, physical === undefined ? { throwOnPhysicalError: true } : undefined)
-        } catch (error) {
-          if (physical === undefined && isPhysicalReadError(error)) {
-            hasUnverifiable = true
-            continue
-          }
-          throw error
-        }
-        if (!latest) {
-          if (revisionOnlyNoBatch) {
-            const afterMiss = livePhysicalState(workspace, obsNote.path)
-            if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) { hasUnverifiable = true; continue }
-          }
-          return 'stale'
-        }
-        if (!latest.enabled || latest.workspace !== workspace || latest.path !== obsNote.path
-          || latest.revision !== obsNote.checkpoint || latest.fileRevision !== obsNote.revision) {
-          return 'stale'
-        }
+        const state = verifyPhysical(
+          obsNote.path,
+          obsNote.revision,
+          physical => notes.read(obsNote.key, physical),
+          latest => latest.enabled && latest.workspace === workspace && latest.path === obsNote.path
+            && latest.revision === obsNote.checkpoint && latest.fileRevision === obsNote.revision,
+        )
+        if (state === 'stale') return 'stale'
+        if (state === 'unverifiable') hasUnverifiable = true
       }
       if (hasWait) return 'wait'
       if (hasUnverifiable) return 'unverifiable'
@@ -930,18 +837,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const at = now()
         let advanced = false
         const unresolved: DeferredCheckpoint[] = []
+        const txObservedLiveCache = new Map<string, MemoryPhysicalFile | null>()
+        const markStale = () => {
+          progress(job, 'source_changed', 'consolidate')
+          if (!options.isDeferredRetry) scanRetry = true
+        }
         const handleWait = (target: DeferredCheckpoint) => {
           if (!checkpointBatch) {
             const targetState = classifyNoteFile(target.file)
-            if (targetState === 'unverifiable') {
-              unresolved.push(target)
-              return
-            }
-            if (targetState === 'stale') {
-              progress(job, 'source_changed', 'consolidate')
-              if (!options.isDeferredRetry) scanRetry = true
-              return
-            }
+            if (targetState === 'unverifiable') { unresolved.push(target); return }
+            if (targetState === 'stale') { markStale(); return }
             if (targetState === 'already_processed') return
           }
           if (options.isDeferredRetry) unresolved.push(target)
@@ -951,23 +856,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           // 1. Metadata-only precondition check on target (zero disk I/O).
           const metaState = classifyNoteMetadata(target.file)
           if (metaState === 'already_processed') continue
-          if (metaState === 'stale') {
-            progress(job, 'source_changed', 'consolidate')
-            if (!options.isDeferredRetry) scanRetry = true
-            continue
-          }
+          if (metaState === 'stale') { markStale(); continue }
           // If the loaded batch already observed the target as missing/unreadable or changed, resolve before dependency wait checks.
           if (checkpointBatch) {
             const targetBatchRev = checkpointBatch.observedRevision(target.file.workspace, target.file.path)
-            if (targetBatchRev === undefined || targetBatchRev === null) {
-              unresolved.push(target)
-              continue
-            }
-            if (targetBatchRev !== target.file.revision) {
-              progress(job, 'source_changed', 'consolidate')
-              if (!options.isDeferredRetry) scanRetry = true
-              continue
-            }
+            if (targetBatchRev === undefined || targetBatchRev === null) { unresolved.push(target); continue }
+            if (targetBatchRev !== target.file.revision) { markStale(); continue }
           }
 
           // 2. Partition observed notes into distinct dependencies vs self-observations of target.file.key so the
@@ -978,35 +872,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           // 3. Validate distinct observed dependencies FIRST (batch if available, then live).
           if (distinctObservedNotes.length || target.observedReads?.length) {
             const obsState = classifyObservedRefs(target.workspace, target.observedReads, distinctObservedNotes, checkpointBatch)
-            if (obsState === 'stale') {
-              progress(job, 'source_changed', 'consolidate')
-              if (!options.isDeferredRetry) scanRetry = true
-              continue
-            }
-            if (obsState === 'wait') {
-              handleWait(target)
-              continue
-            }
-            if (obsState === 'unverifiable') {
-              unresolved.push(target)
-              continue
-            }
+            if (obsState === 'stale') { markStale(); continue }
+            if (obsState === 'wait') { handleWait(target); continue }
+            if (obsState === 'unverifiable') { unresolved.push(target); continue }
             // Synchronous live-disk revalidation inside the checkpoint transaction closes interleaving edits during loadFiles.
             if (checkpointBatch) {
-              const liveObsState = classifyObservedRefs(target.workspace, target.observedReads, distinctObservedNotes, undefined, checkpointBatch)
-              if (liveObsState === 'unverifiable') {
-                unresolved.push(target)
-                continue
-              }
-              if (liveObsState === 'stale') {
-                progress(job, 'source_changed', 'consolidate')
-                if (!options.isDeferredRetry) scanRetry = true
-                continue
-              }
-              if (liveObsState === 'wait') {
-                handleWait(target)
-                continue
-              }
+              const liveObsState = classifyObservedRefs(target.workspace, target.observedReads, distinctObservedNotes, undefined, checkpointBatch, txObservedLiveCache)
+              if (liveObsState === 'unverifiable') { unresolved.push(target); continue }
+              if (liveObsState === 'stale') { markStale(); continue }
+              if (liveObsState === 'wait') { handleWait(target); continue }
             }
           }
 
@@ -1024,15 +898,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               selfWait = true
             }
           }
-          if (selfStale) {
-            progress(job, 'source_changed', 'consolidate')
-            if (!options.isDeferredRetry) scanRetry = true
-            continue
-          }
-          if (selfWait) {
-            handleWait(target)
-            continue
-          }
+          if (selfStale) { markStale(); continue }
+          if (selfWait) { handleWait(target); continue }
 
           // 5. Own-source eligibility for NOOP targets.
           if (target.operationIds.length === 0
@@ -1044,28 +911,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           // 6. Validate target note's physical file ONCE immediately before markProcessed.
           if (checkpointBatch) {
             const batchFileState = classifyNoteFile(target.file, checkpointBatch)
-            if (batchFileState === 'unverifiable') {
-              unresolved.push(target)
-              continue
-            }
+            if (batchFileState === 'unverifiable') { unresolved.push(target); continue }
             if (batchFileState !== 'current') {
-              if (batchFileState === 'stale') {
-                progress(job, 'source_changed', 'consolidate')
-                if (!options.isDeferredRetry) scanRetry = true
-              }
+              if (batchFileState === 'stale') markStale()
               continue
             }
           }
           const liveFileState = classifyNoteFile(target.file, undefined, checkpointBatch)
-          if (liveFileState === 'unverifiable') {
-            unresolved.push(target)
-            continue
-          }
+          if (liveFileState === 'unverifiable') { unresolved.push(target); continue }
           if (liveFileState !== 'current') {
-            if (liveFileState === 'stale') {
-              progress(job, 'source_changed', 'consolidate')
-              if (!options.isDeferredRetry) scanRetry = true
-            }
+            if (liveFileState === 'stale') markStale()
             continue
           }
           if (notes.markProcessed(target.file.key, target.file.checkpoint)) {
@@ -1258,16 +1113,19 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const target = documents.read(workspace, op.path, { physical })
           return target !== null && target.revision === op.expectedRevision
         }
+      let verifiedOpBatch: { opId: string, observed: MemoryDocumentReadBatch } | undefined
+      const failStale = (): 'stale' => {
+        clearPendingBatch()
+        progress(job, 'source_changed', 'consolidate')
+        return 'stale'
+      }
       return {
         async verifyOp(op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>): Promise<'ready' | 'wait' | 'stale' | 'retry' | 'cancelled'> {
+          verifiedOpBatch = undefined
           const dbState = dbCheckOp(op, opReads)
           if (dbState === 'cancelled') return 'cancelled'
           if (dbState === 'wait') return 'wait'
-          if (dbState === 'stale') {
-            clearPendingBatch()
-            progress(job, 'source_changed', 'consolidate')
-            return 'stale'
-          }
+          if (dbState === 'stale') return failStale()
           const registry = documents.fileRegistry(workspace)
           const regById = new Map(registry.map(row => [row.id, row]))
           const opLocations: Location[] = [
@@ -1291,67 +1149,72 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             let hasUnverifiable = false
             for (const file of batch.fileRefs) {
               const fileState = classifyNoteFile(file, observed)
-              if (fileState === 'stale') {
-                clearPendingBatch()
-                progress(job, 'source_changed', 'consolidate')
-                return 'stale'
-              }
+              if (fileState === 'stale') return failStale()
               if (fileState === 'unverifiable') hasUnverifiable = true
             }
             for (const obsNote of batch.observedNotes ?? []) {
               const obsRev = observed.observedRevision(workspace, obsNote.path)
-              if (obsRev === undefined || obsRev === null) {
-                hasUnverifiable = true
-              } else if (obsRev !== obsNote.revision) {
-                clearPendingBatch()
-                progress(job, 'source_changed', 'consolidate')
-                return 'stale'
-              }
+              if (obsRev === undefined || obsRev === null) hasUnverifiable = true
+              else if (obsRev !== obsNote.revision) return failStale()
             }
             for (const ref of opReads) {
               const target = regById.get(ref.id)
-              if (!target) {
-                clearPendingBatch()
-                progress(job, 'source_changed', 'consolidate')
-                return 'stale'
-              }
+              if (!target) return failStale()
               const obsRev = observed.observedRevision(workspace, target.path)
-              if (obsRev === undefined || obsRev === null) {
-                hasUnverifiable = true
-              } else if (obsRev !== ref.revision) {
-                clearPendingBatch()
-                progress(job, 'source_changed', 'consolidate')
-                return 'stale'
-              }
+              if (obsRev === undefined || obsRev === null) hasUnverifiable = true
+              else if (obsRev !== ref.revision) return failStale()
             }
             const targetObsRev = observed.observedRevision(workspace, op.path)
             if (op.action === 'CREATE') {
-              if (targetObsRev === undefined) {
-                hasUnverifiable = true
-              } else if (targetObsRev !== null) {
-                clearPendingBatch()
-                progress(job, 'source_changed', 'consolidate')
-                return 'stale'
-              }
+              if (targetObsRev === undefined) hasUnverifiable = true
+              else if (targetObsRev !== null) return failStale()
             } else {
-              if (targetObsRev === undefined || targetObsRev === null) {
-                hasUnverifiable = true
-              } else if (targetObsRev !== op.expectedRevision) {
-                clearPendingBatch()
-                progress(job, 'source_changed', 'consolidate')
-                return 'stale'
-              }
+              if (targetObsRev === undefined || targetObsRev === null) hasUnverifiable = true
+              else if (targetObsRev !== op.expectedRevision) return failStale()
             }
             if (hasUnverifiable) return 'retry'
           }
-          if (makeOpCurrent(op, opReads)(observed)) return 'ready'
+          if (makeOpCurrent(op, opReads)(observed)) {
+            if (observed) verifiedOpBatch = { opId: op.operationId, observed }
+            return 'ready'
+          }
           if (!effects.holds(job)) return 'cancelled'
-          clearPendingBatch()
-          progress(job, 'source_changed', 'consolidate')
-          return 'stale'
+          return failStale()
         },
         assertMutateCurrent(op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>) {
+          const verifiedBatch = verifiedOpBatch?.opId === op.operationId ? verifiedOpBatch.observed : undefined
+          verifiedOpBatch = undefined
           if (dbCheckOp(op, opReads) !== 'ok') throw new MemoryDreamStaleError()
+          if (verifiedBatch) {
+            const checked = new Map<string, boolean>()
+            const matchesCached = (ws: string, filePath: string, expectedRevision: string): boolean => {
+              const key = `${ws}\0${filePath}\0${expectedRevision}`
+              const prior = checked.get(key)
+              if (prior !== undefined) return prior
+              const cached = verifiedBatch.physical(ws, filePath)
+              if (!cached || cached.revision !== expectedRevision) { checked.set(key, false); return false }
+              const live = readLiveSnapshot(ws, filePath, cached)
+              const ok = live === cached && live.revision === expectedRevision
+              checked.set(key, ok)
+              return ok
+            }
+            const regById = new Map(documents.fileRegistry(workspace).map(row => [row.id, row]))
+            let fastMatch = batch.fileRefs.every(file => matchesCached(file.workspace, file.path, file.revision))
+              && (batch.observedNotes ?? []).every(obsNote => matchesCached(workspace, obsNote.path, obsNote.revision))
+              && opReads.every(ref => {
+                const target = regById.get(ref.id)
+                return Boolean(target && matchesCached(workspace, target.path, ref.revision))
+              })
+            if (fastMatch) {
+              if (op.action === 'CREATE') {
+                try { fastMatch = readFileAtCommit(workspace, op.path) === null }
+                catch { fastMatch = false }
+              } else {
+                fastMatch = op.expectedRevision !== null && matchesCached(workspace, op.path, op.expectedRevision)
+              }
+            }
+            if (fastMatch) return
+          }
           if (!makeOpCurrent(op, opReads)()) throw new DreamDiskUnverifiableError()
         },
         onCommittedPath: extra?.onCommittedPath,
