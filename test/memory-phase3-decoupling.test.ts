@@ -1357,6 +1357,114 @@ test('ingestion isolates live turn from deferred scan turn, keeps state across q
       return turns.n === 1
     } finally { db.close() }
   }, { timeoutMs: 5_000 }), 'released session must automatically retry transient RPC failure within grace window')
+
+  // 5. R4 P1-1: Released session succeeds in receiveSource (clearing awaitingSince), then first completeTurn fails transiently -> must keep deadline and retry turn/end!
+  const sess5 = randomUUID()
+  const msg5 = randomUUID()
+  const text5 = '别名成功后 completeTurn 临时失败重试'
+  let failCompleteTurnOnce = true
+  const flakyCompleteOwner = {
+    ...ownerApi,
+    async completeTurn(input: Parameters<typeof ownerApi.completeTurn>[0]) {
+      if (input.sessionId === sess5 && failCompleteTurnOnce) {
+        failCompleteTurnOnce = false
+        throw new Error('Memory owner busy')
+      }
+      return ownerApi.completeTurn(input)
+    },
+  }
+  const events5: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg5, source: { kind: 'user' }, content: [{ type: 'text', text: text5 }] } },
+    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const fakeSession5 = {
+    id: sess5,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events5.length },
+    snapshotEvents(from: number, end: number) { return events5.slice(from, end) },
+  }
+  const ing5 = createSessionIngestion(flakyCompleteOwner, async () => true, { host: true, aliasGraceMs: 1_500 })
+  t.after(() => ing5.drain())
+  await ing5.receive(
+    fakeSession5 as unknown as Parameters<typeof ing5.receive>[0],
+    [{ id: msg5, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: text5 }] } as unknown as Parameters<typeof ing5.receive>[1][0]],
+    1,
+  )
+  ing5.release(fakeSession5 as unknown as Parameters<typeof ing5.release>[0])
+  const src5 = randomUUID()
+  await connection.callHost('sourceAlias', {
+    operationId: src5, sourceId: src5, session: sess5, conversation: sess5,
+    text: text5, wireText: text5, cwd: dir, origin: 'original',
+  })
+  ing5.wakeIfAwaiting(sess5)
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess5) as { n: number }
+      const active = db.prepare('SELECT COUNT(*) AS n FROM owner_active_turns WHERE session = ?').get(sess5) as { n: number }
+      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(sess5) as { n: number }
+      return turns.n === 1 && active.n === 0 && aliases.n === 0
+    } finally { db.close() }
+  }, { timeoutMs: 5_000 }), 'transient completeTurn failure after receiveSource on released session must retry within release deadline and clear active turn')
+
+  // 6. R4 P2-1: wakeIfAwaiting queues synchronize while active -> immediate release() -> receiveSource fails once -> retries automatically within release deadline!
+  const sess6 = randomUUID()
+  const msg6 = randomUUID()
+  const text6 = '先唤醒再释放遇到临时失败自动重试'
+  const wakeFlushGate = deferred<boolean>()
+  let flushCount6 = 0
+  let sess6Calls = 0
+  let failSess6Once = true
+  const flakyWakeReleaseOwner = {
+    ...ownerApi,
+    async receiveSource(input: Parameters<typeof ownerApi.receiveSource>[0]) {
+      if (input.sessionId === sess6) {
+        sess6Calls++
+        if (sess6Calls === 2 && failSess6Once) {
+          failSess6Once = false
+          throw new Error('Memory owner request limit reached')
+        }
+      }
+      return ownerApi.receiveSource(input)
+    },
+  }
+  const events6: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg6, source: { kind: 'user' }, content: [{ type: 'text', text: text6 }] } },
+    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const fakeSession6 = {
+    id: sess6,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events6.length },
+    snapshotEvents(from: number, end: number) { return events6.slice(from, end) },
+  }
+  const ing6 = createSessionIngestion(flakyWakeReleaseOwner, () => {
+    flushCount6++
+    return flushCount6 === 2 ? wakeFlushGate.promise : Promise.resolve(true)
+  }, { host: true, aliasGraceMs: 1_500 })
+  t.after(() => ing6.drain())
+  await ing6.synchronize(fakeSession6 as unknown as Parameters<typeof ing6.synchronize>[0])
+  const src6 = randomUUID()
+  await connection.callHost('sourceAlias', {
+    operationId: src6, sourceId: src6, session: sess6, conversation: sess6,
+    text: text6, wireText: text6, cwd: dir, origin: 'original',
+  })
+  // Wake while session is still active (queues synchronize with gated flush), then immediately release(), then let flush finish into failing receiveSource!
+  ing6.wakeIfAwaiting(sess6)
+  ing6.release(fakeSession6 as unknown as Parameters<typeof ing6.release>[0])
+  wakeFlushGate.resolve(true)
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess6) as { n: number }
+      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(sess6) as { n: number }
+      return turns.n === 1 && aliases.n === 0
+    } finally { db.close() }
+  }, { timeoutMs: 5_000 }), 'wake -> release -> transient receiveSource failure must automatically retry and settle without manual wake')
 })
 
 test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {

@@ -20,6 +20,7 @@ type Replay = {
   awaitingSince: Map<string, number>
   retryTimer: ReturnType<typeof setTimeout> | null
   released: boolean
+  releaseDeadline: number | null
   inFlight: number
   pendingEvents: SnapshotEvents | null
 }
@@ -48,6 +49,23 @@ export function createSessionIngestion(
     }
   }
 
+  const hasPendingWork = (state: Replay) => state.awaitingSince.size > 0 || Boolean(state.pendingEvents?.length)
+
+  function handleReleasedError(state: Replay, error: unknown) {
+    const sessionId = String(state.session.id)
+    const nowMs = Date.now()
+    if (state.releaseDeadline === null) state.releaseDeadline = nowMs + aliasGraceMs
+    const remaining = state.releaseDeadline - nowMs
+    if (!closed && remaining > 0 && state.pendingEvents?.length && sessions.get(sessionId) === state) {
+      scheduleResume(state, Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, remaining)))
+    } else {
+      state.awaitingSince.clear()
+      state.pendingEvents = null
+      state.releaseDeadline = null
+      onError?.(error)
+    }
+  }
+
   function enqueue(session: Session, action: (state: Replay) => Promise<void>) {
     const sessionId = String(session.id)
     let state = sessions.get(sessionId)
@@ -55,7 +73,7 @@ export function createSessionIngestion(
       if (state) clearRetry(state)
       state = { epoch: owner.epoch, session, nextSeq: null, turn: 0, sources: new Set(),
         assistant: [], receivedReport: false, work: state?.work.catch(() => {}) ?? Promise.resolve(),
-        awaitingSince: new Map(), retryTimer: null, released: false, inFlight: 0, pendingEvents: null }
+        awaitingSince: new Map(), retryTimer: null, released: false, releaseDeadline: null, inFlight: 0, pendingEvents: null }
       sessions.set(sessionId, state)
     }
     const entry = state
@@ -63,7 +81,7 @@ export function createSessionIngestion(
     entry.work = entry.work.catch(() => {}).then(() => owner.inEpoch(entry.epoch, () => action(entry)))
       .finally(() => {
         entry.inFlight = Math.max(0, entry.inFlight - 1)
-        if (entry.released && entry.inFlight === 0 && entry.awaitingSince.size === 0 && sessions.get(sessionId) === entry) {
+        if (entry.released && entry.inFlight === 0 && (!hasPendingWork(entry) || entry.epoch !== owner.epoch) && sessions.get(sessionId) === entry) {
           clearRetry(entry)
           sessions.delete(sessionId)
         }
@@ -98,44 +116,53 @@ export function createSessionIngestion(
     const session = String(state.session.id)
     for (let idx = 0; idx < events.length; idx++) {
       const event = events[idx]!
-      if (event.type === 'turn/start') {
-        state.turn = event.data.turn
-        state.sources.clear()
-        state.assistant = []
-        state.receivedReport = false
-      }
-      if (event.type === 'user/message') {
-        const kind: string = event.data.source.kind
-        if (kind === 'viva-report') state.receivedReport = true
-        const msgId = String(event.data.id)
-        const nowMs = Date.now()
-        let firstSeen = state.awaitingSince.get(msgId)
-        const canDefer = host && (firstSeen === undefined || nowMs - firstSeen < aliasGraceMs)
-        const receipt = await original(state, state.turn, event.data, event.time, false, canDefer)
-        if (receipt?.awaitingAlias) {
-          if (firstSeen === undefined) {
-            firstSeen = nowMs
-            state.awaitingSince.set(msgId, firstSeen)
+      try {
+        if (event.type === 'turn/start') {
+          state.turn = event.data.turn
+          state.sources.clear()
+          state.assistant = []
+          state.receivedReport = false
+        }
+        if (event.type === 'user/message') {
+          const kind: string = event.data.source.kind
+          if (kind === 'viva-report') state.receivedReport = true
+          const msgId = String(event.data.id)
+          const nowMs = Date.now()
+          let firstSeen = state.awaitingSince.get(msgId)
+          const canDefer = host && (firstSeen === undefined || nowMs - firstSeen < aliasGraceMs)
+          const receipt = await original(state, state.turn, event.data, event.time, false, canDefer)
+          if (receipt?.awaitingAlias) {
+            if (firstSeen === undefined) {
+              firstSeen = nowMs
+              state.awaitingSince.set(msgId, firstSeen)
+            }
+            // Stop right at this event, preserving previously folded turn state (sources, assistant, receivedReport).
+            state.nextSeq = event.seq
+            state.pendingEvents = events.slice(idx)
+            const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, aliasGraceMs - (nowMs - firstSeen)))
+            scheduleResume(state, waitMs)
+            return
           }
-          // Stop right at this event, preserving previously folded turn state (sources, assistant, receivedReport).
+          state.awaitingSince.delete(msgId)
+          if (receipt && !receipt.handledIntent) state.sources.add(receipt.sourceId)
+        }
+        if (event.type === 'assistant/message' && !event.data.interrupted) state.assistant.push(textOf(event.data.message))
+        if (event.type === 'turn/end') {
+          await owner.completeTurn({ sessionId: session, turn: event.data.turn, eventSeq: event.seq,
+            sourceIds: [...state.sources], assistant: state.receivedReport ? '' : state.assistant.join('\n'), completed: event.data.reason.kind === 'completed',
+            at: event.time, timezone: timezone() })
+        }
+        state.nextSeq = event.seq + 1
+      } catch (error) {
+        if (state.released) {
           state.nextSeq = event.seq
           state.pendingEvents = events.slice(idx)
-          const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, aliasGraceMs - (nowMs - firstSeen)))
-          scheduleResume(state, waitMs)
-          return
         }
-        state.awaitingSince.delete(msgId)
-        if (receipt && !receipt.handledIntent) state.sources.add(receipt.sourceId)
+        throw error
       }
-      if (event.type === 'assistant/message' && !event.data.interrupted) state.assistant.push(textOf(event.data.message))
-      if (event.type === 'turn/end') {
-        await owner.completeTurn({ sessionId: session, turn: event.data.turn, eventSeq: event.seq,
-          sourceIds: [...state.sources], assistant: state.receivedReport ? '' : state.assistant.join('\n'), completed: event.data.reason.kind === 'completed',
-          at: event.time, timezone: timezone() })
-      }
-      state.nextSeq = event.seq + 1
     }
     state.pendingEvents = null
+    state.releaseDeadline = null
   }
 
   async function scan(state: Replay, end: SessionLogOffset, persisted: Promise<unknown>) {
@@ -145,9 +172,10 @@ export function createSessionIngestion(
       let ok = false
       try { ok = await persisted === true } catch { ok = false }
       if (!ok) {
-        if (state.awaitingSince.size > 0 && state.pendingEvents?.length) {
+        if (hasPendingWork(state) && state.pendingEvents?.length) {
           clearRetry(state)
-          await processEvents(state, state.pendingEvents)
+          try { await processEvents(state, state.pendingEvents) }
+          catch (error) { handleReleasedError(state, error) }
         }
         return
       }
@@ -167,7 +195,12 @@ export function createSessionIngestion(
     const from = Math.max(inherited, state.nextSeq)
     if (from >= end) return
     const events = state.session.snapshotEvents(SessionLogOffset(from), end)
-    await processEvents(state, events)
+    try {
+      await processEvents(state, events)
+    } catch (error) {
+      if (state.released) handleReleasedError(state, error)
+      else throw error
+    }
   }
 
   function resumeReleased(state: Replay) {
@@ -184,25 +217,17 @@ export function createSessionIngestion(
       const pending = state.pendingEvents
       if (!pending || pending.length === 0) {
         state.awaitingSince.clear()
+        state.releaseDeadline = null
         return
       }
       try {
         await processEvents(state, pending)
       } catch (error) {
-        const nowMs = Date.now()
-        const earliest = state.awaitingSince.size > 0 ? Math.min(...state.awaitingSince.values()) : 0
-        const remaining = earliest > 0 ? aliasGraceMs - (nowMs - earliest) : 0
-        if (!closed && remaining > 0 && sessions.get(sessionId) === state) {
-          scheduleResume(state, Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, remaining)))
-        } else {
-          state.awaitingSince.clear()
-          state.pendingEvents = null
-          onError?.(error)
-        }
+        handleReleasedError(state, error)
       }
     })).finally(() => {
       state.inFlight = Math.max(0, state.inFlight - 1)
-      if (state.released && state.inFlight === 0 && (state.awaitingSince.size === 0 || state.epoch !== owner.epoch) && sessions.get(sessionId) === state) {
+      if (state.released && state.inFlight === 0 && (!hasPendingWork(state) || state.epoch !== owner.epoch) && sessions.get(sessionId) === state) {
         clearRetry(state)
         sessions.delete(sessionId)
       }
@@ -228,7 +253,7 @@ export function createSessionIngestion(
     wakeIfAwaiting(sessionId: string) {
       if (closed) return
       const state = sessions.get(sessionId)
-      if (!state || state.awaitingSince.size === 0) return
+      if (!state || !hasPendingWork(state)) return
       if (state.released) void resumeReleased(state).catch(() => {})
       else void synchronize(state.session).catch(() => {})
     },
@@ -236,8 +261,12 @@ export function createSessionIngestion(
       const sessionId = String(session.id)
       const state = sessions.get(sessionId)
       if (state?.session !== session) return
-      if (state.awaitingSince.size > 0 || state.inFlight > 0) {
+      if (hasPendingWork(state) || state.inFlight > 0) {
         state.released = true
+        if (state.releaseDeadline === null) {
+          const anchor = state.awaitingSince.size > 0 ? Math.min(...state.awaitingSince.values()) : Date.now()
+          state.releaseDeadline = anchor + aliasGraceMs
+        }
         return
       }
       clearRetry(state)

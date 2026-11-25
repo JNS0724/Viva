@@ -2,7 +2,7 @@ import { ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import { objectOf } from '../src/shared/unknown-value.ts'
 import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
 import assert from 'node:assert/strict'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { ChildProcess } from 'node:child_process'
 import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -1757,6 +1757,7 @@ test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_
   let maxInflight = 0
   let succeeded = 0
   const aliasIds = new Set<string>()
+  const capturedAliases = new Map<string, { session: string, wireText: string }>()
   const heldReadyFrames: Array<{ child: ChildProcess, frame: unknown }> = []
   const emit = ChildProcess.prototype.emit
   t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
@@ -1766,6 +1767,10 @@ test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_
         const frame = objectOf(raw)
         if (frame?.type === 'memory_host_request' && frame.method === 'sourceAlias' && typeof frame.requestId === 'string') {
           aliasIds.add(frame.requestId)
+          const input = objectOf(frame.input)
+          if (typeof input?.sourceId === 'string' && typeof input.session === 'string' && typeof input.wireText === 'string') {
+            capturedAliases.set(input.sourceId, { session: input.session, wireText: input.wireText })
+          }
           inflight++
           maxInflight = Math.max(maxInflight, inflight)
         }
@@ -1811,15 +1816,25 @@ test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_
   assert.ok(await eventually(() => succeeded - beforeSucceeded >= 70, { timeoutMs: 15_000 }),
     `expected all 70 queued aliases to drain cleanly, drained=${succeeded - beforeSucceeded}`)
   assert.ok(maxInflight <= 16, `pending alias replay must cap concurrency <= 16, saw ${maxInflight}`)
+  assert.equal(submittedIds.every(id => capturedAliases.has(id)), true, 'all 70 submitted aliases must have been sent over IPC')
   const placeholders = submittedIds.map(() => '?').join(',')
   assert.ok(await eventually(() => {
     const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
     try {
+      const secretRow = memoryDb.prepare("SELECT value FROM memory_meta WHERE key = 'secret'").get() as { value: string } | undefined
+      if (!secretRow?.value) return false
       const leftover = memoryDb.prepare(`SELECT COUNT(*) AS n FROM owner_aliases WHERE source IN (${placeholders})`).get(...submittedIds) as { n: number }
-      const finalized = memoryDb.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE kind IN ('original', 'ignored')").get() as { n: number }
-      return leftover.n === 0 && finalized.n >= 70
+      if (leftover.n !== 0) return false
+      const checkRow = memoryDb.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND ((kind = 'original' AND source = ?) OR (kind = 'ignored' AND hash = ?))")
+      for (const sourceId of submittedIds) {
+        const sent = capturedAliases.get(sourceId)!
+        const wireHash = createHmac('sha256', secretRow.value).update(JSON.stringify(sent.wireText)).digest('hex')
+        const match = checkRow.get(sent.session, sourceId, wireHash) as { n: number }
+        if (match.n !== 1) return false
+      }
+      return true
     } finally { memoryDb.close() }
-  }, { timeoutMs: 10_000 }), 'all 70 queued aliases must be finalized as original or ignored with 0 orphan rows in owner_aliases')
+  }, { timeoutMs: 10_000 }), 'every single one of the 70 submitted aliases must settle to exactly 1 terminal owner_messages row (original or ignored) with 0 leftover owner_aliases rows')
 })
 
 test('custom ask_user_question answer recovers across unavailable(A)->recovering(B)->ready(B) within budget and preserves sourceId on post-commit disconnect (R2 P1-3, P2-1)', { timeout: 30_000 }, async t => {
