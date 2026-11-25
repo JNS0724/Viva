@@ -1805,4 +1805,110 @@ test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_
   assert.ok(await eventually(() => succeeded - beforeSucceeded >= 70, { timeoutMs: 15_000 }),
     `expected all 70 queued aliases to drain cleanly, drained=${succeeded - beforeSucceeded}`)
   assert.ok(maxInflight <= 16, `pending alias replay must cap concurrency <= 16, saw ${maxInflight}`)
+  const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  try {
+    const rows = memoryDb.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE kind IN ('original', 'ignored')").get() as { n: number }
+    const aliases = memoryDb.prepare('SELECT COUNT(*) AS n FROM owner_aliases').get() as { n: number }
+    assert.ok(rows.n + aliases.n >= 70, `expected queued aliases to be tracked cleanly in SQLite, messages=${rows.n} aliases=${aliases.n}`)
+  } finally { memoryDb.close() }
+})
+
+test('custom ask_user_question answer recovers across unavailable(A)->recovering(B)->ready(B) within budget and preserves sourceId on post-commit disconnect (R2 P1-3, P2-1)', { timeout: 30_000 }, async t => {
+  let mode: 'recover-within-budget' | 'disconnect-after-commit' = 'recover-within-budget'
+  let answerReqId: string | undefined
+  let injectedDisconnect = false
+  const heldRecoveryFrames: Array<{ child: ChildProcess, frame: unknown }> = []
+  let holdRecovery = false
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
+        const frame = objectOf(raw)
+        if (frame?.type === 'memory_host_request' && frame.method === 'acceptQuestionAnswer' && typeof frame.requestId === 'string') {
+          answerReqId = frame.requestId
+        }
+        return Reflect.apply(send, this, [raw, ...rest]) as boolean
+      })
+    }
+    if (event === 'message') {
+      const frame = objectOf(args[0])
+      if (mode === 'recover-within-budget' && holdRecovery && frame?.type === 'memory_owner_state' && (frame.state === 'recovering' || frame.state === 'ready')) {
+        heldRecoveryFrames.push({ child: this, frame: args[0] })
+        return true
+      }
+      if (mode === 'disconnect-after-commit' && frame?.type === 'memory_host_result' && frame.requestId === answerReqId && frame.ok === true && !injectedDisconnect) {
+        injectedDisconnect = true
+        // Worker already committed acceptQuestionAnswer; drop ACK and inject unavailable instead!
+        Reflect.apply(emit, this, ['message', {
+          type: 'memory_owner_state',
+          protocol: frame.protocol,
+          epoch: frame.epoch,
+          state: 'unavailable',
+          revision: 1,
+          coreEpoch: 1,
+          pid: 0,
+        }])
+        return true
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+
+  const brief1 = '预算内换代恢复写入回答'
+  const brief2 = '提交后断连保留确定性来源编号'
+  const app = await setup(t, request => {
+    if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
+    const q = questionOf(request.messages)
+    if (q === brief1) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'rec-city', question: '恢复测试城市？', header: '城市', options: [{ label: '上海', description: '使用上海' }], multiSelect: false },
+    ] } } }
+    if (q === brief2) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'disc-city', question: '断连测试城市？', header: '城市', options: [{ label: '北京', description: '使用北京' }], multiSelect: false },
+    ] } } }
+    return null
+  })
+
+  // Case 1 (R2 P1-3): kill worker -> unavailable(A) -> hold recovering(B)+ready(B) briefly -> submit answer -> release recovering(B) then ready(B) within 500ms budget!
+  await app.ask(`后台做：${brief1}`)
+  const ev1 = await eventually(() => app.events.find(item => item.type === 'task_question'))
+  assert.ok(ev1 && 'questionId' in ev1 && typeof ev1.questionId === 'string' && 'taskId' in ev1 && typeof ev1.taskId === 'string')
+  holdRecovery = true
+  const pid1 = app.memoryOwnerPid()
+  assert.ok(typeof pid1 === 'number' && pid1 > 0)
+  process.kill(pid1, 'SIGKILL')
+  assert.ok(await eventually(() => heldRecoveryFrames.some(item => objectOf(item.frame)?.state === 'ready'), { timeoutMs: 10_000 }))
+
+  const answer1 = '预算内恢复在南京进行'
+  const answerPromise1 = app.call<Promise<boolean>>('agent:answer', ev1.questionId, [{ id: 'rec-city', selected: [], custom: answer1 }], randomUUID())
+  setTimeout(() => {
+    holdRecovery = false
+    for (const held of heldRecoveryFrames.splice(0)) Reflect.apply(emit, held.child, ['message', held.frame])
+  }, 40)
+  assert.equal(await answerPromise1, true)
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev1.taskId && task.endedAt)))
+
+  // Case 2 (R2 P2-1): commit succeeds in worker, then unavailable arrives before ACK -> sourceId must still match memory_sources.id!
+  mode = 'disconnect-after-commit'
+  const evOffset = app.events.length
+  await app.ask(`后台做：${brief2}`)
+  const ev2 = await eventually(() => app.events.slice(evOffset).find(item => item.type === 'task_question'))
+  assert.ok(ev2 && 'questionId' in ev2 && typeof ev2.questionId === 'string' && 'taskId' in ev2 && typeof ev2.taskId === 'string')
+  const answer2 = '提交后断连在苏州进行'
+  assert.equal(await app.call('agent:answer', ev2.questionId, [{ id: 'disc-city', selected: [], custom: answer2 }], randomUUID()), true)
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev2.taskId && task.endedAt)))
+  assert.equal(injectedDisconnect, true, 'must have injected post-commit unavailable disconnect')
+
+  const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
+  try {
+    const src1 = await eventually(() => memory.prepare("SELECT id, conversation FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer1)))
+    assert.ok(src1, 'answer submitted during unavailable(A)->recovering(B)->ready(B) within budget must persist in memory_sources')
+    assert.equal(history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer1)?.source_id, src1.id)
+
+    const src2 = await eventually(() => memory.prepare("SELECT id, conversation FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer2)))
+    assert.ok(src2, 'post-commit disconnect answer must exist in memory_sources')
+    assert.equal(history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer2)?.source_id, src2.id,
+      'history message must keep deterministic source_id when disconnect occurs after send/commit')
+  } finally { memory.close(); history.close() }
 })

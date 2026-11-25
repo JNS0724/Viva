@@ -16,7 +16,11 @@ const READ_STAGE: Partial<Record<HostMemoryMethod, DiagnosticStage>> = { profile
 
 export class MemoryOwnerUnavailable extends Error {
   readonly code = 'unavailable'
-  constructor(message = 'Memory owner is unavailable') { super(message) }
+  readonly unsent?: boolean
+  constructor(message = 'Memory owner is unavailable', unsent?: boolean) {
+    super(message)
+    if (unsent) this.unsent = true
+  }
 }
 export class MemoryReadBusy extends Error {
   readonly code = 'busy'
@@ -68,7 +72,7 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
   }
   const waiters = new Set<{ resolve(): void, reject(error: Error): void, timer: ReturnType<typeof setTimeout> }>()
   const pending = new Map<string, { epoch: string, context?: DiagnosticContext, fields: DiagnosticFields, started: number, resolve(value: unknown): void, reject(error: Error): void, timer: ReturnType<typeof setTimeout> }>()
-  function invalidate(message: string, releaseExecutions = true) {
+  function invalidate(message: string, releaseExecutions = true, rejectWaiters = true) {
     current = undefined
     connectionLifetime.abort(new MemoryOwnerUnavailable(message))
     connectionLifetime = new AbortController()
@@ -77,18 +81,20 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
       clearTimeout(item.timer); item.reject(new MemoryOwnerUnavailable(message))
     }
     pending.clear()
-    for (const waiter of waiters) { clearTimeout(waiter.timer); waiter.reject(new MemoryOwnerUnavailable(message)) }
-    waiters.clear()
+    if (rejectWaiters) {
+      for (const waiter of waiters) { clearTimeout(waiter.timer); waiter.reject(new MemoryOwnerUnavailable(message)) }
+      waiters.clear()
+    }
     for (const batch of batches.values()) { batch.lifetime.cancel(new MemoryOwnerUnavailable(message)); batch.lifetime.close() }
     if (releaseExecutions) { batches.clear(); executions.clear() }
   }
   async function execute<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], batch?: ReadBatch, intake?: ReturnType<typeof createRequestBudget>): Promise<HostMemoryApi[M]['output']> {
     const budgetMs = batch?.lifetime.remainingMs() ?? intake?.remainingMs()
-    if (batch && (!MEMORY_PAGE_READ_METHODS.has(method) || batch.epoch !== current?.epoch || !batches.has(batch.id))) throw new MemoryOwnerUnavailable()
+    if (batch && (!MEMORY_PAGE_READ_METHODS.has(method) || batch.epoch !== current?.epoch || !batches.has(batch.id))) throw new MemoryOwnerUnavailable(undefined, true)
     const recovery = method === 'getOperation'
     if (closed || !current || current.state !== 'ready' && !(recovery && current.state === 'recovering')) {
       emitDiagnostic({ event: 'operation.progress', operation: 'memory.owner', stage: READ_STAGE[method], reason: closed ? 'closed' : 'not_ready', identities: { methodId: method, ownerEpoch: current?.epoch ?? null } })
-      throw new MemoryOwnerUnavailable()
+      throw new MemoryOwnerUnavailable(undefined, true)
     }
     if (callOwner) {
       const request = batch?.lifetime ?? intake
@@ -147,7 +153,7 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
         finish(); pending.delete(requestId)
         settleExecution(requestId, epoch)
         emitDiagnostic({ ...fields, event: 'wait.end', operation: 'memory.owner', outcome: 'failed', reason: safeDiagnosticReason(error), metrics: { durationMs: performance.now() - started } })
-        reject(error)
+        reject(error instanceof Error ? Object.assign(error, { unsent: true }) : new MemoryOwnerUnavailable('Failed to send memory host request', true))
       }
     })
     // Only the authenticated child IPC can reach receive(). The method correlates this result
@@ -198,8 +204,8 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
       const state = memoryOwnerState.safeParse(raw)
       if (!state.success || closed) return true
       const wasReady = current?.state === 'ready' && current.epoch === state.data.epoch
-      if (current && current.epoch !== state.data.epoch) invalidate('Memory owner generation changed')
-      else if (state.data.state === 'unavailable') invalidate('Memory owner is unavailable', false)
+      if (current && current.epoch !== state.data.epoch) invalidate('Memory owner generation changed', true, false)
+      else if (state.data.state === 'unavailable') invalidate('Memory owner is unavailable', false, false)
       current = state.data
       emitDiagnostic({ event: 'state.changed', operation: 'memory.owner', stage: current.state, identities: { ownerEpoch: current.epoch }, metrics: { pendingCount: pending.size } })
       onChanged?.(state.data)

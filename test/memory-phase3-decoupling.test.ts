@@ -24,6 +24,7 @@ import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/sou
 import { RESIDENT_PROFILE_PATH } from '../src/memory/core/resident-profile.ts'
 import { applyMemoryAdapter } from '../plugins/memory/lib/adapter.ts'
 import { attachHostMemoryRelay } from '../plugins/memory/lib/host-relay.ts'
+import { createSessionIngestion } from '../plugins/memory/lib/ingestion.ts'
 import { openPluginOwner, registerStandaloneOwner } from '../plugins/memory/lib/standalone-owner.ts'
 import { memoryProviderFailure } from '../plugins/memory/lib/model.ts'
 import { objectOf } from '../src/memory/contracts/unknown-value.ts'
@@ -114,15 +115,28 @@ test('parent IPC host relay supports cancel-before-budget, deadlineAt, MemoryDom
     /invalid|unsupported|parse|Expected/i,
   )
 
-  // 3. Real attachHostMemoryRelay propagates memory_host_cancel to owner signal and holds read slot until terminal result (P2-6)
+  // 3. Real attachHostMemoryRelay propagates memory_host_cancel to owner signal and honors waitForCompletion to hold read slot until terminal result (P2-5/P2-6)
   const relayPort = createMockParentPort()
   const callStarted = deferred<void>()
   const releaseCall = deferred<void>()
   let capturedSignal: AbortSignal | undefined
+  let capturedWaitForCompletion: boolean | undefined
   const fakeConnection = {
-    callHost(_method: unknown, _input: unknown, options?: { signal?: AbortSignal }) {
+    callHost(_method: unknown, _input: unknown, options?: { signal?: AbortSignal, waitForCompletion?: boolean }) {
       capturedSignal = options?.signal
+      capturedWaitForCompletion = options?.waitForCompletion
       callStarted.resolve()
+      if (!options?.waitForCompletion) {
+        // Without waitForCompletion, abort settles the promise early (which would prematurely free the slot!).
+        return new Promise((resolve, reject) => {
+          const onAbort = () => reject(options?.signal?.reason ?? new Error('aborted early'))
+          options?.signal?.addEventListener('abort', onAbort, { once: true })
+          void releaseCall.promise.then(() => {
+            options?.signal?.removeEventListener('abort', onAbort)
+            resolve({ files: [] })
+          })
+        })
+      }
       return releaseCall.promise.then(() => {
         capturedSignal?.throwIfAborted()
         return { files: [] }
@@ -164,12 +178,14 @@ test('parent IPC host relay supports cancel-before-budget, deadlineAt, MemoryDom
   const abort = new AbortController()
   const batchPromise = heldChannel.readBatch(read => read('listFiles', { args: [{}] }), { signal: abort.signal, budgetMs: 5_000 })
   await callStarted.promise
+  assert.equal(capturedWaitForCompletion, true, 'real attachHostMemoryRelay must pass waitForCompletion: true for readBatch')
   assert.equal(heldChannel.readState().executions, 1, 'active readBatch must occupy 1 execution slot')
   abort.abort(new Error('caller cancelled'))
   await assert.rejects(batchPromise, /caller cancelled/)
   assert.ok(await eventually(() => capturedSignal?.aborted === true, { timeoutMs: 3_000 }),
     'real attachHostMemoryRelay must propagate memory_host_cancel to worker/owner AbortSignal')
-  assert.equal(heldChannel.readState().executions, 1, 'execution slot must remain occupied until terminal memory_host_result arrives')
+  await delay(30)
+  assert.equal(heldChannel.readState().executions, 1, 'execution slot must remain occupied while worker has not physically settled')
   releaseCall.resolve()
   assert.ok(await eventually(() => heldChannel.readState().executions === 0, { timeoutMs: 3_000 }),
     'terminal memory_host_result must release the execution slot')
@@ -447,6 +463,58 @@ test('single-hop agent/pre-step detects real mid-recall file disable (no frame m
   )
   assert.equal((seenMessages[0] ?? '').includes('STALE_REFRESH_MARKER_P3'), false,
     'final LLM prompt must exclude the disabled file after at-most-once refresh')
+
+  // Part B (P2-4): Worker-side cross-revision detection directly returns unmodified stale === true
+  // when a real mutation commits between the worker's startRevision and endRevision reads inside automaticRecall.
+  const sendHostRpc = async (method: string, input: unknown) => {
+    const id = randomUUID()
+    const w = deferred<{ ok: boolean, result?: unknown }>()
+    hostResults.set(id, w)
+    port.emit('message', { type: 'memory_host_request', protocol: MEMORY_HOST_PROTOCOL, requestId: id, epoch: owner.epoch!, method, input })
+    const r = await w.promise
+    assert.equal(r.ok, true)
+    return r.result
+  }
+  await sendHostRpc('createFile', {
+    args: [{ operationId: randomUUID(), title: '命中目标文件', text: 'WORKER_STALE_TARGET_MARKER 命中目标内容' }],
+  })
+  const otherCreated = objectOf(await sendHostRpc('createFile', {
+    args: [{ operationId: randomUUID(), title: '并发变更文件', text: 'unrelated concurrent file content' }],
+  })) as { identity: { workspace: string, path: string, id: string } }
+  let otherDetail = objectOf(await sendHostRpc('readFile', { args: [otherCreated.identity] }))!
+
+  const workerSession = randomUUID()
+  const workerAliasText = '检索命中目标内容'
+  await sendHostRpc('sourceAlias', {
+    operationId: randomUUID(),
+    sourceId: randomUUID(),
+    session: workerSession,
+    conversation: workerSession,
+    text: workerAliasText,
+    wireText: workerAliasText,
+    cwd: dir,
+    origin: 'original',
+  })
+  let observedWorkerStale = false
+  let toggleEnabled = false
+  for (let attempt = 0; attempt < 5 && !observedWorkerStale; attempt++) {
+    // Dispatch automaticRecall first, then immediately mutate an unrelated file in the same tick:
+    // automaticRecall captures startRevision before awaiting async file search, while setFileEnabled
+    // commits endRevision synchronously in SQLite -> worker observes startRevision !== endRevision with hit!
+    const recallPromise = owner.call('automaticRecall', [
+      { session: workerSession, turn: attempt + 1, question: '' },
+      dir,
+      [{ id: randomUUID(), text: workerAliasText }],
+    ])
+    const mutatePromise = sendHostRpc('setFileEnabled', {
+      args: [{ operationId: randomUUID(), identity: otherCreated.identity, version: otherDetail.version, enabled: toggleEnabled }],
+    })
+    toggleEnabled = !toggleEnabled
+    const [recallRes] = await Promise.all([recallPromise, mutatePromise])
+    otherDetail = objectOf(await sendHostRpc('readFile', { args: [otherCreated.identity] }))!
+    if (recallRes.result.status === 'hit' && recallRes.stale === true) observedWorkerStale = true
+  }
+  assert.equal(observedWorkerStale, true, 'real memory-worker must directly flag stale === true when revision advances mid-automaticRecall')
 })
 
 test('memoryProviderFailure classifies 429 Retry-After (both LlmFailure and thrown LlmError) and 503 overload', () => {
@@ -926,9 +994,24 @@ test('hosted ingestion defers missing alias until late sourceAlias, skips unmatc
     } finally { db.close() }
   }
 
-  // 3. P1-2 (>20,000-char wireText with short verified sourceAlias): must pass automaticRecall without hitting 20k schema cap!
+  // 3. P1-2 (>20,000-char wireText with short verified sourceAlias) + P2-3 (normal sourceAlias does NOT trigger extra ctx.sessions.flush + indexed query plan):
+  {
+    const db = queryDb()
+    try {
+      const plan = db.prepare("EXPLAIN QUERY PLAN SELECT source, kind FROM owner_messages WHERE session=? AND hash=? AND (source=? OR kind='ignored')")
+        .all(String(sessionId), 'h', 's') as Array<{ detail: string }>
+      assert.ok(plan.some(row => row.detail.includes('USING INDEX owner_messages_session_hash')),
+        `expected indexed lookup on owner_messages_session_hash, got ${JSON.stringify(plan)}`)
+    } finally { db.close() }
+  }
   const longWireText = `${'背景草稿片段。'.repeat(3_200)}\n查询超长消息别名标记`
   assert.ok(longWireText.length > 20_000)
+  let flushesOnAlias = 0
+  const origFlush = ctx.sessions.flush.bind(ctx.sessions)
+  t.mock.method(ctx.sessions, 'flush', ((...args: Parameters<typeof ctx.sessions.flush>) => {
+    flushesOnAlias++
+    return origFlush(...args)
+  }) as typeof ctx.sessions.flush)
   await sendHost('sourceAlias', {
     operationId: randomUUID(),
     sourceId: randomUUID(),
@@ -939,6 +1022,7 @@ test('hosted ingestion defers missing alias until late sourceAlias, skips unmatc
     cwd: dir,
     origin: 'original' as const,
   })
+  assert.equal(flushesOnAlias, 0, 'normal sourceAlias when no message is awaiting alias must NOT trigger ctx.sessions.flush')
   const promptOffset = seenPrompts.length
   const turn2Done = deferred<void>()
   const off2 = ctx.on('session/event', (session, event) => {
@@ -948,6 +1032,136 @@ test('hosted ingestion defers missing alias until late sourceAlias, skips unmatc
   await turn2Done.promise
   assert.match(seenPrompts[promptOffset] ?? '', /HOSTED_ONLY_MARKER_P12/,
     'hosted >20,000-char wireText with short verified sourceAlias must succeed in automaticRecall')
+
+  // 4. P1-2 (Round 2): session disposed during grace window before late sourceAlias still settles final persisted turn!
+  const shortSessionId = SessionId(randomUUID())
+  const shortHandle = await ctx.agents.create({ sessionId: shortSessionId, meta: { cwd: dir }, agentOptions: { provider: 'mock', model: 'test-model' } })
+  const shortText = '后台会话关闭前已落盘的最后一句原话'
+  const shortDone = deferred<void>()
+  const offShort = ctx.on('session/event', (session, event) => {
+    if (session.id === shortHandle.agent.session.id && event.type === 'turn/end') { offShort(); shortDone.resolve() }
+  })
+  shortHandle.agent.send(createUserMessage({ content: [{ type: 'text', text: shortText }], source: { kind: 'user' } }), 'next-turn', true)
+  await shortDone.promise
+  // Ensure turn/end has flushed to persistence before closing the session (still BEFORE late sourceAlias arrives).
+  await ctx.sessions.flush(shortHandle.agent.session)
+  await delay(60)
+  // Close session BEFORE late sourceAlias arrives!
+  await shortHandle.dispose()
+  const shortAlias = {
+    operationId: randomUUID(),
+    sourceId: randomUUID(),
+    session: String(shortSessionId),
+    conversation: String(shortSessionId),
+    text: shortText,
+    wireText: shortText,
+    cwd: dir,
+    origin: 'original' as const,
+  }
+  await sendHost('sourceAlias', shortAlias)
+  let lastShortState = ''
+  assert.ok(await eventually(() => {
+    const db = queryDb()
+    try {
+      const src = db.prepare("SELECT COUNT(*) AS n FROM memory_sources WHERE id = ? AND author = 'user'").get(shortAlias.sourceId) as { n: number }
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(String(shortSessionId)) as { n: number }
+      const active = db.prepare('SELECT COUNT(*) AS n FROM owner_active_turns WHERE session = ?').get(String(shortSessionId)) as { n: number }
+      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(String(shortSessionId)) as { n: number }
+      lastShortState = JSON.stringify({ src: src.n, turns: turns.n, active: active.n, aliases: aliases.n })
+      return src.n === 1 && turns.n === 1 && active.n === 0 && aliases.n === 0
+    } finally { db.close() }
+  }, { timeoutMs: 5_000 }), `session disposed during grace window must still settle persisted turn once late sourceAlias arrives (${lastShortState})`)
+
+  // 5. P2-2 (Round 2): late sourceAlias arriving AFTER message was finalized as ignored returns terminal ignored status & inserts 0 orphan alias rows!
+  const expiredSession = randomUUID()
+  const expiredText = '宽限期已过被终结的消息'
+  await owner.call('receiveSource', [{
+    sessionId: expiredSession,
+    messageId: randomUUID(),
+    text: expiredText,
+    at: Date.now(),
+    timezone: 'UTC',
+    turn: 1,
+    cwd: dir,
+  }])
+  const expiredAliasId = randomUUID()
+  const expiredRes = await sendHost('sourceAlias', {
+    operationId: expiredAliasId,
+    sourceId: expiredAliasId,
+    session: expiredSession,
+    conversation: expiredSession,
+    text: expiredText,
+    wireText: expiredText,
+    cwd: dir,
+    origin: 'original' as const,
+  })
+  assert.deepEqual(expiredRes, { sourceId: expiredAliasId, status: 'ignored' })
+  {
+    const db = queryDb()
+    try {
+      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(expiredSession) as { n: number }
+      assert.equal(aliases.n, 0, 'late alias for already-ignored message must not insert an orphan row into owner_aliases')
+    } finally { db.close() }
+  }
+})
+
+test('incremental two-scan ingestion preserves prior turn sources and receivedReport when mid-turn steer awaits late alias (R2 P1-1)', async () => {
+  const completedTurns: Array<{ sourceIds: readonly string[], assistant: string }> = []
+  const aliases = new Map<string, string>([['msg-a', 'src-a']])
+  const fakeOwner = {
+    epoch: 'e-inc',
+    inEpoch: async <T>(_epoch: string | undefined, fn: () => Promise<T>) => fn(),
+    intakeWatermark: async () => ({ createdAt: 0, nextSeq: 0 }),
+    advanceIntake: async () => {},
+    receiveSource: async (input: { messageId: string, deferMissingAlias?: boolean }) => {
+      const mapped = aliases.get(input.messageId)
+      if (!mapped) {
+        if (input.deferMissingAlias) return { sourceId: input.messageId, text: '', handledIntent: true, awaitingAlias: true }
+        return { sourceId: input.messageId, text: '', handledIntent: true }
+      }
+      return { sourceId: mapped, text: input.messageId, handledIntent: false }
+    },
+    completeTurn: async (input: { sourceIds: readonly string[], assistant: string }) => {
+      completedTurns.push({ sourceIds: input.sourceIds, assistant: input.assistant })
+    },
+  }
+  const allEvents = [
+    { seq: 0, time: 1, type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: 2, type: 'user/message', data: { id: 'msg-a', source: { kind: 'user' }, content: [{ type: 'text', text: 'A' }] } },
+    { seq: 2, time: 3, type: 'user/message', data: { id: 'rep-1', source: { kind: 'viva-report' }, content: [{ type: 'text', text: 'report body' }] } },
+    { seq: 3, time: 4, type: 'assistant/message', data: { interrupted: false, message: { content: [{ type: 'text', text: 'report summary should stay excluded' }] } } },
+  ] as Array<Record<string, unknown>>
+  const fakeSession = {
+    id: 'sess-inc',
+    inheritedEventCount: 0,
+    header: { cwd: '/tmp', origin: 'main' },
+    get seq() { return allEvents.length },
+    snapshotEvents(from: number, end: number) { return allEvents.slice(from, end) },
+  }
+  const ingestion = createSessionIngestion(
+    fakeOwner as unknown as Parameters<typeof createSessionIngestion>[0],
+    async () => true,
+    { host: true, aliasGraceMs: 1_500 },
+  )
+  // Scan 1 folds original A + viva-report + report assistant message.
+  await ingestion.synchronize(fakeSession as unknown as Parameters<typeof ingestion.synchronize>[0])
+  assert.equal(completedTurns.length, 0)
+
+  // Scan 2 appends steer B (alias missing yet) + turn/end; pauses at steer B without wiping A or receivedReport!
+  allEvents.push(
+    { seq: 4, time: 5, type: 'user/message', data: { id: 'msg-b', source: { kind: 'user' }, content: [{ type: 'text', text: 'B' }] } },
+    { seq: 5, time: 6, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  )
+  await ingestion.synchronize(fakeSession as unknown as Parameters<typeof ingestion.synchronize>[0])
+  assert.equal(completedTurns.length, 0, 'turn must defer while steer B awaits late alias')
+
+  // Late alias for B arrives -> wakeIfAwaiting resumes right at B and preserves A + receivedReport!
+  aliases.set('msg-b', 'src-b')
+  ingestion.wakeIfAwaiting('sess-inc')
+  await ingestion.drain()
+  assert.equal(completedTurns.length, 1)
+  assert.deepEqual(completedTurns[0]!.sourceIds, ['src-a', 'src-b'], 'both A and B must appear exactly once')
+  assert.equal(completedTurns[0]!.assistant, '', 'receivedReport must remain preserved so report assistant text is excluded')
 })
 
 test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {
@@ -1136,14 +1350,20 @@ test('Dream edited in-flight preserves Retry-After cooldown on newer generation 
   }
   await owner.call('setRoute', [null])
   await owner.call('setRoute', [{ provider: 'mock', model: 'test-model' }])
-  assert.ok(await eventually(() =>
-    stages.filter(s => s === 'dream_consolidate').length > consolidateBefore
-    && stages.filter(s => s === 'dream_profile').length > profileBefore, { timeoutMs: 10_000 }),
-    'anti-starvation batch exemption must let both automatic Dream passes (consolidate + profile) complete while foreground stream remains open')
+  assert.ok(await eventually(() => {
+    if (stages.filter(s => s === 'dream_consolidate').length <= consolidateBefore) return false
+    if (stages.filter(s => s === 'dream_profile').length <= profileBefore) return false
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const notes = db.prepare('SELECT revision, processed FROM memory_daily_notes').all() as Array<{ revision: number, processed: number }>
+      return notes.length > 0 && notes.every(row => row.processed >= row.revision && row.revision > 0)
+    } finally { db.close() }
+  }, { timeoutMs: 10_000 }),
+    'anti-starvation batch exemption must let both automatic Dream passes AND SQLite note checkpoint commit while foreground stream remains open')
   releaseFg.resolve()
 })
 
-test('createRemoteMemoryChannel.waitReady honors bounded budgetMs (P1-3)', async t => {
+test('createRemoteMemoryChannel.waitReady honors bounded budgetMs and survives unavailable(A) -> recovering(B) -> ready(B) (P1-3)', async t => {
   const channel = createRemoteMemoryChannel({ send() {} })
   t.after(() => channel.close())
 
@@ -1152,17 +1372,38 @@ test('createRemoteMemoryChannel.waitReady honors bounded budgetMs (P1-3)', async
   const elapsed = performance.now() - started
   assert.ok(elapsed < 400, `bounded waitReady(60) must reject promptly, got ${elapsed}ms`)
 
+  channel.receive({
+    type: 'memory_owner_state',
+    protocol: MEMORY_HOST_PROTOCOL,
+    epoch: 'e-old',
+    state: 'unavailable',
+    revision: 1,
+    coreEpoch: 1,
+    pid: 1,
+  })
   const waiting = channel.waitReady(500)
   setTimeout(() => {
     channel.receive({
       type: 'memory_owner_state',
       protocol: MEMORY_HOST_PROTOCOL,
-      epoch: 'e-ready',
+      epoch: 'e-new',
+      state: 'recovering',
+      revision: 1,
+      coreEpoch: 1,
+      pid: 2,
+    })
+  }, 15)
+  setTimeout(() => {
+    channel.receive({
+      type: 'memory_owner_state',
+      protocol: MEMORY_HOST_PROTOCOL,
+      epoch: 'e-new',
       state: 'ready',
       revision: 1,
       coreEpoch: 1,
-      pid: 1,
+      pid: 2,
     })
-  }, 20)
+  }, 35)
   await waiting
+  assert.equal(channel.ready(), true)
 })

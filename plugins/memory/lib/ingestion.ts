@@ -4,6 +4,7 @@ import type { createRemoteMemoryOwner } from './remote-owner.ts'
 
 type Owner = Pick<ReturnType<typeof createRemoteMemoryOwner>, 'epoch' | 'inEpoch' | 'receiveSource' | 'completeTurn'
   | 'intakeWatermark' | 'advanceIntake'>
+type SnapshotEvents = ReturnType<Session['snapshotEvents']>
 const DEFAULT_ALIAS_GRACE_MS = 1_500
 const ALIAS_RETRY_INTERVAL_MS = 100
 
@@ -18,6 +19,9 @@ type Replay = {
   work: Promise<void>
   awaitingSince: Map<string, number>
   retryTimer: ReturnType<typeof setTimeout> | null
+  released: boolean
+  inFlight: number
+  pendingEvents: SnapshotEvents | null
 }
 const textOf = (message: { content: readonly { type: string, text?: string }[] }) =>
   message.content.flatMap(part => part.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('\n')
@@ -45,16 +49,25 @@ export function createSessionIngestion(
   }
 
   function enqueue(session: Session, action: (state: Replay) => Promise<void>) {
-    let state = sessions.get(session.id)
+    const sessionId = String(session.id)
+    let state = sessions.get(sessionId)
     if (!state || state.session !== session || state.epoch !== owner.epoch) {
       if (state) clearRetry(state)
       state = { epoch: owner.epoch, session, nextSeq: null, turn: 0, sources: new Set(),
         assistant: [], receivedReport: false, work: state?.work.catch(() => {}) ?? Promise.resolve(),
-        awaitingSince: new Map(), retryTimer: null }
-      sessions.set(session.id, state)
+        awaitingSince: new Map(), retryTimer: null, released: false, inFlight: 0, pendingEvents: null }
+      sessions.set(sessionId, state)
     }
     const entry = state
+    entry.inFlight++
     entry.work = entry.work.catch(() => {}).then(() => owner.inEpoch(entry.epoch, () => action(entry)))
+      .finally(() => {
+        entry.inFlight = Math.max(0, entry.inFlight - 1)
+        if (entry.released && entry.inFlight === 0 && entry.awaitingSince.size === 0 && sessions.get(sessionId) === entry) {
+          clearRetry(entry)
+          sessions.delete(sessionId)
+        }
+      })
     return entry.work
   }
 
@@ -69,27 +82,23 @@ export function createSessionIngestion(
       ...(deferMissingAlias ? { deferMissingAlias: true } : {}) })
   }
 
-  async function scan(state: Replay, end: SessionLogOffset, persisted: Promise<unknown>) {
-    if (await persisted !== true) return
-    clearRetry(state)
+  function scheduleResume(state: Replay, waitMs: number) {
+    const sessionId = String(state.session.id)
+    if (closed || sessions.get(sessionId) !== state) return
+    state.retryTimer = setTimeout(() => {
+      state.retryTimer = null
+      if (closed || sessions.get(sessionId) !== state) return
+      if (state.released) void resumeReleased(state).catch(() => {})
+      else void synchronize(state.session).catch(() => {})
+    }, waitMs)
+    state.retryTimer.unref?.()
+  }
+
+  async function processEvents(state: Replay, events: SnapshotEvents) {
     const session = String(state.session.id)
-    const inherited = state.session.inheritedEventCount
-    if (state.nextSeq === null) {
-      const { createdAt, nextSeq } = await owner.intakeWatermark(session)
-      if (nextSeq === null) {
-        const first = state.session.snapshotEvents(inherited, end).find(event => event.time >= createdAt)
-        const start = first?.seq ?? end
-        await owner.advanceIntake(session, start)
-        state.nextSeq = start
-      } else state.nextSeq = nextSeq
-    }
-    const from = Math.max(inherited, state.nextSeq)
-    if (from >= end) return
-    const events = state.session.snapshotEvents(SessionLogOffset(from), end)
-    let turnStartSeq = from
-    for (const event of events) {
+    for (let idx = 0; idx < events.length; idx++) {
+      const event = events[idx]!
       if (event.type === 'turn/start') {
-        turnStartSeq = event.seq
         state.turn = event.data.turn
         state.sources.clear()
         state.assistant = []
@@ -108,19 +117,11 @@ export function createSessionIngestion(
             firstSeen = nowMs
             state.awaitingSince.set(msgId, firstSeen)
           }
-          // Rewind scan cursor to turn start so completeTurn is deferred until alias arrives or grace window expires.
-          state.nextSeq = turnStartSeq
-          state.sources.clear()
-          state.assistant = []
-          state.receivedReport = false
-          if (!closed && sessions.get(state.session.id) === state) {
-            const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, aliasGraceMs - (nowMs - firstSeen)))
-            state.retryTimer = setTimeout(() => {
-              state.retryTimer = null
-              if (!closed && sessions.get(state.session.id) === state) void synchronize(state.session).catch(() => {})
-            }, waitMs)
-            state.retryTimer.unref?.()
-          }
+          // Stop right at this event, preserving previously folded turn state (sources, assistant, receivedReport).
+          state.nextSeq = event.seq
+          state.pendingEvents = events.slice(idx)
+          const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, aliasGraceMs - (nowMs - firstSeen)))
+          scheduleResume(state, waitMs)
           return
         }
         state.awaitingSince.delete(msgId)
@@ -134,6 +135,66 @@ export function createSessionIngestion(
       }
       state.nextSeq = event.seq + 1
     }
+    state.pendingEvents = null
+    if (state.released && state.awaitingSince.size === 0 && sessions.get(session) === state) {
+      clearRetry(state)
+      sessions.delete(session)
+    }
+  }
+
+  async function scan(state: Replay, end: SessionLogOffset, persisted: Promise<unknown>) {
+    let ok = false
+    try { ok = await persisted === true } catch { ok = false }
+    if (!ok) {
+      if (state.awaitingSince.size > 0 && state.pendingEvents?.length) {
+        clearRetry(state)
+        await processEvents(state, state.pendingEvents)
+      }
+      return
+    }
+    clearRetry(state)
+    const session = String(state.session.id)
+    const inherited = state.session.inheritedEventCount
+    if (state.nextSeq === null) {
+      const { createdAt, nextSeq } = await owner.intakeWatermark(session)
+      if (nextSeq === null) {
+        const first = state.session.snapshotEvents(inherited, end).find(event => event.time >= createdAt)
+        const start = first?.seq ?? end
+        await owner.advanceIntake(session, start)
+        state.nextSeq = start
+      } else state.nextSeq = nextSeq
+    }
+    const from = Math.max(inherited, state.nextSeq)
+    if (from >= end) return
+    const events = state.session.snapshotEvents(SessionLogOffset(from), end)
+    await processEvents(state, events)
+  }
+
+  function resumeReleased(state: Replay) {
+    const sessionId = String(state.session.id)
+    if (state.epoch !== owner.epoch) {
+      clearRetry(state)
+      if (sessions.get(sessionId) === state) sessions.delete(sessionId)
+      return Promise.resolve()
+    }
+    state.inFlight++
+    state.work = state.work.catch(() => {}).then(() => owner.inEpoch(state.epoch, async () => {
+      if (sessions.get(sessionId) !== state) return
+      clearRetry(state)
+      const pending = state.pendingEvents
+      if (!pending || pending.length === 0) {
+        if (state.awaitingSince.size === 0) sessions.delete(sessionId)
+        return
+      }
+      await processEvents(state, pending)
+    })).finally(() => {
+      state.inFlight = Math.max(0, state.inFlight - 1)
+      if (state.released && state.inFlight === 0 && (state.awaitingSince.size === 0 || state.epoch !== owner.epoch) && sessions.get(sessionId) === state) {
+        clearRetry(state)
+        sessions.delete(sessionId)
+      }
+    })
+    return state.work
   }
 
   function synchronize(session: Session, current?: { messages: readonly UserMessage[], turn: number }) {
@@ -152,12 +213,23 @@ export function createSessionIngestion(
     receive(session: Session, messages: readonly UserMessage[], turn: number) {
       return synchronize(session, { messages, turn })
     },
+    wakeIfAwaiting(sessionId: string) {
+      if (closed) return
+      const state = sessions.get(sessionId)
+      if (!state || state.awaitingSince.size === 0) return
+      if (state.released) void resumeReleased(state).catch(() => {})
+      else void synchronize(state.session).catch(() => {})
+    },
     release(session: Session) {
-      const state = sessions.get(session.id)
-      if (state?.session === session) {
-        clearRetry(state)
-        sessions.delete(session.id)
+      const sessionId = String(session.id)
+      const state = sessions.get(sessionId)
+      if (state?.session !== session) return
+      if (state.awaitingSince.size > 0 || state.inFlight > 0) {
+        state.released = true
+        return
       }
+      clearRetry(state)
+      sessions.delete(sessionId)
     },
     async drain() {
       closed = true

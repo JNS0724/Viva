@@ -74,6 +74,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE INDEX IF NOT EXISTS owner_alias_wire ON owner_aliases(session,wire_hash);
     CREATE TABLE IF NOT EXISTS owner_messages(
       id TEXT PRIMARY KEY,session TEXT NOT NULL,source TEXT NOT NULL,hash TEXT NOT NULL,kind TEXT NOT NULL,project TEXT,spans TEXT);
+    CREATE INDEX IF NOT EXISTS owner_messages_session_hash ON owner_messages(session,hash);
     CREATE TABLE IF NOT EXISTS owner_turns(session TEXT NOT NULL,turn INTEGER NOT NULL,seq INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(session,turn));
     CREATE TABLE IF NOT EXISTS owner_operations(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,state TEXT NOT NULL,payload TEXT);
     CREATE TABLE IF NOT EXISTS owner_skip_assistant(session TEXT NOT NULL,turn INTEGER NOT NULL,PRIMARY KEY(session,turn));
@@ -201,20 +202,24 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (source && (source.conversation !== input.conversation || source.hash !== null && source.hash !== memoryHash(input.text)
       || (source.project?.kind === 'project' ? source.project.id : undefined) !== project?.id)) throw new MemoryDomainError('operation.conflict')
     const wireHash = hash(input.wireText)
+    let terminalStatus: 'ignored' | undefined
     store.tx(() => {
       assertCurrent()
       const old = db.prepare('SELECT fingerprint FROM owner_aliases WHERE id=?').get(input.operationId)
       if (old && old.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
       bindSession(input.session, resolved, context.kind === 'task', input.conversation)
-      // If the alias was already consumed into owner_messages and only its ACK was lost,
-      // avoid re-inserting a permanent orphan row into owner_aliases on replay.
-      const consumed = db.prepare('SELECT 1 FROM owner_messages WHERE session=? AND source=? AND hash=?')
-        .get(input.session, input.sourceId, wireHash)
-      if (consumed) return
+      // Indexed check (owner_messages_session_hash): avoid re-inserting an orphan alias row
+      // if this wire message was already consumed or finalized as ignored after grace expiry.
+      const finalized = db.prepare("SELECT source, kind FROM owner_messages WHERE session=? AND hash=? AND (source=? OR kind='ignored')")
+        .get(input.session, wireHash, input.sourceId) as { source: string, kind: string } | undefined
+      if (finalized) {
+        if (finalized.kind === 'ignored') terminalStatus = 'ignored'
+        return
+      }
       db.prepare('INSERT OR IGNORE INTO owner_aliases VALUES (?,?,?,?,?,?)')
         .run(input.operationId, fingerprint, input.session, wireHash, JSON.stringify(saved), input.sourceId)
     })
-    return { sourceId: input.sourceId }
+    return terminalStatus ? { sourceId: input.sourceId, status: terminalStatus } : { sourceId: input.sourceId }
   }
 
   /** Native log events may be delivered again after a crash. Keep their identity and original scope. */

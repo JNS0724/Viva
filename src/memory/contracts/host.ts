@@ -38,7 +38,7 @@ export interface HostMemoryApi {
   cleanupPending: Args<[], number>
   rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
   acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, turn: number, cards: readonly HostQuestionCard[], requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject, questionAt?: number, questionProfileGen?: number }, output: { sourceId: string } }
-  sourceAlias: { input: MemorySourceAlias, output: { sourceId: string } }
+  sourceAlias: { input: MemorySourceAlias, output: { sourceId: string, status?: 'accepted' | 'ignored' } }
   getOperation: { input: { operationId: string }, output: MemoryOperationOutcome | null }
 }
 export type HostMemoryMethod = keyof HostMemoryApi

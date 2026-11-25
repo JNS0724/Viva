@@ -135,9 +135,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     onHostSuccess(method, input) {
       if (method !== 'sourceAlias' || !input || typeof input !== 'object' || !('session' in input)) return
       const targetId = (input as { session?: unknown }).session
-      if (typeof targetId !== 'string') return
-      const session = ctx.sessions.list().find(item => String(item.id) === targetId)
-      if (session) observe(session)
+      if (typeof targetId === 'string') intake.wakeIfAwaiting(targetId)
     },
   })
   const sendParent = hostRelay.sendParent

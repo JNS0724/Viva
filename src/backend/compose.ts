@@ -628,7 +628,12 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
                   }, { budgetMs })
                     .catch(error => {
                       emitDiagnosticFailure('memory.intake', error)
-                      if (objectOf(error)?.code === 'unavailable') delete answerSources[item.id]
+                      const err = objectOf(error)
+                      // Delete sourceId only when definitely unsent or explicitly rejected by worker;
+                      // keep deterministic ID when outcome is unknown (timeout or disconnect after send).
+                      if (err?.unsent === true || (err?.code !== 'timeout' && err?.code !== 'unavailable')) {
+                        delete answerSources[item.id]
+                      }
                     }),
                 ))
               }
