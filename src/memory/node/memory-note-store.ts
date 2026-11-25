@@ -377,7 +377,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         const askedAt = answer.questionAt ?? answer.at
         const precedingIds = sources
           .filter((source, idx) => source.id !== answer.id
-            && (source.author === 'answer' ? idx < i : source.at <= askedAt))
+            && (source.author === 'answer'
+              ? idx < i && (!answer.requestId || source.requestId !== answer.requestId)
+              : source.at <= askedAt))
           .map(source => source.id)
         const answerQuestionRefs = questionCurrent
           ? snapshot([...precedingIds, ...(input.questionSources ?? [])])

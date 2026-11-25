@@ -2622,13 +2622,116 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
   assert.equal(taskAfterRace.view.messages.some(m => m.text === 'raced steer msg'), false,
     'task_steer_retracted must reach open window using sentRunId even after task_end arrived')
 
-  // R5 P2-5: Retracting a message from the middle of a conversation view must NEVER cause duplicate m* IDs!
+  // R5 P2-5 + R6 P2-1: Mid-list retraction keeps unique IDs across user_steer, turn_end note, AND question_answered batch!
   let convState: State = initialState
   convState = reduce(convState, { type: 'user_steer', text: 'A', streamKey: 'kA', via: null })
   convState = reduce(convState, { type: 'user_steer', text: 'B', streamKey: 'kB', via: null })
   convState = reduce(convState, { type: 'user_steer_retracted', streamKey: 'kA' })
   convState = reduce(convState, { type: 'user_steer', text: 'C', streamKey: 'kC', via: null })
-  const ids = convState.messages.map(m => m.id)
-  assert.equal(new Set(ids).size, ids.length, `message IDs must stay unique after mid-list retraction, got ${JSON.stringify(ids)}`)
+  const withEnd = reduce(convState, { type: 'turn_end', stopReason: 'end_turn', at: 200 })
+  const withQ = reduce(
+    reduce(convState, { type: 'question_request', questionId: 'q-id', questions: [{ id: 'c1', question: 'Q1?', options: [{ label: 'L1' }] }, { id: 'c2', question: 'Q2?', options: [{ label: 'L2' }] }], at: 201 }),
+    { type: 'question_answered', questionId: 'q-id', answers: [{ id: 'c1', selected: ['L1'] }, { id: 'c2', selected: ['L2'] }], sourceIds: { c1: 's1', c2: 's2' }, at: 202 },
+  )
+  for (const list of [convState.messages, withEnd.messages, withQ.messages]) {
+    const ids = list.map(m => m.id)
+    assert.equal(new Set(ids).size, ids.length, `message IDs must stay unique after mid-list retraction, got ${JSON.stringify(ids)}`)
+  }
   assert.deepEqual(convState.messages.map(m => m.text), ['B', 'C'])
+
+  // R6 P2-2: Reloading an ended task via tasks_restored OR asking a follow-up (new runId) still applies late task_steer_retracted!
+  const reloadedTaskEvents: unknown[] = []
+  const lateAckGate = deferred<{ ok: boolean, reason: string }>()
+  const appDbR6 = openAppDb({ file: path.join(dir, 'app-r6.db') })
+  defer(() => appDbR6.close())
+  const historyDbR6 = openHistoryDb({ db: appDbR6.db })
+  defer(() => historyDbR6.close())
+  const mainConvR6 = historyDbR6.save(historyDbR6.create({ sessionId: 'main-r6' }), [{ role: 'user', text: 'hi', receipt: null }]).id
+  const taskStoreR6 = createTaskStore({ db: appDbR6.db })
+  const taskIdR6 = randomUUID()
+  const runtimeR6 = createTaskRuntime({
+    db: historyDbR6,
+    store: taskStoreR6,
+    current: () => historyDbR6.get(mainConvR6)!.conversation,
+    agentInfo: () => ({ mode: 'ready', model: 'mock' }),
+    publish: ev => { reloadedTaskEvents.push(ev) },
+    agent: {
+      startTask: async () => ({ ok: true, taskId: taskIdR6 }),
+      promptTask: () => {},
+      steerTask: () => lateAckGate.promise,
+      resumeTask: async () => ({ ok: true }),
+      cancelTask: async () => {},
+      closeTask: async () => {},
+    },
+  })
+  defer(() => runtimeR6.dispose())
+  await runtimeR6.agent.start('initial r6', 'r6')
+  const flightR6 = runtimeR6.window.message(taskIdR6, 'refused r6').catch(() => {})
+  runtimeR6.dsh.receive({ type: 'task_end', taskId: taskIdR6, stopReason: 'end_turn' })
+  // Window reloads from finished() AFTER task_end while idle reply is still in-flight!
+  let reloadedState: State = reduce(initialState, { type: 'tasks_restored', list: runtimeR6.window.finished() })
+  // Also test asking a next question (new runId!) before the late idle reply arrives!
+  const beforeAskLen = reloadedTaskEvents.length
+  await runtimeR6.agent.message(taskIdR6, 'follow-up new run')
+  const afterAskLen = reloadedTaskEvents.length
+  let nextRunState: State = reloadedState
+  for (let i = beforeAskLen; i < afterAskLen; i++) {
+    const ev = decodeAgentEvent(reloadedTaskEvents[i])
+    const action = ev && mapEv(ev, 300 + i)
+    if (action) nextRunState = reduce(nextRunState, action)
+  }
+  lateAckGate.resolve({ ok: false, reason: 'idle' })
+  await flightR6
+  for (let i = afterAskLen; i < reloadedTaskEvents.length; i++) {
+    const ev = decodeAgentEvent(reloadedTaskEvents[i])
+    const action = ev && mapEv(ev, 400 + i)
+    if (action) {
+      reloadedState = reduce(reloadedState, action)
+      nextRunState = reduce(nextRunState, action)
+    }
+  }
+  assert.equal(reloadedState.tasks.list[0]!.view.messages.some(m => m.text === 'refused r6'), false,
+    'reloaded ended task must preserve streamKey and apply late task_steer_retracted')
+  assert.equal(nextRunState.tasks.list[0]!.view.messages.some(m => m.text === 'refused r6'), false,
+    'task that already moved to a newer run must still apply late task_steer_retracted by unique key')
+
+  // R6 P2-3: Two cards sharing one requestId in the same ask_user_question batch do NOT depend on each other!
+  const rootBatch = path.join(dir, 'mem-r6-same-req')
+  const noteInputsBatch: Array<{ turns: Array<{ user: Array<{ sourceId: string, text: string, question: string | null }> }> }> = []
+  const ownerBatch = openMemoryOwner({
+    root: rootBatch, hostNamespace: 'viva', dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '' }),
+    compute: job => job.stage === 'note'
+      ? (noteInputsBatch.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '同批双卡', markdown: '记录' })))
+      : null,
+  })
+  defer(() => ownerBatch.close())
+  await ownerBatch.recover()
+  const sidB = 'sess-r6-same-req', card1 = randomUUID(), card2 = randomUUID()
+  ownerBatch.beginTurn({ sessionId: sidB, turn: 1, sessionKind: 'main', conversation: 'conv-r6-b', cwd: dir })
+  await ownerBatch.handleHost('acceptQuestionAnswer', {
+    operationId: card1, text: 'secret-food', session: sidB, turn: 1, conversation: 'conv-r6-b',
+    cards: [{ id: 'c1', question: 'favorite food?', header: 'food', options: [{ label: 'A' }], multiSelect: false }],
+    requestId: 'shared-req-1', questionId: 'c1', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  })
+  await ownerBatch.handleHost('acceptQuestionAnswer', {
+    operationId: card2, text: 'water', session: sidB, turn: 1, conversation: 'conv-r6-b',
+    cards: [{ id: 'c2', question: 'favorite drink?', header: 'drink', options: [{ label: 'B' }], multiSelect: false }],
+    requestId: 'shared-req-1', questionId: 'c2', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  })
+  await ownerBatch.settleTurn({
+    sessionId: sidB, cwd: dir, sessionKind: 'main', conversation: 'conv-r6-b', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
+    sources: [], assistantText: '', at: nowMs + 20, timezone: 'UTC',
+  })
+  const dbBatch = new DatabaseSync(path.join(rootBatch, 'memory.db'))
+  defer(() => dbBatch.close())
+  dbBatch.prepare("UPDATE memory_sources SET outcome='rejected' WHERE id=?").run(card1)
+  ownerBatch.runtime.flushNoteTurns?.(sidB)
+  await ownerBatch.runtime.wake()
+  assert.equal(noteInputsBatch.length, 1)
+  const keptCard2 = noteInputsBatch[0]!.turns.flatMap(turn => turn.user).find(u => u.sourceId === card2)
+  assert.ok(keptCard2)
+  assert.equal(keptCard2.question, 'favorite drink?', 'rejecting card 1 in the same requestId must NOT invalidate sibling card 2 question')
 })
