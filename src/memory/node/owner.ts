@@ -172,20 +172,27 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return first && matching.every(alias => alias.sourceId === first.sourceId || alias.origin === 'derived' && first.origin === 'derived') ? first : undefined
   }
 
-  function intakeQuery(session: string, project: MemoryProject | undefined, messages: readonly { id: string, text: string }[]) {
-    return messages.flatMap(({ id, text }) => {
+  function intakeQuery(session: string, project: MemoryProject | undefined, messages: readonly { id: string, text: string }[], fallbackQuestion?: string) {
+    let matched = false
+    const resolved = messages.flatMap(({ id, text }) => {
       const wireHash = hash(text)
       const known = db.prepare('SELECT source,kind,project,spans FROM owner_messages WHERE session=? AND id=? AND hash=?').get(session, id, wireHash)
       if (known) {
+        matched = true
         if (known.project !== (project?.id ?? null)) return []
         if (known.kind === 'derived' && typeof known.spans === 'string') return [originalFromWire(text, JSON.parse(known.spans) as TextSpan[])]
         const source = known.kind === 'original' && store.readSource(String(known.source))
         return source && source.text ? [source.text] : []
       }
       const saved = aliasForWire(session, wireHash, project)
-      if (saved) return [restoreAlias(saved, text).text]
+      if (saved) {
+        matched = true
+        return [restoreAlias(saved, text).text]
+      }
       return options.hostNamespace ? [] : [text]
     }).filter(Boolean).join('\n').slice(0, 20_000)
+    if (!matched && options.hostNamespace && fallbackQuestion) return fallbackQuestion.slice(0, 20_000)
+    return resolved
   }
 
   function alias(input: MemorySourceAlias, assertCurrent: () => void) {
@@ -546,34 +553,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           db.prepare('INSERT INTO owner_answer_sources VALUES (?,?,?)').run(session, String(turn), sourceId)
         })
         return { sourceId }
-      }
-      case 'prefetchRecall': {
-        const input = command.input
-        const resolved = resolveIntakeScope(input.cwd)
-        const origin = sessionContext(input.session)
-        const project = input.project ?? (resolved.status === 'project' ? resolved.project : undefined)
-        const scopeCurrent = scopeMatches(input.session, resolved)
-        const readScope = scopeCurrent
-          ? { ...origin, ...(input.context ? { context: input.context } : {}), project }
-          : { ...origin, project: undefined, context: input.context ?? { kind: 'user' as const } }
-        let startRevision = store.revision()
-        let result: AutomaticRecallResult = await runtime.automaticRecall(
-          { session: input.session, question: input.query }, readScope, () => state === 'ready' && !replayingWrites, signal,
-        )
-        let endRevision = store.revision()
-        if (result.status === 'hit' && startRevision !== endRevision) {
-          if (!signal?.aborted && state === 'ready' && !replayingWrites) {
-            startRevision = endRevision
-            result = await runtime.automaticRecall(
-              { session: input.session, question: input.query }, readScope, () => state === 'ready' && !replayingWrites, signal,
-            )
-            endRevision = store.revision()
-          }
-          if (result.status === 'hit' && startRevision !== endRevision) {
-            result = { status: 'timeout' }
-          }
-        }
-        return { epoch, revision: endRevision, result }
       }
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)

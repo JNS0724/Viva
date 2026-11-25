@@ -22,6 +22,7 @@ const SCHEMA = `
     payload TEXT NOT NULL,
     generation INTEGER NOT NULL,
     due_at INTEGER NOT NULL,
+    cooldown_until INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (kind, key)
   );
@@ -33,7 +34,12 @@ export const RETRY_MS: readonly number[] = Object.freeze([5_000, 30_000, 120_000
 /** Node treats larger delays as 1 ms. Wake and check the clock again for longer deadlines. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647
 
-export type Outcome = 'done' | 'wait' | 'retry'
+export type Outcome =
+  | 'done'
+  | 'wait'
+  | 'retry'
+  | { kind: 'retry', delayMs: number, cooldown?: boolean }
+  | { kind: 'defer', delayMs: number }
 export interface Effect<P = unknown> { kind: string, key: string, payload: P, generation: number, attempts: number }
 /** How the effects of one kind are run: those due, all at once (a kind may join them, as reports do), each its outcome. */
 export type Runner = (effects: readonly Effect[]) => Promise<ReadonlyMap<string, Outcome>>
@@ -52,14 +58,20 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   onError?: (err: unknown) => void
 }) {
   db.exec(SCHEMA)
-  const upsert = db.prepare(`INSERT INTO effects (kind, key, payload, generation, due_at, attempts) VALUES (?, ?, ?, ?, ?, 0)
-    ON CONFLICT (kind, key) DO UPDATE SET payload = excluded.payload, generation = excluded.generation, due_at = excluded.due_at, attempts = 0`)
+  const columns = db.prepare('PRAGMA table_info(effects)').all() as Array<{ name: string }>
+  if (!columns.some(column => column.name === 'cooldown_until')) {
+    db.exec('ALTER TABLE effects ADD COLUMN cooldown_until INTEGER NOT NULL DEFAULT 0')
+  }
+  const upsert = db.prepare(`INSERT INTO effects (kind, key, payload, generation, due_at, cooldown_until, attempts) VALUES (?, ?, ?, ?, ?, 0, 0)
+    ON CONFLICT (kind, key) DO UPDATE SET payload = excluded.payload, generation = excluded.generation, due_at = MAX(excluded.due_at, effects.cooldown_until), attempts = 0`)
   const newGeneration = db.prepare(`INSERT INTO effect_counter (id, last) VALUES (1, 1)
     ON CONFLICT (id) DO UPDATE SET last = last + 1 RETURNING last`)
   const dropOne = db.prepare('DELETE FROM effects WHERE kind = ? AND key = ?')
   const dropStarting = db.prepare('DELETE FROM effects WHERE kind = ? AND substr(key, 1, length(?)) = ?')
   const dropDone = db.prepare('DELETE FROM effects WHERE kind = ? AND key = ? AND generation = ?')
-  const putOff = db.prepare('UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE kind = ? AND key = ? AND generation = ?')
+  const putOff = db.prepare('UPDATE effects SET due_at = MAX(due_at, ?), attempts = attempts + 1 WHERE kind = ? AND key = ? AND generation = ?')
+  const putOffCooldown = db.prepare('UPDATE effects SET cooldown_until = MAX(cooldown_until, :deadline), due_at = MAX(due_at, cooldown_until, :deadline), attempts = attempts + 1 WHERE kind = :kind AND key = :key AND generation = :generation')
+  const deferEffect = db.prepare('UPDATE effects SET due_at = MAX(due_at, ?) WHERE kind = ? AND key = ? AND generation = ?')
   const registered = 'kind IN (SELECT value FROM json_each(?))'
   const due = db.prepare(`SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE due_at <= ? AND ${registered} ORDER BY due_at, rowid`)
   const next = db.prepare(`SELECT MIN(due_at) AS at FROM effects WHERE due_at > ? AND ${registered}`)
@@ -176,6 +188,22 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
       const wait = retries.get(effect.kind)?.(effect.attempts) ?? RETRY_MS[Math.min(effect.attempts, RETRY_MS.length - 1)]
       const result = apply('effect.retry', { ...data, waitMs: wait }, () => putOff.run(now() + wait, effect.kind, effect.key, effect.generation)).value
       if (result.changes) emitDiagnostic({ event: 'retry.scheduled', operation: 'effects', identities: { jobId: effect.key, generation: effect.generation, methodId: effect.kind }, metrics: { attempt: effect.attempts + 1, retryDelayMs: wait } })
+      return
+    }
+    if (typeof outcome === 'object' && outcome.kind === 'retry') {
+      const wait = Math.max(0, Math.trunc(outcome.delayMs))
+      const deadline = now() + wait
+      const result = apply('effect.retry', { ...data, waitMs: wait, ...(outcome.cooldown ? { cooldown: true } : {}) }, () => outcome.cooldown
+        ? putOffCooldown.run({ deadline, kind: effect.kind, key: effect.key, generation: effect.generation })
+        : putOff.run(deadline, effect.kind, effect.key, effect.generation)).value
+      if (result.changes) emitDiagnostic({ event: 'retry.scheduled', operation: 'effects', identities: { jobId: effect.key, generation: effect.generation, methodId: effect.kind }, metrics: { attempt: effect.attempts + 1, retryDelayMs: wait } })
+      return
+    }
+    if (typeof outcome === 'object' && outcome.kind === 'defer') {
+      const wait = Math.max(0, Math.trunc(outcome.delayMs))
+      const result = apply('effect.defer', { ...data, waitMs: wait }, () => deferEffect.run(now() + wait, effect.kind, effect.key, effect.generation)).value
+      if (result.changes) emitDiagnostic({ event: 'retry.scheduled', operation: 'effects', identities: { jobId: effect.key, generation: effect.generation, methodId: effect.kind }, metrics: { attempt: effect.attempts, retryDelayMs: wait } })
+      return
     }
     // `wait`: left as it is, due; run again when woken.
   }

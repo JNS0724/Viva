@@ -27,14 +27,14 @@ export type MemoryRequest = z.infer<typeof memoryRequest>
 export const memoryCompute = z.object({
   id: operationId, sourceId: operationId, stage: z.enum(['question', 'note', 'dream']),
   generation: z.number().int().positive(), provider: z.string().min(1), model: z.string().min(1),
-  system: z.string().max(6000), input: z.string(),
+  system: z.string().max(6000), input: z.string(), manual: z.boolean().optional(),
 }).refine(job => isDailyMemoryStage(job.stage) || job.input.length <= 100_000, { path: ['input'] })
 
 export function isDailyMemoryStage(stage: string) {
   return stage === 'note' || stage === 'dream'
 }
 export type MemoryCompute = z.infer<typeof memoryCompute>
-export const memoryComputeFailure = z.enum(['max-tokens', 'tool-calls', 'aborted', 'error', 'missing-finish', 'dispatch-denied', 'timeout', 'call-failed'])
+export const memoryComputeFailure = z.enum(['max-tokens', 'tool-calls', 'aborted', 'error', 'missing-finish', 'dispatch-denied', 'timeout', 'call-failed', 'rate-limited', 'provider-overloaded', 'deferred'])
 export type MemoryComputeFailure = z.infer<typeof memoryComputeFailure>
 export const memoryComputeUsage = z.object({
   inputTokens: z.int().nonnegative(),

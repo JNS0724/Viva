@@ -1,5 +1,10 @@
 // Domain storage port. Implementations live in memory/node; no database handle crosses this boundary.
-export type Outcome = 'done' | 'wait' | 'retry';
+export type Outcome =
+  | 'done'
+  | 'wait'
+  | 'retry'
+  | { kind: 'retry', delayMs: number, cooldown?: boolean }
+  | { kind: 'defer', delayMs: number };
 export interface Effect<P = unknown> {
     kind: string;
     key: string;

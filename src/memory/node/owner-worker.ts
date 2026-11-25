@@ -58,7 +58,8 @@ const notify = (event: object) => {
   if (process.connected) peer.notify(event)
 }
 const publishProfile = (force = false) => {
-  if (!owner || !booted || closing || owner.status() !== 'ready') return
+  if (!owner || !booted || closing) return
+  if (!force && owner.status() !== 'ready') return
   const snapshot = owner.profileSnapshot()
   const profileDeletionGen = owner.runtime.profileDeletionGeneration()
   const key = JSON.stringify([snapshot.epoch, snapshot.revision, snapshot.text, profileDeletionGen])
@@ -66,11 +67,11 @@ const publishProfile = (force = false) => {
   lastProfileKey = key
   notify({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, ...snapshot, profileDeletionGen })
 }
-const publishState = () => {
+const publishState = (overrideState?: 'ready' | 'recovering' | 'unavailable') => {
   if (!owner || !booted || closing) return
-  const state = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, state: owner.status(),
+  const state = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, state: overrideState ?? owner.status(),
     revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch(),
-    profileDeletionGen: owner.runtime.profileDeletionGeneration() }
+    profileDeletionGen: owner.runtime.profileDeletionGeneration(), pid: process.pid }
   const encoded = JSON.stringify(state)
   if (encoded !== lastState) { lastState = encoded; notify(state) }
 }
@@ -89,9 +90,12 @@ async function boot(raw: unknown, signal: AbortSignal) {
           signal, budgetMs: Math.min(OWNER_RPC_MAX_BUDGET_MS, isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000),
         })
       } catch (error) {
-        const reason = objectOf(error)?.reason
+        const obj = objectOf(error)
+        const reason = obj?.reason
+        const retryAfterMs = typeof obj?.retryAfterMs === 'number' && Number.isInteger(obj.retryAfterMs) && obj.retryAfterMs > 0
+          ? obj.retryAfterMs : undefined
         const known = memoryComputeFailure.safeParse(reason)
-        if (known.success) throw new MemoryComputeError(known.data)
+        if (known.success) throw new MemoryComputeError(known.data, retryAfterMs !== undefined ? { retryAfterMs } : undefined)
         if (reason === 'oversize-reply' || reason === 'missing-reply' || reason === 'context-window-exceeded') throw new MemoryComputeError(reason)
         if (signal?.aborted) throw new MemoryComputeError('aborted')
         throw new MemoryComputeError('call-failed')
@@ -107,8 +111,14 @@ async function boot(raw: unknown, signal: AbortSignal) {
   await owner.recover(preserveActiveTurns)
   signal.throwIfAborted()
   booted = true
-  publishState()
-  publishProfile(true)
+  // Three-step boot sequence: establish epoch (recovering) -> stage initial L2 profile -> publish ready.
+  if (owner.status() === 'ready') {
+    publishState('recovering')
+    publishProfile(true)
+    publishState('ready')
+  } else {
+    publishState()
+  }
 }
 
 const inputFrame = z.strictObject({ method: z.string(), args: z.array(z.unknown()).max(8) })
@@ -150,15 +160,28 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
       const request = z.strictObject({ session: idSchema, turn: z.number().int().positive(), question: z.string().max(20_000) }).parse(raw)
       const session = request.session
       return (async () => {
-        if (!current.ready() || signal.aborted) return { status: 'unavailable' as const }
+        const epoch = current.epoch
+        if (!current.ready() || signal.aborted) {
+          return { epoch, revision: current.runtime.revision(), stale: false, result: { status: 'unavailable' as const } }
+        }
         const resolved = current.resolveIntakeScope(cwd)
         const origin = current.sessionContext(session)
         const project = resolved.status === 'project' ? resolved.project : undefined
         const scopeCurrent = current.scopeMatches(session, resolved)
         const readScope = scopeCurrent ? { ...origin, project } : { ...origin, project: undefined, context: { kind: 'user' as const } }
-        const question = originals ? current.intakeQuery(session, readScope.project, originals) : request.question
-        if (!question.trim()) return { status: 'skipped' as const }
-        return current.runtime.automaticRecall({ session, turn: request.turn, question }, readScope, current.ready, signal)
+        const question = originals ? current.intakeQuery(session, readScope.project, originals, request.question) : request.question
+        if (!question.trim()) {
+          return { epoch, revision: current.runtime.revision(), stale: false, result: { status: 'skipped' as const } }
+        }
+        const startRevision = current.runtime.revision()
+        const result = await current.runtime.automaticRecall({ session, turn: request.turn, question }, readScope, current.ready, signal)
+        const endRevision = current.runtime.revision()
+        return {
+          epoch,
+          revision: endRevision,
+          stale: result.status === 'hit' && startRevision !== endRevision,
+          result,
+        }
       })()
     },
     reportContextUsed: raw => {

@@ -19,7 +19,6 @@ import { objectOf } from '../src/memory/contracts/unknown-value.ts'
 import { randomUUID } from 'node:crypto'
 import { DEEPSEEK_DEFAULT, parseModelValue } from '../src/backend/model-providers.ts'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
-import { createDesktopMemoryOwner } from '../src/backend/desktop-memory-owner.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
 import { DSH_PROFILE } from '../src/backend/config.ts'
 import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
@@ -140,13 +139,10 @@ async function ask(bridge: Bridge, events: readonly BridgeEvent[], question: str
 }
 
 /** Runs one dsh session over the shared memory.db; every permission request is refused. */
-async function runSession({ questions, key, env, dshHome, workspace, memoryRoot }: {
-  questions: readonly string[], key: string, env: NodeJS.ProcessEnv, dshHome: string, workspace: string, memoryRoot: string,
+async function runSession({ questions, key, env, dshHome, workspace }: {
+  questions: readonly string[], key: string, env: NodeJS.ProcessEnv, dshHome: string, workspace: string,
 }) {
   const events: BridgeEvent[] = [], injected: Injection[] = []
-  const memoryOwner = createDesktopMemoryOwner({ root: memoryRoot }, {
-    onContextUsed: ({ session, turn, pushed }) => { injected.push({ session, turn, pushed }) },
-  })
   const bridge = createAcpBridge({
     routing: testRequests(),
     dshBin: path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
@@ -154,11 +150,10 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryRoot 
     profile: DSH_PROFILE,
     overlay: vivaLayerFile(dshHome),
     cwd: workspace,
-
-    memoryOwner,
-    recordSource: async ({ session, sourceId, text, wireText, wireSpans }) => {
-      if (sourceId) await memoryOwner.channel.callIntake('sourceAlias', { operationId: sourceId, sourceId, session,
-        conversation: session, text, wireText, wireSpans, cwd: workspace })
+    memoryContextUsed: ({ session, turn, pushed }) => { injected.push({ session, turn, pushed }) },
+    recordSource: ({ session, sourceId, text, wireText, wireSpans }) => {
+      if (sourceId && bridge.memory.ready()) void bridge.memory.callIntake('sourceAlias', { operationId: sourceId, sourceId, session,
+        conversation: session, text, wireText, wireSpans, cwd: workspace }).catch(() => {})
     },
     env: dshEnv({ base: env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: key } }),
     emit: (event) => {
@@ -170,7 +165,7 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryRoot 
     },
   })
   try {
-    const { sessionId, model } = await withTimeout(memoryOwner.prepare().then(() => bridge.start()), TURN_TIMEOUT_MS, 'dsh 启动')
+    const { sessionId, model } = await withTimeout(bridge.start(), TURN_TIMEOUT_MS, 'dsh 启动')
     await bridge.memory.waitReady()
     const turns = []
     for (const question of questions) {
@@ -182,7 +177,7 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryRoot 
       cleanupPending: await bridge.memory.call('cleanupPending', { args: [] }),
       profile: await bridge.memory.call('profilePage', { args: [] }) }
   } finally {
-    try { await bridge.dispose() } finally { await memoryOwner.close() }
+    await bridge.dispose()
   }
 }
 
@@ -205,7 +200,7 @@ async function main() {
   } = { startedAt: new Date().toISOString(), sessions: [] }
   try {
     for (const questions of SESSIONS) {
-      report.sessions.push(await runSession({ questions, key, env, dshHome, workspace, memoryRoot: path.join(dir, 'memory') }))
+      report.sessions.push(await runSession({ questions, key, env, dshHome, workspace }))
     }
     const latest = report.sessions.at(-1)
     report.files = latest?.files ?? []

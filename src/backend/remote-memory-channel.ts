@@ -114,18 +114,26 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
     }
     const command = parseHostMemoryCommand(method, input)
     const requestId = randomUUID(), epoch = current.epoch
+    const deadlineAt = intake && budgetMs !== undefined ? Date.now() + budgetMs : undefined
     const fields: DiagnosticFields = { stage: READ_STAGE[method], identities: { requestId, ownerEpoch: epoch, methodId: method, ...(batch ? { readBatchId: batch.id } : {}) } }
     const started = performance.now()
+    const cancelSignal = batch?.lifetime.signal ?? intake?.signal
     const result = await new Promise<unknown>((resolve, reject) => {
+      const sendCancel = () => {
+        try {
+          send({ type: 'memory_host_cancel', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch })
+        } catch { /* child disconnected; processExited() will settle executions */ }
+      }
       const timedOut = () => {
-        pending.delete(requestId)
+        if (!pending.delete(requestId)) return
         emitDiagnostic({ ...fields, event: 'wait.end', operation: 'memory.owner', reason: 'timeout', outcome: 'timed_out', metrics: { durationMs: performance.now() - started } })
         finish()
-        reject(batch?.lifetime.signal.reason ?? new RequestTimeout())
+        sendCancel()
+        reject(cancelSignal?.reason ?? new RequestTimeout())
       }
       const timer = setTimeout(timedOut, Math.min(timeoutMs, budgetMs ?? timeoutMs))
-      const finish = () => { clearTimeout(timer); batch?.lifetime.signal.removeEventListener('abort', timedOut) }
-      batch?.lifetime.signal.addEventListener('abort', timedOut, { once: true })
+      const finish = () => { clearTimeout(timer); cancelSignal?.removeEventListener('abort', timedOut) }
+      cancelSignal?.addEventListener('abort', timedOut, { once: true })
       pending.set(requestId, { epoch, context: diagnosticContext(), fields, started,
         resolve: value => { finish(); resolve(value) }, reject: error => { finish(); reject(error) }, timer })
       try {
@@ -133,7 +141,7 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
         const read = batch ? { readBatchId: batch.id, budgetMs: batch.lifetime.remainingMs() } : undefined
         if (batch) { executions.set(requestId, batch); batch.executions++ }
         send({ type: 'memory_host_request', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch, ...command,
-          ...(read ? { read } : {}), diagnostics: diagnosticContext() })
+          ...(read ? { read } : {}), ...(deadlineAt !== undefined ? { deadlineAt } : {}), diagnostics: diagnosticContext() })
       }
       catch (error) {
         finish(); pending.delete(requestId)
@@ -203,6 +211,7 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
       return true
     }
     if (msg.type !== 'memory_host_result') return false
+    if (msg.protocol !== undefined && msg.protocol !== MEMORY_HOST_PROTOCOL) return true
     if (typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string') return true
     // Authenticated terminal replies settle execution even after the UI waiter has expired.
     if (typeof msg.ok !== 'boolean') return true

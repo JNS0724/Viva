@@ -1,14 +1,9 @@
 import path from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
-import { RequestTimeout } from '../../../src/shared/request-budget.ts'
-import { MEMORY_HOST_PROTOCOL, memoryOwnerProfile, memoryOwnerState, type MemoryOwnerProfile, type MemoryOwnerState, type MemoryProfileSnapshot } from '../../../src/memory/contracts/host.ts'
-import { createOwnerRpcPeer } from '../../../src/memory/node/owner-rpc-peer.ts'
 import { createMemoryOwnerSupervisor } from '../../../src/memory/node/owner-supervisor.ts'
 import type { MemoryOwnerConnection } from './remote-owner.ts'
 
 type SupervisorOptions = Parameters<typeof createMemoryOwnerSupervisor>[0]
-type Callbacks = NonNullable<SupervisorOptions['callbacks']> & {
-}
+type Callbacks = NonNullable<SupervisorOptions['callbacks']>
 type Supervisor = ReturnType<typeof createMemoryOwnerSupervisor>
 type OwnerOptions = Pick<SupervisorOptions, 'root' | 'hostNamespace' | 'dailyNotes' | 'embedding'> & { callbacks?: Callbacks }
 
@@ -41,11 +36,18 @@ function standaloneOwner(initial: OwnerOptions) {
     attached = options
     const subscribe: MemoryOwnerConnection['subscribe'] = listener => {
       listeners.add(listener)
-      // Persistence can finish boot before Cordis activates the dsh adapter.
+      // Persistence can finish boot before Cordis activates the dsh adapter; replay the
+      // three-step boot order so late subscribers see L2 populated inside their first ready callback.
       const snapshot = supervisor.state()
-      if (snapshot) listener(snapshot)
       const profile = supervisor.profile()
-      if (profile && (!snapshot || profile.epoch === snapshot.epoch)) listener(profile)
+      if (snapshot?.state === 'ready' && profile && profile.epoch === snapshot.epoch) {
+        listener({ ...snapshot, state: 'recovering' })
+        listener(profile)
+        listener(snapshot)
+      } else {
+        if (snapshot) listener(snapshot)
+        if (profile && (!snapshot || profile.epoch === snapshot.epoch)) listener(profile)
+      }
       return () => { listeners.delete(listener) }
     }
     let retiring: Promise<void> | undefined
@@ -55,7 +57,8 @@ function standaloneOwner(initial: OwnerOptions) {
         transition ??= Promise.resolve().then(async () => {
           // Existing profiles can still put these settings on the adapter. A storage-only
           // activation has no model route or live memory RPCs before this attachment.
-          if (settings.dailyNotes !== options.dailyNotes
+          if (settings.hostNamespace !== options.hostNamespace
+            || settings.dailyNotes !== options.dailyNotes
             || settings.embedding?.modelRoot !== options.embedding?.modelRoot
             || settings.embedding?.runtimeRoot !== options.embedding?.runtimeRoot) {
             await supervisor.close()
@@ -77,7 +80,7 @@ function standaloneOwner(initial: OwnerOptions) {
         })
         return retiring
       },
-      callHost: (method, input) => supervisor.callHost(method, input),
+      callHost: (method, input, optionsForCall) => supervisor.callHost(method, input, optionsForCall),
       callAdapter: (method, args, optionsForCall) => supervisor.callAdapter(method, args, optionsForCall),
       status: () => supervisor.status(),
       epoch: () => supervisor.epoch(),
@@ -112,111 +115,11 @@ export function registerStandaloneOwner(dataRoot: string) {
   }
 }
 
-function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConnection {
-  const { callbacks } = options
-  const listeners = new Set<(event: unknown) => void>()
-  let current: MemoryOwnerState | undefined, starting: Promise<void> | undefined
-  let currentProfile: MemoryOwnerProfile | undefined
-  const lifetime = new AbortController()
-  function onEvent(event: unknown) {
-    const state = memoryOwnerState.safeParse(event)
-    if (state.success) current = state.data
-    else {
-      const profile = memoryOwnerProfile.safeParse(event)
-      if (profile.success) {
-        if (current?.epoch && profile.data.epoch !== current.epoch) return
-        if (currentProfile && currentProfile.epoch === profile.data.epoch && profile.data.revision < currentProfile.revision) return
-        currentProfile = profile.data
-      }
-    }
-    for (const listener of listeners) listener(event)
-  }
-  const peer = createOwnerRpcPeer({
-    send(frame) {
-      if (!port.connected || !port.send) throw new Error('Memory owner parent is disconnected')
-      port.send(frame, () => {})
-    },
-    onEvent,
-    handle(method, input, signal) {
-      // Only the Viva parent sends reverse adapter callbacks on the dedicated IPC link.
-      switch (method) {
-        case 'compute': return required(callbacks?.compute)(input as Parameters<NonNullable<Callbacks['compute']>>[0], signal)
-        default: throw new Error('Unsupported memory adapter callback')
-      }
-    },
-  })
-  const receive = (raw: unknown) => { peer.receive(raw) }
-  function disconnect() {
-    lifetime.abort()
-    peer.close()
-    if (current) onEvent({ ...current, state: 'unavailable' })
-  }
-  port.on('message', receive)
-  port.once('disconnect', disconnect)
-  async function attach() {
-    // Repeated attachment authenticates the same parent link and returns its
-    // current state and cached L2 profile snapshot. Retry only missing acknowledgements, within startup time.
-    for (let attempt = 0; ; attempt++) {
-      const before = current
-      try {
-        const reply = await peer.call<{ state?: MemoryOwnerState, profile?: MemoryProfileSnapshot } | MemoryOwnerState | undefined>('attach',
-          { protocol: MEMORY_HOST_PROTOCOL, root: options.root, hostNamespace: options.hostNamespace }, { signal: lifetime.signal })
-        if (reply && typeof reply === 'object') {
-          if ('type' in reply) {
-            if (current === before) onEvent(reply)
-          } else {
-            if (reply.state && current === before) onEvent(reply.state)
-            if (reply.profile && (!current?.epoch || reply.profile.epoch === current.epoch)) {
-              onEvent({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, ...reply.profile })
-            }
-          }
-        }
-        return
-      } catch (error) {
-        if (!(error instanceof RequestTimeout) || lifetime.signal.aborted || attempt >= 2) throw error
-        await delay(250 * 2 ** attempt, undefined, { signal: lifetime.signal })
-      }
-    }
-  }
-  return {
-    start() {
-      starting ??= Promise.resolve().then(attach).catch(error => { starting = undefined; throw error })
-      return starting
-    },
-    async close() {
-      port.off('message', receive)
-      port.off('disconnect', disconnect)
-      disconnect()
-      listeners.clear()
-    },
-    reconciled(epoch, ready) { peer.notify({ type: 'memory_adapter_ready', epoch, ready }) },
-    claimPrefetch: (input, opts) => peer.call('claimPrefetch', input, opts),
-    refreshPrefetch: (input, opts) => peer.call('refreshPrefetch', input, opts),
-    claimPrefetchBatch: (input, opts) => peer.call('claimPrefetchBatch', input, opts),
-    callAdapter: (method, args, opts) => peer.call('adapter', { method, args, epoch: current?.epoch }, opts),
-    callHost: () => Promise.reject(new Error('The Viva memory adapter has no host capabilities')),
-    subscribe(listener) {
-      listeners.add(listener)
-      if (current) listener(current)
-      if (currentProfile && (!current || currentProfile.epoch === current.epoch)) listener(currentProfile)
-      return () => { listeners.delete(listener) }
-    },
-    status: () => current?.state ?? 'unavailable',
-    epoch: () => current?.epoch,
-  }
-}
-
-function required<T>(callback: T | undefined): T {
-  if (!callback) throw new Error('Memory adapter callback is unavailable')
-  return callback
-}
-
-export function openPluginOwner(options: OwnerOptions, port: typeof process): MemoryOwnerConnection {
-  if (options.hostNamespace === 'viva') return fromViva(options, port)
+export function openPluginOwner(options: OwnerOptions, _port?: typeof process): MemoryOwnerConnection {
   const entry = byRoot.get(path.resolve(options.root))
   if (entry) return entry.attach(options)
-  // Source fixtures and explicit direct mounts may supply their own persistence. The
-  // plugin still uses the same separate owner entry and exclusive memory-root lock.
+  // Both Viva desktop (config.host === true) and standalone DSH run through the same single
+  // standaloneOwner path with an exclusive memory-root lock.
   const privateEntry = standaloneOwner(options)
   const client = privateEntry.attach(options)
   return { ...client, async close() { await privateEntry.close(); await client.close() } }

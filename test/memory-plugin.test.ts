@@ -7,9 +7,8 @@ import { join } from 'node:path'
 import type { TestContext } from 'node:test'
 import { questionOf, routeFixtureTools } from './fixtures/fake-llm.ts'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
-import { ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
-import { objectOf } from '../src/memory/contracts/unknown-value.ts'
-import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
+import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
+import { memoryOwnerContextUsed } from '../src/memory/contracts/host.ts'
 
 /** The real DSH adapter and the separate storage owner communicate through the backend relay. */
 async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]) {
@@ -71,32 +70,14 @@ test('the plugin preserves Viva persona and normal conversation replies', { time
 test('automatic recall times out without interrupting the request', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { agent, call, ask, llm, events } = await setupMemory(t)
   await call('createFile', { args: [{ operationId: randomUUID(), text: '照常回复规则：injection-receipt-test' }] })
-  const pid = agent.pid(), emit = ChildProcess.prototype.emit
-  let admitted = false, lookup = false, extraSessionReads = 0
-  let lostReceiptBudget: number | undefined
-  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
-    if (frame?.kind === 'request' && (frame.method === 'claimPrefetch' || frame.method === 'claimPrefetchBatch')) {
-      lookup = true
-      lostReceiptBudget = frame.budgetMs
-      return true // Simulate hung host prefetch claim.
-    }
-    if (frame?.kind === 'request' && frame.method === 'adapter') {
-      const call = objectOf(frame.input), input = Array.isArray(call?.args) ? objectOf(call.args[0]) : null
-      if (call?.method === 'receiveSource' && input?.live === true) admitted = true
-      if (admitted && !lookup && call?.method === 'sessionView') extraSessionReads++
-      if (call?.method === 'automaticRecall' || (call?.method === 'sidecarRequest' && input?.op === 'context')) {
-        lookup = true
-        lostReceiptBudget = frame.budgetMs
-        return true // The owner never returns this optional recall lookup.
-      }
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
-  await ask('照常回复这一条消息')
-  assert.ok(admitted && lookup)
-  assert.ok(lostReceiptBudget !== undefined && lostReceiptBudget <= DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
-  assert.equal(extraSessionReads, 0)
+  const ownerPid = agent.memoryOwnerPid()
+  assert.ok(ownerPid, 'memory owner worker PID must be reported by memory_owner_state')
+  const paused = await pauseOwnedProcess(ownerPid)
+  try {
+    await ask('照常回复这一条消息')
+  } finally {
+    await paused.resume().catch(() => {})
+  }
   assert.match(replies(events).join(''), /照常回复这一条消息/)
   assert.doesNotMatch(JSON.stringify(llm.requests), /injection-receipt-test/)
 })
@@ -110,13 +91,15 @@ test('the plugin injects static memory rules and recalls file memory with exact 
   assert.match(lastContext(llm), /周报每周五下班前交给张三/)
   assert.ok(llm.requests.every(request => !JSON.stringify(request).includes('dsh_session_log')))
   const epoch = agent.memory.state()!.epoch
+  const ownerPid = agent.memoryOwnerPid()
   const dsh = agent.pid()
   await agent.dispose()
   const restarted = bridge()
   await restarted.start()
   assert.ok(await eventually(() => restarted.memory.ready()))
   assert.notEqual(restarted.pid(), dsh)
-  assert.equal(restarted.memory.state()!.epoch, epoch)
+  assert.notEqual(restarted.memory.state()!.epoch, epoch)
+  assert.ok(restarted.memoryOwnerPid() && restarted.memoryOwnerPid() !== ownerPid)
   assert.deepEqual(await restarted.memory.call('createFile', { args: [input] }), created)
   assert.ok((await restarted.memory.call('readFile', { args: [created.identity] }))?.markdown.includes(input.text))
 })
@@ -186,14 +169,10 @@ test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) a
   const pid = agent.pid(), emit = ChildProcess.prototype.emit
   const contextUsedReports: Array<{ turn: number, pushed: Array<{ text: string, names: string[] }> }> = []
   t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
-    if (frame?.kind === 'request' && frame.method === 'adapter') {
-      const payload = objectOf(frame.input)
-      if (payload?.method === 'reportContextUsed' && Array.isArray(payload.args)) {
-        const arg = objectOf(payload.args[0])
-        if (arg && typeof arg.turn === 'number' && Array.isArray(arg.pushed)) {
-          contextUsedReports.push({ turn: arg.turn, pushed: arg.pushed as Array<{ text: string, names: string[] }> })
-        }
+    if (event === 'message' && this.pid === pid) {
+      const parsed = memoryOwnerContextUsed.safeParse(args[0])
+      if (parsed.success) {
+        contextUsedReports.push({ turn: parsed.data.turn, pushed: parsed.data.pushed })
       }
     }
     return Reflect.apply(emit, this, [event, ...args]) as boolean

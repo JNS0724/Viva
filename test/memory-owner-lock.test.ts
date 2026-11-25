@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
 import { ChildProcess, fork } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { EventEmitter, once } from 'node:events'
+import { once } from 'node:events'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
 import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
@@ -13,10 +13,6 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { OWNER_RPC_MAX_ACTIVE, ownerRpcFrame, type OwnerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
-import { boot } from '@deepseek-ai/dsh-app-boot'
-import type { Context } from '@deepseek-ai/cordis'
-import { createDesktopMemoryOwner } from '../src/backend/desktop-memory-owner.ts'
-import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 import { createMemoryOwnerSupervisor } from '../src/memory/node/owner-supervisor.ts'
 import { createOwnerRpcPeer } from '../src/memory/node/owner-rpc-peer.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
@@ -26,7 +22,6 @@ import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
 import { createRemoteMemoryOwner } from '../plugins/memory/lib/remote-owner.ts'
 import { openPluginOwner, registerStandaloneOwner } from '../plugins/memory/lib/standalone-owner.ts'
 import { objectOf } from '../src/memory/contracts/unknown-value.ts'
-import { replies, startHarness } from './fixtures/dsh-harness.ts'
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason: unknown) => void
@@ -306,55 +301,4 @@ test('standalone owner restart recovers lost write receipts and manual Dream req
   })
   assert.ok(completed)
   assert.deepEqual(await connection.callHost('requestDream', { args: [jobId] }), completed)
-})
-
-
-test('Viva activates its live dsh plugin after the first attach acknowledgement disappears', { timeout: 30_000 }, async t => {
-  const emit = ChildProcess.prototype.emit
-  let firstRequest: string | undefined, attempts = 0, dropped = false
-  let sender: ChildProcess | undefined
-  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    const frame = event === 'message' ? ownerRpcFrame(args[0]) : null
-    if (frame?.kind === 'request' && frame.method === 'attach') {
-      attempts++
-      if (!sender) {
-        sender = this
-        firstRequest = frame.id
-        const send = this.send
-        t.mock.method(this, 'send', function (this: ChildProcess, message: unknown, ...rest: unknown[]) {
-          const response = ownerRpcFrame(message)
-          if (response?.kind === 'result' && response.id === firstRequest && response.ok) { dropped = true; return true }
-          return Reflect.apply(send, this, [message, ...rest]) as boolean
-        })
-      }
-      assert.equal(this, sender)
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
-  const harness = await startHarness(t)
-  const bridge = harness.bridge()
-  await bridge.start()
-  assert.ok(dropped)
-  assert.equal(attempts, 2)
-  assert.equal(bridge.pid(), sender?.pid)
-  assert.ok(bridge.memory.ready())
-  const text = 'Continue after a missing attach reply'
-  await bridge.prompt(text)
-  assert.ok(replies(harness.events).join('').includes(text))
-})
-
-test('a ready notification outranks an older attach response on the same Viva IPC link', async () => {
-  const port = Object.assign(new EventEmitter(), { connected: true, send(frame: OwnerRpcFrame) {
-    if (frame.kind !== 'request') return
-    const state = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: 'new-owner', state: 'ready', revision: 1, coreEpoch: 0 }
-    port.emit('message', { type: frame.type, kind: 'event', event: state })
-    port.emit('message', { type: frame.type, kind: 'result', id: frame.id, ok: true,
-      result: { ...state, epoch: 'retired-owner', state: 'recovering' } })
-  } })
-  const connection = openPluginOwner({ root: '/fixture', hostNamespace: 'viva' }, port as unknown as typeof process)
-  try {
-    await connection.start()
-    assert.equal(connection.status(), 'ready')
-    assert.equal(connection.epoch(), 'new-owner')
-  } finally { await connection.close() }
 })

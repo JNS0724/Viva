@@ -288,8 +288,14 @@ export function createMemoryOwnerSupervisor(options: Options) {
     },
     subscribe(listener: (event: MemoryOwnerEvent) => void) {
       listeners.add(listener)
-      if (snapshot) listener(snapshot)
-      if (profileSnapshot && (!snapshot || profileSnapshot.epoch === snapshot.epoch)) listener(profileSnapshot)
+      if (snapshot?.state === 'ready' && profileSnapshot && profileSnapshot.epoch === snapshot.epoch) {
+        listener({ ...snapshot, state: 'recovering' })
+        listener(profileSnapshot)
+        listener(snapshot)
+      } else {
+        if (snapshot) listener(snapshot)
+        if (profileSnapshot && (!snapshot || profileSnapshot.epoch === snapshot.epoch)) listener(profileSnapshot)
+      }
       return () => { listeners.delete(listener) }
     },
     status: () => terminalFailure ? 'unavailable' as const : snapshot?.state ?? 'recovering',

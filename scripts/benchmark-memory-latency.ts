@@ -9,13 +9,12 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
 import { DSH_PROFILE } from '../src/backend/config.ts'
-import { createDesktopMemoryOwner } from '../src/backend/desktop-memory-owner.ts'
 import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { removeTree } from '../src/backend/remove-tree.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
-import { MEMORY_OWNER_RPC, ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { NOTE_SYSTEM } from '../src/memory/core/memory-notes.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 import { CODE_ROOT } from '../src/shared/node/app-roots.ts'
 import { routeFixtureTools, startFakeLlm } from '../test/fixtures/fake-llm.ts'
@@ -84,7 +83,7 @@ function vectorState(root: string) {
 }
 
 async function workload(root: string, embedding: { modelRoot: string, runtimeRoot: string }, catalog: number, background: boolean) {
-  const dshHome = path.join(root, 'dsh'), memoryRoot = path.join(root, 'memory'), workspace = path.join(root, 'workspace')
+  const dshHome = path.join(root, 'dsh'), workspace = path.join(root, 'workspace')
   await mkdir(workspace, { recursive: true })
   const { plugins } = resolvePlugins({ codeRoot: CODE_ROOT, userData: root, dshVersion: installedDshVersion(CODE_ROOT),
     memory: { ...embedding, dailyNotes: background } })
@@ -103,6 +102,8 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
       }
       return fixture
     }
+    const sys = typeof request.system === 'string' ? request.system : Array.isArray(request.system) ? request.system.map(p => (objectOf(p)?.text ?? '')).join('\n') : ''
+    if (sys === NOTE_SYSTEM) return { text: JSON.stringify({ status: 'skip' }) }
     const trial = current
     if (!trial || !request.tools?.some(tool => tool.name === 'memory_recall')) return null
     if (trial.first === undefined) {
@@ -135,54 +136,31 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
     trial.sent = { name, at: performance.now() }
     return { tool: { name, input: name === 'memory_read' ? { id: fileId } : { query: trial.fault && name === 'memory_recall' ? query + ' stop worker' : query } } }
   }) })
-  let running: { bridge: ReturnType<typeof createAcpBridge>, owner: ReturnType<typeof createDesktopMemoryOwner> } | undefined
+  let running: { bridge: ReturnType<typeof createAcpBridge>, bypassAuto: boolean } | undefined
   async function stop() {
     const instance = running
     running = undefined
     if (!instance) return
-    try { await instance.bridge.dispose() } finally { await instance.owner.close() }
+    await instance.bridge.dispose()
   }
-  async function launch() {
-    let bypassAutomaticRecall = false
-    const rawOwner = createDesktopMemoryOwner({ root: memoryRoot, embedding, dailyNotes: background }, {})
-    // Benchmark-only toggle: runs the exact same known-hit query in both arms while switching automatic recall independently.
-    const owner: ReturnType<typeof createDesktopMemoryOwner> = {
-      ...rawOwner,
-      startPrefetch(input) {
-        if (bypassAutomaticRecall) return
-        rawOwner.startPrefetch(input)
-      },
-      bindDsh(send, exited, foregroundSignal, onReady) {
-        const bound = rawOwner.bindDsh(send, exited, foregroundSignal, onReady)
-        return {
-          ...bound,
-          receive(raw) {
-            if (bypassAutomaticRecall) {
-              const frame = ownerRpcFrame(raw)
-              if (frame?.kind === 'request' && frame.method === 'claimPrefetch') {
-                send({ type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { found: true, result: { status: 'skipped' } } })
-                return true
-              }
-              if (frame?.kind === 'request' && frame.method === 'claimPrefetchBatch') {
-                const reqs = Array.isArray(objectOf(frame.input)?.requestIds) ? (objectOf(frame.input)!.requestIds as unknown[]) : []
-                send({ type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: reqs.map(() => ({ found: true, result: { status: 'skipped' } })) })
-                return true
-              }
-            }
-            return bound.receive(raw)
-          },
-        }
-      },
-    }
+  async function launch({ bypassAuto = false } = {}) {
     const errors: string[] = []
     const bridge = createAcpBridge({
       routing: testRequests(), dshBin: path.join(CODE_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), nodeBin: runtime.nodeBin,
-      profile: DSH_PROFILE, overlay: vivaLayerFile(dshHome), cwd: workspace, memoryOwner: owner,
-      recordSource: async ({ session, sourceId, text, wireText, wireSpans }) => {
-        if (sourceId) await owner.channel.callIntake('sourceAlias', { operationId: sourceId, sourceId, session,
-          conversation: session, text, wireText, wireSpans, cwd: workspace })
+      profile: DSH_PROFILE, overlay: vivaLayerFile(dshHome), cwd: workspace,
+      recordSource: ({ session, sourceId, text, wireText, wireSpans }) => {
+        if (sourceId && bridge.memory.ready()) void bridge.memory.callIntake('sourceAlias', { operationId: sourceId, sourceId, session,
+          conversation: session, text, wireText, wireSpans, cwd: workspace }).catch(() => {})
       },
-      env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'fixture-only', DEEPSEEK_BASE_URL: model.url, NO_PROXY: '127.0.0.1,localhost' } }),
+      env: {
+        ...dshEnv({
+          base: process.env,
+          dshHome,
+          runtime,
+          settings: { DEEPSEEK_API_KEY: 'fixture-only', DEEPSEEK_BASE_URL: model.url, NO_PROXY: '127.0.0.1,localhost' },
+        }),
+        ...(bypassAuto ? { VIVA_MEMORY_BENCHMARK_BYPASS_AUTO: '1' } : {}),
+      },
       emit(event) {
         if (event.type === 'error') errors.push(String(event.message))
         const requestId = event.requestId
@@ -201,12 +179,11 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
         }
       },
     })
-    running = { bridge, owner }
+    running = { bridge, bypassAuto }
     const start = performance.now()
-    await owner.prepare()
     await bridge.start()
     await bridge.memory.waitReady()
-    assert.ok(owner.pid() && bridge.pid() && owner.pid() !== bridge.pid())
+    assert.ok(bridge.memoryOwnerPid() && bridge.pid() && bridge.memoryOwnerPid() !== bridge.pid())
     const startup = performance.now() - start
     async function ask(text: string) {
       const session = bridge.currentSession()
@@ -214,13 +191,12 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
       const sourceId = randomUUID()
       await bridge.prompt(text, [], { sourceId, sourceText: text })
     }
-    async function measure({ fault = false, skipAutomatic = false, measureTools = true } = {}) {
+    async function measure({ fault = false, skipAutomatic = bypassAuto, measureTools = true } = {}) {
       const trial: Trial = { prompt: query, started: performance.now(), automaticHit: false,
         fault, measureTools, results: [], seen: new Map(), acpStarts: new Map(), acpTools: [] }
       const offset = errors.length
       current = trial
-      bypassAutomaticRecall = skipAutomatic
-      try { await ask(trial.prompt) } finally { bypassAutomaticRecall = false; current = undefined }
+      try { await ask(trial.prompt) } finally { current = undefined }
       if (trial.error) throw trial.error
       assert.ok(trial.first !== undefined, JSON.stringify(errors.slice(offset)))
       if (skipAutomatic) assert.equal(trial.automaticHit, false, 'bypass arm must not inject automatic recall')
@@ -248,24 +224,34 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
       const coldPaired = new Map<boolean, Sample>()
       for (const skipAutomatic of index % 2 ? [true, false] : [false, true]) {
         await stop()
-        run = await launch()
+        run = await launch({ bypassAuto: skipAutomatic })
         coldPaired.set(skipAutomatic, await run.measure({ skipAutomatic, measureTools: false }))
       }
       const cEnabled = coldPaired.get(false)!, cBypass = coldPaired.get(true)!
       coldOn.push(cEnabled); coldOff.push(cBypass); coldDeltas.push(cEnabled.firstModelMs - cBypass.firstModelMs)
     }
+    await stop()
+    run = await launch({ bypassAuto: false })
+    await run.measure({ measureTools: false }) // warm up
     const warm = [], on = [], off = [], deltas = []
     for (let index = 0; index < samples; index++) {
       await run.bridge.newSession()
       warm.push(await run.measure())
-      const paired = new Map<boolean, Sample>()
-      for (const skipAutomatic of index % 2 ? [true, false] : [false, true]) {
-        await run.bridge.newSession()
-        paired.set(skipAutomatic, await run.measure({ skipAutomatic, measureTools: false }))
-      }
-      const enabled = paired.get(false)!, bypass = paired.get(true)!
-      on.push(enabled); off.push(bypass); deltas.push(enabled.firstModelMs - bypass.firstModelMs)
+      await run.bridge.newSession()
+      on.push(await run.measure({ skipAutomatic: false, measureTools: false }))
     }
+    await stop()
+    const bypassRun = await launch({ bypassAuto: true })
+    await bypassRun.measure({ skipAutomatic: true, measureTools: false }) // warm up
+    for (let index = 0; index < samples; index++) {
+      await bypassRun.bridge.newSession()
+      off.push(await bypassRun.measure({ skipAutomatic: true, measureTools: false }))
+    }
+    for (let index = 0; index < samples; index++) {
+      deltas.push(on[index]!.firstModelMs - off[index]!.firstModelMs)
+    }
+    await stop()
+    run = await launch({ bypassAuto: false })
     const dream = []
     if (background) {
       await run.bridge.newSession()

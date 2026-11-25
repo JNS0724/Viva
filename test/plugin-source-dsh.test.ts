@@ -5,7 +5,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
-import { createDesktopMemoryOwner } from '../src/backend/desktop-memory-owner.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
 import { launchMessage } from '../src/backend/dsh-launch.ts'
 import { authVariable } from '../src/backend/plugin-registry.ts'
@@ -35,11 +34,9 @@ test('real dsh started by the app\'s entry hands the registry token to pnpm, and
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-plugin-source-'))
   let bridge: ReturnType<typeof createAcpBridge> | undefined
   const userData = path.join(dir, 'userData')
-  const memoryOwner = createDesktopMemoryOwner({ root: path.join(userData, 'memory') }, {})
   const llm = await startFakeLlm({})
   t.after(async () => {
     await bridge?.dispose()
-    await memoryOwner.close()
     await llm.close()
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
@@ -55,13 +52,11 @@ test('real dsh started by the app\'s entry hands the registry token to pnpm, and
   const profileDir = ensureDshProfile({ dshHome, profile: 'viva-source-test', plugins, persona: PERSONA, pnpmCommand: pnpm, registry: REGISTRY })
 
   bridge = createAcpBridge({ routing: testRequests(),
-    memoryOwner,
     dshBin: path.join(root, 'src', 'backend', 'dsh-entry.ts'), nodeBin: runtime.nodeBin, cwd: dir, profile: 'viva-source-test', overlay: vivaLayerFile(dshHome),
     env: dshEnv({ base: { ...process.env, FAKE_PNPM_LOG: log }, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
     launch: launchMessage({ pnpmCommand: pnpm, registry: REGISTRY, registryToken: TOKEN, scopes: ['@company'] }),
     emit: () => {},
   })
-  await memoryOwner.prepare()
   await bridge.start()
   const inspected = await bridge.plugins('inspect', { spec: '@company/search' })
   assert.ok(inspected.ok, inspected.ok ? '' : inspected.problem)

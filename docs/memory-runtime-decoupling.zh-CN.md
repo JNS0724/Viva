@@ -338,66 +338,283 @@ export type AutomaticRecallResult =
 
 ---
 
-## 4. 阶段三（结论更新）：记忆回归 DSH 插件托管，取消独立 LLM 客户端
+## 4. 阶段三（收口版）：记忆回归 DSH 插件托管、统一单路径与配额治理
 
-### 4.1 决策结论与理由
+### 4.1 决策结论与架构收口
 
 经架构复盘，确认以下两项产品前提均为「否」：
 1. 在未配置模型、DSH 崩溃或切模型重启的 1~2 秒空窗期内，不要求「关于你」记忆管理页脱离 DSH 独立可用；
 2. 近期没有接入 DSH 以外的 Agent Runtime，也没有关闭 DSH 单独在后台运行记忆整理的计划。
 
-因此，**取消“在 `memory-worker` 内另建独立 LLM 客户端与密钥同步链路”的原阶段三方案**，改为收口整体进程架构，回归 **「Viva 依赖 DSH，记忆作为 DSH 插件（内部自带私有 `memory-worker` 子进程）」**：
+因此，**取消“在 `memory-worker` 内另建独立 LLM 客户端与密钥同步链路”的原阶段三方案**，将进程托管权收回 **`viva-memory` DSH 插件（内部监管私有 `memory-worker` 子进程）**：
 
-- **守住单一 LLM 网关红线**：全系统仅由 DSH（`ctx.llm`）负责模型协议适配、DeepSeek 账号登录态（`llm-deepseek-account`）、代理、重试与凭据管理；避免在 `memory-worker` 内复制第二套传输栈（`@deepseek-ai/dsh-llm-*` 为传递依赖且 `dsh-llm-retry` 强绑定 Cordis 插件体系）和扩大明文 API Key 暴露面。
-- **消除双路径维护税**：删除 Viva 侧的 `desktop-memory-owner.ts` 双向中转桥与 `standalone-owner.ts` 中的 `fromViva()` 分支，Viva 桌面端与独立 DSH 插件 100% 收敛为同一套 `standaloneOwner` 实现。
-- **保留进程级故障与阻塞隔离**：`viva-memory` 插件内部仍监管独占 SQLite、Markdown 核验、FTS5 与 ONNX 嵌入的私有 `memory-worker` 子进程，防止同步数据库 I/O 与向量推理阻塞 DSH 主线程。
-- **复用阶段一、二主体成果**：L1 静态规则、L2 本地画像缓存、L3 `decision.messages` 锚定与 5 态召回协议、向量快慢分离，以及阶段二全部自动常驻画像与 Dream 检查点恢复逻辑均完整保留；仅省去强绑定 Viva 主进程托管的跨进程预取桥接（`memory-prefetch.ts` / `claimPrefetch`），L3 短预算检索直接在 DSH 侧完成。
+- **单树状进程拓扑**：`Viva 主进程 → DSH 进程 → viva-memory 插件 → 私有 memory-worker 子进程`。Viva 只监管 DSH 一个子进程；Note / Dream 的 `ctx.llm` 计算回调直接发生在插件与私有 worker 两进程之间，不再经 Viva 主进程三跳中转。
+- **守住单一 LLM 网关红线**：全系统仅由 DSH（`ctx.llm`）负责模型协议、DeepSeek 账号登录态（`llm-deepseek-account`）、代理、重试与凭据管理，不在 `memory-worker` 内复制第二套传输栈或扩大明文 API Key 暴露面。
+- **消除双路径维护税（具体删除清单）**：
+  - 删除 `src/backend/desktop-memory-owner.ts`（Viva 侧 supervisor 与双向中转桥）；
+  - 删除 `src/backend/memory-prefetch.ts`（强绑定 Viva 主进程托管的跨进程预取协调器）；
+  - 删除 `plugins/memory/lib/standalone-owner.ts` 中的 `fromViva()` 分支、`MemoryOwnerConnection` 的 `claimPrefetch` / `refreshPrefetch` / `claimPrefetchBatch` / `reconciled` 方法，使 Viva 桌面端与独立 DSH 插件 100% 收敛为同一套 `standaloneOwner`；
+  - 清理 `src/memory/contracts/host.ts` 中的 `memoryOwnerPrefetchCancelled` 与仅用于主进程预取的 `prefetchRecall` 声明，并移除 `src/backend/acp-bridge.ts` 中对 `bindDsh` / `startPrefetch` / `cancelPrefetch` / `finishPrefetch` / `clearSessionPrefetches` 的调用。
+- **保留进程级故障与阻塞隔离**：`viva-memory` 插件仍监管独占 SQLite、Markdown 核验、FTS5 与 ONNX 嵌入的私有 `memory-worker` 子进程，防止同步数据库 I/O 或向量推理阻塞 DSH 主线程。
+- **复用阶段一、二主体成果**：L1 静态规则、L2 本地画像缓存、L3 `decision.messages` 锚定与 5 态召回协议、向量快慢分离，以及阶段二全部常驻画像与 Dream 检查点恢复逻辑全部保留。
 
-### 4.2 收口后的架构边界
+### 4.2 父进程 IPC 管理通道、轻量过渡摄取代理与权限边界
 
-1. **进程结构（单树状拓扑）**：`Viva 主进程 → DSH 进程 → viva-memory 插件 → 私有 memory-worker 子进程`。Viva 只监管 DSH 一个子进程；Note / Dream 调用 `ctx.llm` 发生在插件与私有 worker 两进程之间，不再经 Viva 主进程三跳中转。
-2. **「关于你」管理面 IPC（与 `viva-mcp` / `viva-tasks` 同构）**：
-   - Viva 主进程通过既有父子 IPC 通道向 `viva-memory` 插件转发受管文件查询、编辑、撤销、停用、删除及 Dream 触发请求，由插件代理给私有 `memory-worker`；
-   - **权限隔离不变**：仅父进程 IPC 通道允许调用 `host` 管理接口，模型工具与第三方插件不可访问；Viva 主进程不直接打开 `memory.db`，维持单 owner 独占锁；
-   - **可用性语义**：DSH 未启动、崩溃或热重启期间，记忆通道报告 `unavailable`（界面提示暂不可用/连接中），DSH 就绪后自动恢复；同步调整原 `#161` 中“DSH 离线时管理页仍可用”的对应测试预期。
-3. **配额治理与防前台干扰（原地补齐，不迁 LLM）**：
-   - **并发硬上限 = 1**：继续沿用 `effects` 单通道串行执行 Note 与 Dream；
-   - **429 / 5xx 退避**：在 [model.ts](../plugins/memory/lib/model.ts) 补齐限流/过载错误分类与 `Retry-After` 透传，交由 `effects` 指数退避重试；
-   - **前台流式软让路**：在 [adapter.ts](../plugins/memory/lib/adapter.ts) 本地感知前台对话流式状态，前台活跃时将**新发起**的后台 Note / Dream 顺延数秒（设最大推迟上限防饥饿；不中断已在途请求，手动触发 Dream 豁免）；
-   - **后台轻模型扩展口**：`MemoryCompute` 协议本身按 `{ provider, model }` 参数化，后续可直接复用 DSH 已配置提供方中的轻量模型。
+1. **父进程专用管理通道（复用既有 `remote-memory-channel.ts` 精确协议）**：
+   - Viva 主进程通过既有父子 IPC 通道发送 `memory_host_request` 帧（扩展 [remote-memory-channel.ts](../src/backend/remote-memory-channel.ts) 的 `send` 分支，使其在首跳同时携带 `protocol: MEMORY_HOST_PROTOCOL`、`requestId`、`epoch`、`method`、`input`，以及可选的 `read: { readBatchId, budgetMs }`、`deadlineAt` 与 `diagnostics`）；
+   - **首跳显式取消传播**：当已派发请求的调用方 `AbortSignal` 在预算到期**之前**中止（如用户取消页面读）时，`remote-memory-channel.ts` 立即发送 `{ type: 'memory_host_cancel', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch }`，同时**继续保留 `executions` 读槽位直至收到终态 `memory_host_result` 或子进程退出**；
+   - `viva-memory` 插件仅在 `config.host === true` 且 `port.send` 存在时启用该通道：校验 `protocol === MEMORY_HOST_PROTOCOL`、`epoch === owner.epoch` 及 `HostMemoryMethod` 白名单后，为每条在途 `requestId` 绑定本地 `AbortController`（收到 `memory_host_cancel` 时中止该 `signal`），转发至私有 `memory-worker`，并以 **`memory_host_result`** 帧回传终态结果（成功 `{ type: 'memory_host_result', protocol, requestId, epoch, ok: true, result }`；失败 `{ type: 'memory_host_result', protocol, requestId, epoch, ok: false, error }`，使用既有 [domain-error.ts](../src/memory/contracts/domain-error.ts) 的 **`memoryHostFailure`** 保留 `code`、`reason`、`domainCode`、`domainDetails`）；
+   - **跨两跳保留执行选项**：扩展 `MemoryOwnerConnection.callHost` 与 [standalone-owner.ts](../plugins/memory/lib/standalone-owner.ts) 透传 `OwnerCallOptions`（`signal`、`budgetMs`、`waitForCompletion`、`deadlineAt`）至 `supervisor.callHost`：
+     - 携带 `read` 的页面读请求固定以 `{ signal, budgetMs: read.budgetMs, waitForCompletion: true }` 调用，确保调用方提前取消能中断 worker 计算，但插件仍等待真实终态完成后再回发 `memory_host_result` 释放槽位；
+     - 携带 `deadlineAt` 的摄取/限时请求同步下传剩余 `budgetMs`、`deadlineAt` 与 `signal` 至 worker；
+   - 插件同时将私有 `memory-worker` 发出的 `memory_owner_state`（含 `profileDeletionGen`）、`memory_owner_change`、`memory_owner_context_used` 事件经父进程 IPC 转发给 Viva 主进程，供 UI 刷新、诊断与 `question-desk` 快照 `questionProfileGen`；
+   - **旧 DSH 连接围栏**：Viva 主进程为每个 DSH 子进程绑定单调连接世代（`DshLifetime`）；子进程退出或替换时立即调用 `channel.processExited()` 并丢弃来自旧 DSH 连接的任何迟到 IPC 帧。
+2. **轻量过渡期摄取代理（仅衔接 PR 3 → PR 4A，不建一次性过渡表或临时帧）**：
+   - 在阶段四移除 `sourceAlias` / `acceptQuestionAnswer` 之前，`hostNamespace: 'viva'` 继续通过父进程 IPC 透传完整 `HostMemoryMethod` 白名单（受管文件 CRUD、Dream、幂等 `getOperation` 以及 `sourceAlias` / `acceptQuestionAnswer`）；
+   - [compose.ts](../src/backend/compose.ts) 将 `recovering` 窗口的静默丢弃（`if (memoryOffline()) return`）改为按稳定幂等 `operationId` 维护有界待确认队列（溢出时显式记录诊断），并在 `memory_owner_state` 跃迁为 `ready` 时幂等重放未确认项；`acceptQuestionAnswer` 在向 DSH 投递回答前等待有界确认；
+   - [owner.ts](../src/memory/node/owner.ts) 沿用既有 `sourceAlias` 按 `(session, wire_hash)` 匹配逻辑，确保 `origin === 'derived'` 绝不升格为 `'original'`、已取消回合不生成日记；因阶段四紧接着就会彻底删除 `sourceAlias`，**不在阶段三新增一次性表（如 `owner_turn_receipts`）或一次性跨进程帧（如 `memory_query_handoff`）**。
+3. **权限边界与显式信任模型**：
+   - 仅父进程 IPC 通道允许访问 `callHost`；模型工具仅能调用 `sidecarRequest` 最小白名单（**`remember`、`recall`、`file_read`、`node_search`**，保留既有授权读能力，拒绝一切管理方法）；Viva 主进程不直接打开 `memory.db`，维持 `owner-lock.ts` 单 owner 独占锁；
+   - **用户自装 DSH 插件的显式信任假设**：Viva 支持用户通过 [plugins-ipc.ts](../src/backend/plugins-ipc.ts) 安装并启用第三方 DSH 插件。由于 DSH 与全部插件运行在同一 Node.js 进程内，启用第三方插件即等同于授予其与 DSH 同等的进程内信任；`callHost` / `sidecarRequest` 的分界用于约束模型工具面与宿主协议，并非针对恶意同进程插件的操作系统沙箱隔离。
+4. **可用性语义**：
+   - DSH 未启动、崩溃或切模型热重启期间，Viva 主进程在子进程退出时触发 `channel.processExited()`，记忆通道报告 `unavailable`（UI 提示暂不可用/连接中），DSH 就绪并重新上报 `memory_owner_state (ready)` 后自动恢复；
+   - 同步调整原 `#161` 中断言“DSH 离线时管理页仍独立可用”的单测与冒烟用例预期；同时保留“仅 `memory-worker` 崩溃时 DSH 不重启且原地拉起新 worker 并保持独占锁”的恢复保障。
 
-### 4.3 未来重新评估独立 LLM 通道的触发条件
+### 4.3 DSH 内单跳 L3 检索与重启/崩溃 L2 缓存重建
+
+1. **DSH 内单跳短预算 L3 检索与 worker 权威版本校验**：
+   - 删除 Viva 主进程预取桥后，L3 自动召回统一由 `viva-memory` 插件在 `agent/pre-step` 中对已确定入步的 `decision.messages` 经统一人类消息提取器（阶段三沿用 `humanMessages`，阶段四升级为 `extractHumanMessages`）并发触发：
+     - 每条消息共享本步绝对截止时间 `stepDeadlineAt = Date.now() + DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs`（默认 `150ms`），通过插件到私有 `memory-worker` 的**单跳本地 IPC** 调用 `owner.call('automaticRecall', ...)`；
+     - 在 `agent/pre-step` 直接发起天然避开了未入步取消/覆盖消息的孤儿预取与取消同步竞态；同时保留阶段一的 `looksSecret` / 空文本跳过、55ms 向量快慢分离与常驻画像槽位排重；
+     - **worker 权威版本夹检与单层至多 1 次刷新**：将原待删 `prefetchRecall` 中的数据库版本夹检迁移至存活的 `owner-worker.ts` `automaticRecall` 接口——检索前后分别读取 `startRevision = store.revision()` 与 `endRevision = store.revision()`，返回 `{ epoch, revision: endRevision, stale: result.status === 'hit' && startRevision !== endRevision, result }`；`adapter.ts` 若观察到 `stale === true` 或 `(item.epoch !== owner.epoch || item.revision < (currentRevision ?? 0))`，在剩余 `stepDeadlineAt` 预算内执行**至多 1 次重查**，最终仅采纳 `!item.stale && item.epoch === owner.epoch && item.revision >= (currentRevision ?? 0) && !signal.aborted` 的命中并按原消息顺序注入 `<memory-recall>`；
+     - **零幽灵回执边界**：仅在 `session/event: user/message (viva-memory)` 成功追加到会话后上报 `reportContextUsed`（`prepareCall` 失败或取消时绝不上报幽灵回执）。
+   - **预算实测与校准**：更新 [benchmark-memory-latency.ts](../scripts/benchmark-memory-latency.ts) 脱离已删 `desktop-memory-owner` 与预取帧拦截，直接基于 `standaloneOwner` 与真实 bypass 基线运行，在阶段三 PR 中对照 `5e96068` 基线记录冷、热启动下首个实际模型请求的额外 P95 延迟与证据命中率。
+2. **DSH 重启与仅 worker 崩溃后的 L2 缓存重建（世代安全的三段推送与晚订阅回放）**：
+   - `owner-supervisor.ts` 须先收到 `memory_owner_state` 才会建立 `instance.epoch`，`adapter.ts` 也按当前 `owner.epoch` 过滤画像；因此 `owner-worker.ts` 在 `recover()` 完成后按严格三段顺序推送：
+     1. 先发 **`memory_owner_state { state: 'recovering', epoch: newEpoch, ... }`**（建立新 `epoch` 并清空旧 `cachedProfile`）；
+     2. 再发 **`memory_owner_profile { epoch: newEpoch, revision, text, profileDeletionGen }`**（被 supervisor 与 adapter 匹配接受并缓存）；
+     3. 最后发 **`memory_owner_state { state: 'ready', epoch: newEpoch, ... }`**（`ready` 生效瞬间 L2 缓存已就绪，零空窗）；
+   - **晚订阅者同序回放**：在 [standalone-owner.ts](../plugins/memory/lib/standalone-owner.ts) 与 [owner-supervisor.ts](../src/memory/node/owner-supervisor.ts) 的 `subscribe(listener)` 中，若订阅时 `snapshot.state === 'ready'` 且存在同 epoch 缓存画像，按相同三段顺序回放，确保晚挂载的 `adapter.ts` 在首个 `ready` 回调内即可同步读到完整 L2 画像；
+   - **不可用即失效**：无论 DSH 重启还是仅 `memory-worker` 崩溃（supervisor 上报 `unavailable`），`adapter.ts` 在 `state === 'unavailable'`、`owner.epoch` 变更或 `!owner.ready()` 时立即清空旧 `cachedProfile`（`currentProfileText()` 仅在 `owner.ready() && cachedProfile?.epoch === owner.epoch` 时返回正文，否则返回 `''`）；
+   - 插件按 `(epoch, revision)` 单调更新 `cachedProfile`（接受 `text: ''` 作为合法清空），向 `systemPrompt.context('viva-profile')` 提供 0ms 同步读取。
+
+### 4.4 配额治理与调度契约（429/5xx `Retry-After` 与轻量前台软让路）
+
+1. **并发硬上限 = 1**：继续沿用 `memory-worker` 内的单通道 `effects` 队列串行执行 Note 与 Dream。
+2. **429 / 5xx 错误分类与 `Retry-After` 全链路透传（不建额外 SQLite 冷却表）**：
+   - **边界 1 — 插件分类器（[model.ts](../plugins/memory/lib/model.ts)）**：扩展 `memoryProviderFailure(input)` 同时兼容 DSH 流式终态错误帧（从 **`assembler.finish.failure`** 读取 `LlmFailure`）与抛出异常（`LlmError.failure` 及顶层 `{ code, status, providerRetryAfterMs }`）：
+     - `code === 'RATE_LIMIT'` 或 `status === 429` → `new MemoryComputeError('rate-limited', { retryAfterMs })`；
+     - `code === 'SERVER'` / `TRANSPORT` / `STREAM_CLOSED` 或 `status >= 500 && status <= 599` → `new MemoryComputeError('provider-overloaded', { retryAfterMs })`；
+     - `retryAfterMs` 校验为正整数毫秒并设安全上限（`MAX_RETRY_AFTER_MS = 3_600_000` ms，防异常响应头锁死队列）。
+   - **边界 2 — 插件 `compute` 捕获路径（[adapter.ts](../plugins/memory/lib/adapter.ts)）**：将完整捕获异常（含 `LlmError.failure`）传入 `memoryProviderFailure(error)`。
+   - **边界 3 — 跨进程契约与 worker 重建（[memory-contract.ts](../src/memory/contracts/memory-contract.ts)、[compute.ts](../src/memory/contracts/compute.ts)、[owner-rpc.ts](../src/memory/contracts/owner-rpc.ts)、[owner-rpc-peer.ts](../src/memory/node/owner-rpc-peer.ts)、[owner-worker.ts](../src/memory/node/owner-worker.ts)）**：
+     - `memoryComputeFailure` 增补 `'rate-limited' | 'provider-overloaded' | 'deferred'`；
+     - `MemoryComputeError` 新增可选只读字段 `readonly retryAfterMs?: number`；
+     - RPC `Failure` 帧透传可选正整数 `retryAfterMs`，`owner-worker.ts` 还原 `new MemoryComputeError(reason, { retryAfterMs })`。
+   - **边界 4 — Note 与 Dream 传播（[memory-note-jobs.ts](../src/memory/core/memory-note-jobs.ts) & [memory-dream-jobs.ts](../src/memory/core/memory-dream-jobs.ts)）**：
+     - 捕获 `MemoryComputeError`：`reason === 'deferred'` → `{ kind: 'defer', delayMs: error.retryAfterMs ?? 3_000 }`；携带 `retryAfterMs` → `{ kind: 'retry', delayMs: error.retryAfterMs, cooldown: true }`；无 `retryAfterMs` → 普通 `'retry'`（走既有指数退避，首次 `1_000ms`）；
+     - `memory-dream-jobs.ts`（覆盖主整理步与独立画像规划步）以结构化重试结果保留最大 `retryAfterMs` 或 `defer`。
+   - **边界 5 — `effects` 调度（[ports/effects.ts](../src/memory/core/ports/effects.ts) & [node/effects.ts](../src/memory/node/effects.ts)）**：
+     - 扩展 `Outcome` 为 `'done' | 'wait' | 'retry' | { kind: 'retry', delayMs: number, cooldown?: boolean } | { kind: 'defer', delayMs: number }`；
+     - 在既有 `effects` 表新增单个整型列 `cooldown_until`（默认 `0`，**不新增独立表，不改 `effects` 查询为 `LEFT JOIN`**）：`{ kind: 'retry', delayMs, cooldown: true }` 在既有行上绑定一次 `:deadline = now() + delayMs`，按单条 SQL 原子更新 `cooldown_until = MAX(cooldown_until, :deadline)`、`due_at = MAX(due_at, cooldown_until, :deadline)` 并递增 `attempts`（显式把 `:deadline` 纳入 `due_at`，避免 SQLite 单条 `UPDATE` 中右侧读到旧 `cooldown_until`）；`effects.queue()` 在 `ON CONFLICT DO UPDATE` 时保留既有 `effects.cooldown_until` 并强制 `due_at = MAX(excluded.due_at, effects.cooldown_until)`，使 429 冷却期间（**含重启后立即触发**）的手动 Dream 或文件编辑绝不擦除未到期的服务商冷却截止时间，而 3s 前台软让路不写 `cooldown_until` 可被手动 Dream 立即覆盖；
+     - `{ kind: 'defer', delayMs }` 仅将 `due_at = now() + delayMs` 写入 `effects` 行（不修改 `cooldown_until` 且**不递增 `attempts`**），立即释放当前轮次让无冲突任务继续执行。
+3. **轻量前台流式输出软让路（Soft Foreground Yielding）**：
+   - **活跃感知（[adapter.ts](../plugins/memory/lib/adapter.ts)）**：通过 `ctx.on('llm/stream', ...)` 拦截前台流式调用（使用 `isAgentLoopRequest(options)` 排除 `memorySource` 自身发起的请求），在流生命周期内维护 `activeForegroundStreams` 计数（`finally` 归还）；
+   - **简单内存防饥饿状态机**：`MemoryCompute` 增加可选字段 `manual?: boolean`（`memory-dream-jobs.ts` 仅在存在 `MANUAL_JOB` 时设为 `true`）。当 `activeForegroundStreams > 0 && job.manual !== true` 时：
+     - 在插件内存维护简单的让路窗口时间戳 `firstDeferredAt`：未满 `MAX_SOFT_YIELD_MS = 30_000`（30s）时立即抛出 `new MemoryComputeError('deferred', { retryAfterMs: 3_000 })`；
+     - 达到 30s 上限后置“当前连续后台批次豁免”标志，确保紧接的主整理步与独立画像规划步完整跑完并推进检查点，待前台空闲或 `owner.epoch` 切换后复位；
+   - **不中断已在途请求**：已在执行中的后台计算不因新前台流开始而被中止；
+   - **手动 Dream 豁免**：`job.manual === true` 时豁免前台软让路（仍尊重活跃服务商冷却下限）。
+4. **后台轻模型扩展口**：`MemoryCompute` 协议继续按 `{ provider, model }` 参数化，后续可直接复用 DSH 已配置提供方中的轻量模型。
+
+### 4.5 未来重新评估独立 LLM 通道的触发条件
 
 `src/memory/core/` 的 `MemoryCompute` 抽象端口保持不变。仅当未来明确出现以下诉求之一时，再基于该端口引入独立推理客户端或共享 LLM 网关进程：
 1. 需要关闭 DSH 单独运行后台记忆（例如非 DSH 外部数据源持续写入并触发整理）；
 2. Viva 计划接入 DSH 以外的多个 Agent Runtime。
 
+### 4.6 阶段三验收标准
+
+1. **托管收口、首跳取消/期限传播、旧连接围栏与冒烟对齐**：
+   - `desktop-memory-owner.ts`、`memory-prefetch.ts` 与 `fromViva()` 已删除；Viva 桌面端与独立 DSH 共享同一 `standaloneOwner`；
+   - 经真实父进程 IPC 通道验证 `memory_host_request` / `memory_host_cancel` → `memory_host_result`：① 预算到期前提前中止 `readBatch` 会发出 `memory_host_cancel` 传播到 worker，且读槽位保持至终态 `memory_host_result` 返回后才释放；② `deadlineAt` 经首跳直达 worker；③ `memoryHostFailure` 结构化领域错误（`domainCode` / `domainDetails`）完整回传；④ 已提交未回包的写入按原 `operationId` 重试只生效一次；
+   - 验证模型工具路径（`sidecarRequest` 仅开放 `remember` / `recall` / `file_read` / `node_search`）无法调用任何 `callHost` 管理方法；
+   - 更新原 `#161` 与 [lifecycle.spec.ts](../test/smoke/lifecycle.spec.ts) 用例：保留“仅 `memory-worker` 崩溃时 DSH 不重启并原地替换 worker + 保持 root 锁”用例；将“切模型/清 Key 主动重启 DSH”用例更新为校验新 worker PID 与记忆恢复就绪；同时验证旧 DSH 连接迟到帧被围栏丢弃。
+2. **过渡期摄取代理验收**：
+   - 验证冷启动 `recovering → ready` 窗口内发出的 `sourceAlias` 经有界队列在 `ready` 后幂等重放不静默丢弃；`origin: 'derived'` 不升格为人类来源，已取消回合不生成日记；`acceptQuestionAnswer` 等待有界确认；保留既有 `memory-handoff.test.ts` 核心断言。
+3. **DSH 内单跳检索、版本夹检与三段/晚订阅 L2 重建**：
+   - 验证 `agent/pre-step` 并发短预算检索与 worker 权威 `(startRevision, endRevision)` 校验：在搜索中途发生文件删除/变更时标 `stale` 并触发至多 1 次重查，绝不注入已失效版本；验证 `prepareCall` 失败/取消零幽灵回执；
+   - 验证首次启动、先启动 supervisor 再晚挂载 adapter（首个 `ready` 回调内读到非空画像）、DSH 重启与仅 worker 崩溃四种场景下：`unavailable` 立即清空过期 L2，新 worker 按 `recovering(newEpoch) → memory_owner_profile → ready(newEpoch)` 三段顺序无拒绝重建，支持 `text: ''` 清空；
+   - 使用更新后的 [benchmark-memory-latency.ts](../scripts/benchmark-memory-latency.ts) 对比 `5e96068` 基线与真实 bypass 基线，记录冷、热启动下首个实际模型请求的额外 P95 延迟与证据命中率。
+4. **429 `Retry-After` 真实 worker RPC 与前台软让路验收**：
+   - 通过真实插件→worker RPC 全链路分别验证 **Note** 与 **Dream（主整理步 + 画像规划步）**，覆盖 DSH `{ type: 'finish', reason: { kind: 'error', failure } }` 终态帧与抛出 `LlmError` 两种形态：注入 `RATE_LIMIT`（`providerRetryAfterMs: 45_000`）后核对 SQLite `effects.cooldown_until >= failAt + 45_000`、`effects.due_at >= cooldown_until`、`attempts === 1`，重启 worker 后在 `due_at` 之前不提前重发，且**验证 `429 → 重启 worker → 推进时钟前立即触发手动 Dream` 仍保留原冷却截止时间绝不提前触发**，到期后正常重发；无 `Retry-After` 的 503 走既有指数退避（首次 `1_000ms`）；
+   - 前台流式输出活跃时，自动 Note / Dream 在调用 LLM 前返回 `defer`（顺延约 3s、`attempts === 0`）；持续前台活跃满 30s 后放行整批后台整理（含两步 Dream 完成 checkpoint 落盘）；手动 Dream（`manual: true`）在 3s 软让路期间立即执行，而在 45s 服务商冷却期间（含重启后）不提前缩短冷却；已在途后台计算不被打断。
+
 ---
 
-## 5. 阶段四：素材摄取单一事实源（消除双通道竞态）
+## 5. 阶段四（收口版）：以 DSH 持久化会话日志为单一事实源并打通后台会话记忆
 
-### 5.1 现状根因
+### 5.1 现状根因与边界原则
 
-目前 Viva 桌面端的素材被拆成两条异步通道：DSH 插件扫会话推 `receiveSource`，Viva 后端另发 fire-and-forget 的 `sourceAlias` 与 `acceptQuestionAnswer`。因此仍残留两个边界竞态：
-- `acceptQuestionAnswer` 若晚于快速结束的 `completeTurn` 到达，会被 `owner_turns` 拦截丢弃；
-- `sourceAlias` 晚到时虽然不再永久写死 `ignored`，但仍需等 `turn/end` 重扫补录。
+在“记忆回归 DSH 插件”的架构下，不应让记忆插件耦合 Viva 私有表结构（`history.db`），也不应反向把无关插件（`history`、`tasks`、`fork`、`routing`、`compaction`）或 `acp-bridge.ts` 回合状态机绑死在记忆子系统上。现状摄取层真正需要解决的三个根因是：
 
-### 5.2 目标设计
+1. **双通道异步竞跑**：DSH 插件扫会话推 `receiveSource`，Viva 后端另发 fire-and-forget 的 `sourceAlias` 与 `acceptQuestionAnswer`，导致晚到的 `acceptQuestionAnswer` 被已结清的 `owner_turns` 丢弃，晚到的 `sourceAlias` 需等 `turn/end` 重扫补录。
+2. **重复维护对话历史文件**：`memory-note-store.ts` 在 `session/dialog/<hash>.jsonl` 中另抄写了一份对话历史，与 DSH 原生的 `<dshHome>/sessions` 持久化日志重复。
+3. **后台任务会话信息遗漏**：[acp-bridge.ts](../src/backend/acp-bridge.ts) 的 `preparePrompt` / `steer` 调用 `recordSource` 时未传 `sourceId`，[compose.ts](../src/backend/compose.ts) 将其标为 `origin: 'derived'` 被 `owner.ts` 丢弃并跳过该轮助手回复；发回主对话的 `viva-report` 也被跳过；后台开放题回答锁死在 `{ kind: 'task', id: session }` 孤岛，导致后台任务的指令、插话与结论无法被主对话召回。
 
-- **Viva 桌面端以持久化回合记录为单一事实源**：Viva 的持久化库（`history.db` 或只追加的规范回合事件表）在落盘时天然带齐干净真人原话、开放题自定义回答、助手最终回复、`conversationId`、`sessionId`、`sourceId` 与轮次号。
-- **记忆 worker 按游标异步只读追平**：memory worker 维护自己的游标消费持久化回合流，重启或离线任意时长后自动续读、按 `sourceId` 去重，**彻底消灭 `sourceAlias` 与 `acceptQuestionAnswer` 竞态**。
-- **`memory_remember` 对齐**：用户在当轮结束前显式要求“记住”时，由于用户消息已先落盘到持久化存储，`memory_remember` 直接按 `sourceId` 核对已落盘的原话片段即可，不再依赖 `sourceAlias`。
-- **DSH 插件进一步瘦身**：Viva 模式下不再需要在 DSH 内运行会话摄取扫描器，DSH 插件只保留工具注册与上下文注入；仅独立 DSH 模式保留 JSONL 游标扫描。
+为控制 PR 粒度与回归风险，阶段四按两个独立可验收 PR 交付：**PR 4A（单一日志事实源 + 后台任务归属与 `humanSpans`）** 与 **PR 4B（开放题 `ask_user_question` 原生消费）**。
+
+### 5.2 单一持久化日志事实源、CAS 游标、只读冷补扫与全新 Schema 契约（PR 4A）
+
+1. **以 `flush() + open('read')` 持久化切片读取为统一落盘边界**：
+   - 在已锁定 DSH 的 JSONL 后端中，无持久化写句柄的会话调用 `ctx.sessions.flush(session)` 也会返回 `true`（随后 `open(id, 'read')` 抛 `SessionPersistenceNotFoundError`）；
+   - 因此在 [ingestion.ts](../plugins/memory/lib/ingestion.ts) 提供统一读取函数 **`readVerifiedDurableSlice(ctx, session, fromSeq, endSeq)`**：先执行 `await ctx.sessions.flush(session) === true`，再通过短生命周期只读句柄 `ctx.sessionPersistence.open(session.id, 'read')`（`finally` 中 `close()`）**直接从磁盘读出 `[fromSeq, endSeq)` 实际持久化事件切片**（`flush` 返回 `false`/抛错、`open('read')` 抛 `SessionPersistenceNotFoundError` 或实际数量不足 `endSeq - fromSeq` 一律 fail-closed）；
+   - 常规回合摄取与回合中 `memory_remember` 暂存均只消费 `readVerifiedDurableSlice` 返回的持久化事件（绝不消费未核验的 `session.snapshotEvents()`），兼容 DSH `repair.ts` 恢复出的合成 `turn/end`。
+2. **单 SQLite 事务内防跳洞 CAS 游标与幂等区间落盘（冷扫描保持只读、不抢写锁）**：
+   - 彻底移除 `memory-note-store.ts` 中对新回合写入 `session/dialog/<hash>.jsonl` 的维护逻辑；
+   - `memory-worker` 在 SQLite 中新增两张轻量摄取表：
+     - `owner_intake_cursors (session PRIMARY KEY, next_seq, inherited_seq, session_kind, conversation, created_at, updated_at)`；
+     - `memory_note_ranges (range_id PRIMARY KEY, note_key, session, workspace, day, from_seq, to_seq, turn, sources_json, assistant_digest, assistant_valid, status)`，其中 `range_id = sha256(session, from_seq, to_seq)` 在 `(session, from_seq, to_seq)` 上唯一（允许同日多批回合依次追加更新同一 `note_key`）；
+   - **严格防跳洞 CAS 游标守卫与终态分流（仅 `completed` 回合入规范来源、日记与结论）**：扫描器从实际观察到的 `expectedNextSeq` 连续读取已闭合回合（`turn/start ... turn/end`）或已核验非回合前缀，在单 SQLite 事务中严格要求 `cursor.next_seq === expectedNextSeq`（重复 `(session, from_seq, to_seq)` 幂等返回；不匹配则拒绝并从最新 `next_seq` 重扫）；对任意终态 `turn/end` 均在同一事务内原子清理 `owner_open_turn_sources` 并推进 `owner_intake_cursors.next_seq = endSeq`，但**仅当 `turn/end` 的 `reason.kind === 'completed'` 时才在同一事务内幂等写入/复用本回合全部过滤后的规范 `memory_sources`（含未调用 `memory_remember` 的普通提示原话与 `task-assistant` 结论）并插入 `memory_note_ranges`**——普通用户取消（DSH 持久化为 `reason.kind === 'aborted'`，其中 `reason.reason.kind === 'user'`）及 DSH 物理修复闭合（`reason.kind === 'interrupted'`）仅推进游标与清理暂存，绝不生成日记区间或把半截助手输出发布为全局可召回任务结论；
+   - **冷扫描严格只读（绝不抢占 `open(id, 'write')` 写租约）**：冷补扫仅消费已闭合的回合（`turn/start ... turn/end`）；若写者曾在半截回合崩溃导致尾部尚无 `turn/end`，冷扫描保持游标停在该未闭合回合之前，待会话下次被 DSH 打开、由 `repair.ts` 补齐 `reason.kind === 'interrupted'` 的 `turn/end` 后，按上述终态分流安全推进游标并清理暂存（不生成残缺日记）——彻底避免冷扫描持写锁等待跨进程 SQLite 提交而导致用户重开会话触发 `SessionAlreadyOwnedError`；
+   - **崩溃恢复保证**：`flush` 前崩溃时 `next_seq` 未推进，重启后重放持久化前缀；区间登记后崩溃时 `memory_note_ranges` 仍排队，`WRITE_NOTE` 沿用 `journal.commit` 的 `(note_key, generation)` 幂等回执并在同一应用事务中标 `range_id` 已消费。
+3. **Fork 零侵入继承前缀与可重试冷会话补扫**：
+   - **保持 [plugins/fork/index.ts](../plugins/fork/index.ts) 零改动**：沿用现有 [ingestion.ts](../plugins/memory/lib/ingestion.ts) 以 DSH 持久化在子会话上的 `session.inheritedEventCount` 作为游标起点（`Math.max(inherited, nextSeq)`），天然只消费 fork 之后的新事件、不重复记账；切目录后子会话自动绑定新目录的 `project` 作用域，天然保持项目隔离（不新增本地 `<childId>.json` 队列或 `owner_fork_lineage` 表）；
+   - **可重试的启动枚举与冷热交接**：`memory-worker` 达到 `ready` 后，将 `ctx.sessionPersistence.list()` 纳入生命周期绑定的指数退避重试循环；对未在 `ctx.sessions` 打开的冷会话以只读句柄分片读取（`finally` 中 `close()`），经 `ingestion.ts` 按 `sessionId` 串行队列协调冷扫与活会话打开，单会话读错按 `sessionId` 退避重试直至成功、变为活跃或确认 `SessionPersistenceNotFoundError`。
+4. **按需读取区间与源会话缺失语义**：
+   - 攒够 `noteInterval`（或跨天 / 后台任务结束 flush）触发 `WRITE_NOTE` 时，`memory-worker` 经插件 `readSessionRange({ sessionId, fromSeq, toSeq })` 只读打开 `ctx.sessionPersistence.open(SessionId(sessionId), 'read')`（`finally` 中 `close()`）读出事件切片并经 `looksSecret` 过滤后生成 Daily Note；
+   - 捕获 `open()` 与 `read()` 两处的 `SessionPersistenceNotFoundError`：仅确认源会话已删除时返回 `{ status: 'deleted' }` 结清区间；其他临时 I/O 报错或短读经新只读句柄复查未删后返回 `{ status: 'unavailable' }`，保留待写区间交由 `effects` 重试。
+5. **全新 Schema 契约升级（遵循 §3.1 无存量用户前提）**：
+   - 遵循 §3.1 既定前提（当前无存量用户，PR 3 与 PR 4 连续在同一发布窗口内完成），递增 [memory-store.ts](../src/memory/node/memory-store.ts) 的 **`MEMORY_CONTRACT`** 常量，按全新 Phase 4 schema 初始化建库（总计仅新增 4 张轻量表：`owner_intake_cursors`、`memory_note_ranges`、`owner_open_turn_sources`、`owner_question_answers`，并在 `memory_sources` 上扩展 `source_kind`、`profile_eligible` 及回答的直接问题元数据列 `question_valid`、`question_sources_json`、`question_at`、`question_profile_gen`）；
+   - 历史已生成的 Daily Note Markdown 文件若残留 `source_conversation: [[session/dialog/...]]` frontmatter 解析器兼容忽略，新生成的 Daily Note 不再写入该字段；**不引入历史旧库锁内迁移脚本、`memory_legacy_deferred_turns`、双轨 `legacyTaskProfileRefs` 或特例读豁免**。
+
+### 5.3 日志清理后的独立运行与直接依赖契约（PR 4A）
+
+明确区分未消费区间、规范证据与解耦边界：
+1. **未消费区间元数据（`memory_note_ranges`）**：仅用于延迟生成 Daily Note 的按需拉取；源会话提前删除时按 §5.2 第 4 条安全跳过并结清。
+2. **已接纳的规范证据来源（`memory_sources`）**：在回合扫描或 `memory_remember` 接纳有效素材时，仅将经 `looksSecret` 过滤且实际参与记忆的精简证据片段（用户原话、人类开放题自定义回答、任务目标/结论摘要）以稳定 UUID `id`、`version`、`token`、`text` 与结构化属性（`author`、`source_kind`、`profile_eligible`）存入 SQLite，**并在回答行上直接持久化其直接问题上下文元数据（`question_valid`、`question_sources_json`、`question_at`、`question_profile_gen`）**——使 [memory-note-store.ts](../src/memory/node/memory-note-store.ts) 的 `sourceQuestionContext()` 与 Dream 画像步在 `memory_note_ranges` 结清及源 DSH 日志删除后，依然能准确识别有效问题并拦截被撤销的问题来源，**不再抄写整段含工具日志/推理流/上下文注入的完整对话**。
+3. **直接依赖即时生效与“回答 vs. 问题正文”独立校验（明确不做跨模块递归污点追踪）**：
+   - 既有 [memory-runtime.ts](../src/memory/core/memory-runtime.ts) 与 [memory-document-read-policy.ts](../src/memory/core/memory-document-read-policy.ts) 的直接来源校验完整保留：编辑、停用或遗忘某条规范来源后，该来源本身及直接引用它的 Daily Note、Digest、常驻画像在全服务路径立即失效；
+   - **独立校验人类回答与可撤销问题正文**：修复 [memory-note-jobs.ts](../src/memory/core/memory-note-jobs.ts) 中 `questionAllowed === false` 时连带丢弃整条回答的旧行为，改为与 Dream 一致——将 `answer.text` 与 `question` 拆离校验，撤销问题前置依赖时仅扣留 `question`（置 `question: null`）而保留独立合法的人类自定义回答；
+   - **明确的架构解耦边界**：路由生成的 `task-brief`（`author: 'agent'`）与后台任务结论（`author: 'assistant'`）严禁进入 L2 常驻画像（`profileEligible: false`），并可在记忆管理中直接编辑、停用或遗忘；**刻意不为二次转述建立跨会话/跨工具/跨压缩的递归污点图**——不新增 `owner_message_evidence`、`owner_tool_evidence_staging`、`memory_source_dependencies`，对 `history-channel`、`tasks-channel`、`plugins/tasks`、`plugins/fork`、`plugins/routing`（含 `fast-lane`）、`request-runtime` 与 DSH `compaction` 保持**零侵入**。
+4. **解耦保证**：源会话日志从 `<dshHome>/sessions` 删除后，已生成的 Daily Note、Digest 与常驻画像仍依据 `memory_sources` 完整通过 `refsCurrent`、`materialAllowed`、共享读策略、Dream 核验与受管文件读写，独立运作。
+
+### 5.4 来源归属、无损可逆 `humanSpans`、可见域与画像资格分离（PR 4A）
+
+不再用单一 `context` 字段同时承担“检索可见域”和“画像准入”，也不靠投递函数名推断作者，而是在**发起动作处**确定来源并在持久化日志中无歧义落盘：
+
+1. **发起动作归属、会话类型与 Viva `conversationId` / `sourceId` 全三路持久化**：
+   - 在发起动作处显式标注 `origin: 'human' | 'router' | 'unattended'`（开放题回答同步标注 `answerOrigin: 'human' | 'agent'`）：
+     - 用户在主对话输入、主对话运行中插话、任务卡片直接发送/追问，或用户在 UI 开放题卡片提交回答 → `origin: 'human'` / `answerOrigin: 'human'`；
+     - 路由模型在 [request-runtime.ts](../src/backend/request-runtime.ts) 触发 `start` / `message` → `origin: 'router'`；主模型调用 `answer_background_task`（[compose.ts](../src/backend/compose.ts) `recordMemory: false`）代答后台问题 → **`answerOrigin: 'agent'`**；
+     - 定时/自动无人值守任务（`startUnattendedTask`）→ `origin: 'unattended'`；
+   - **类型化 `UserMessage.source` 扩展与统一人类消息提取器**：
+     - [plugins/steer/index.ts](../plugins/steer/index.ts) 投递的插话使用类型化 `UserMessage.source`：主对话人类插话为 **`viva-main-human-steer`**（携带 `sourceId`、`conversationId` 与精确 payload 相对 `humanSpans`）、后台任务人类卡片插话为 **`viva-task-human-steer`**（携带 `sourceId`、`conversationId` 与**在生产端将 `withTaskRequestSource` 返回的 wire 偏移减去顶层头长度转换得到的 payload 相对 `humanSpans`**）、后台任务路由插话为 **`viva-task-router-message`**、忙时后台任务回报为 **`viva-report`**；
+     - 空闲时由 [task-reports.ts](../src/backend/task-reports.ts) → [compose.ts](../src/backend/compose.ts) 经 ACP `agent.prompt(note, [], { request: false })` 投递的批量报告顶层携带 `sourceKind: 'viva-report-batch'` 与 **`humanSpans: []`**，绝不进入人类 `memory_sources`、Daily Note 或 L2；
+     - **统一人类消息提取器 `extractHumanMessages(messages)`**：替换 [ingestion.ts](../plugins/memory/lib/ingestion.ts) 中仅认 `source.kind === 'user'` 的 `humanMessages()`，由 [adapter.ts](../plugins/memory/lib/adapter.ts) 的 `agent/pre-step` 自动 L3 召回与会话摄取共用——同时识别 `'user'`（有 Viva 顶层头时剥离顶层头后按 payload 相对 `humanSpans` 切片，独立 DSH 取原文）、`viva-main-human-steer` 与 `viva-task-human-steer`（统一剥离顶层头后按 payload 相对 `humanSpans` 切片，绝不把外层路由/插话头送进 L3 或入库），显式排除 `viva-task-router-message`、`viva-report`、`viva-report-batch`、`viva-memory` 与 `unattended`（纯 Feed `humanSpans: []` 输出空）；
+   - 经标准 ACP `session/prompt` 投递的消息在顶层写入确定性结构化来源头（扩展 [header.ts](../src/shared/request-routing/header.ts) / [task-header.ts](../src/shared/request-routing/task-header.ts)），携带 `origin`、`sourceKind`、`sessionKind`（`'main' | 'task' | 'unattended'`）、可信 Viva 会话段 ID **`conversationId`** 以及普通提示/人工追问的原始 Viva **`sourceId`**（删除 `sourceAlias` 后，普通提示、主对话插话、任务插话三条路径均通过 `memory_sources.id === history.source_id` 完整保留 [history-db.ts](../src/backend/history-db.ts) `historyDb.sourceLink()` 跳转），并持久化于 `owner_intake_cursors (session_kind, conversation)`。
+2. **携带上下文与 Feed 续写的无损可逆 `humanSpans`（统一 payload 相对 UTF-16 坐标并保留用户字面零宽字符）**：
+   - 全路径统一约定 **`humanSpans: Array<{ start, end }>` 为剥离顶层结构头之后的转义正文（`payload`）上的 UTF-16 相对偏移**（[task-header.ts](../src/shared/request-routing/task-header.ts) `withTaskRequestSource` 若内部产出含头部的 wire 偏移，必须在生产端序列化头或构造 `viva-task-human-steer` 前减去头部长度转为 payload 相对偏移）；[compose.ts](../src/backend/compose.ts) 拼装携带上下文（`carried + "\n\n" + question`）或 Feed 续写（生成正文 + 可选 `supplement`）时，仅对正文中的同类头模式插入转义符（`QUOTE = '\u200B'`），并写入仅跳过 Viva 自插 `QUOTE` 的不相交 payload 相对区间列表（纯 Feed 无补充时为 `humanSpans: []`）；
+   - 消费端（实时 L3 召回与冷回放摄取共用同一坐标）只认未转义顶层头及类型化插话附带的 payload 相对 `humanSpans`，剥离顶层头得到 `payload` 并校验有序且合法后，直接按 `humanSpans.map(s => payload.slice(s.start, s.end)).join('')` 拼出原始用户正文，**绝不对抽取出的 span 再做通用 `unquote()`**，保证原始引用头文本与用户字面 `\u200B` 100% 逐字无损往返；`carried` 与 Feed 生成正文绝不进入 `memory_sources`、`memory_remember`、Daily Note 或 L2；独立 DSH（无 Viva 头、`hostNamespace === undefined`）仍整段接纳非敏感用户输入。
+3. **完整来源分类矩阵（保持 `author` 向后兼容与项目域隔离）**：
+   - 持久化 `memory_sources.author` 增量扩展为 **`'user' | 'manual' | 'answer' | 'agent' | 'assistant'`**（兼容 [records.ts](../src/memory/contracts/records.ts) 与 `explicitFileSource`）：
+
+   | 发起动作 / 投递入口 | 持久化 `author` | `sourceKind` | Daily Note | 检索可见域 | `memory_remember` | L2 常驻画像 (`profileEligible`) |
+   |---|---|---|---|---|---|---|
+   | Viva 主对话用户输入 / 主对话人工 `steer`（`viva-main-human-steer` / `humanSpans` 切片） | `user` | `main-human` | ✅ 是 | 全局 `user` | ✅ 是 | ✅ **是** |
+   | 独立 DSH **非项目域**用户输入（`project == null`） | `user` | `main-human` | ✅ 是 | 全局 `user` | ✅ 是 | ✅ **是** |
+   | 独立 DSH **项目域**用户输入（`project != null`） | `user` | `project-user` | ✅ 是 | 当前 `project` 域 | ✅ 是（项目域） | ❌ **否**（保持项目隔离） |
+   | 人类提交的主对话开放题自定义回答（经受信任交互 UI 写入 `owner_question_answers` `'human'` 记录，未证明程序化回答 fail-closed） | `answer` | `question-answer` | ✅ 是 | 全局 `user` | ✅ 是 | ✅ **是**（叠加删除水位校验） |
+   | Viva 后台任务**用户卡片插话/追问**（`origin: 'human'`） | `user` | `task-human-steer` | ✅ 是 | 全局 `user`（主对话可召回） | ✅ 是 | ✅ **是** |
+   | Viva 后台任务**用户卡片开放题自定义回答**（`answerOrigin: 'human'`） | `answer` | `task-question-answer` | ✅ 是 | 全局 `user`（主对话可召回） | ✅ 是 | ✅ **是**（叠加删除水位校验） |
+   | 主模型 `answer_background_task` 代答后台开放题（`answerOrigin: 'agent'`） | —（不作为人类原话入库） | `task-agent-answer` | ❌ **否** | — | ❌ **否** | ❌ **否**（严禁进画像） |
+   | 后台任务**路由模型 `brief` / 路由 `message`**（`origin: 'router'`） | `agent` | `task-brief` | ✅ 是（任务目标背景） | 全局 `user`（主对话可召回） | ❌ **否** | ❌ **否**（模型转述，严禁进画像） |
+   | 后台任务**助手最终结论**（`assistant/message`） | `assistant` | `task-assistant` | ✅ 是 | 全局 `user`（主对话可召回） | ❌ **否** | ❌ **否**（模型输出，严禁进画像） |
+   | 投递回主对话的后台任务报告（`viva-report` / `viva-report-batch`） | —（不入库） | `viva-report` / `viva-report-batch` | ❌ **否**（防双份重复） | — | ❌ 否 | ❌ **否** |
+   | 无人值守定时 / Feed 自动任务（`origin: 'unattended'`） | —（默认不入库） | `unattended` | 默认 ❌ 否（保留工作日志开关） | 仅工作日志（若开启） | ❌ 否 | ❌ **绝不** |
+   | 自动召回注入消息（`viva-memory`） | —（不入库） | `viva-memory` | ❌ 否 | — | ❌ 否 | ❌ 否 |
+
+4. **统一全局 `userWorkspace` 归属与 `isPureUserSource` 画像守卫**：
+   - 阶段四新摄取的 Viva 后台任务四类可见来源（`task-human-steer`、`task-question-answer`、`task-brief`、`task-assistant`）均落在全局 `userWorkspace`（`scope: { kind: 'user' }, context: { kind: 'user' }, project: null`），以 `source_kind` 与 `profile_eligible` 区分任务归属与画像准入，天然进入主对话全局召回与 Dream；
+   - `isPureUserSource(item)` 要求 `item.profileEligible === true && item.scope.kind === 'user' && (item.project ?? null) === null && (item.author === 'user' || item.author === 'answer')`，确保只有合法的全局真人原话与经认证真人开放题回答能进入常驻画像。
+
+### 5.5 `ask_user_question` 开放题原生消费（单张轻量表 + 公开 DSH API，不劫持 `acp-bridge`）（PR 4B）
+
+彻底移除 `acceptQuestionAnswer` 异步旁路，完全基于已锁定 `@deepseek-ai/dsh-*` 的公开受支持 API 实现阻塞、限时续答与 PTC 消费，并用 **1 张轻量表**同时解决人/机归属区分与 `dsh-spill` 截断问题：
+
+1. **单张轻量表 `owner_question_answers`（带 TTL 清理与落库前隐私过滤）**：
+   - 在 SQLite 新增唯一一张开放题辅助表 **`owner_question_answers (session, occurrence_key, call_seq, call_id_hash, delivery_kind, message_id, cards_json, answers_json, answer_origin, conversation_id, question_at, question_profile_gen, created_at, PRIMARY KEY (session, occurrence_key))`**（消费后立即删除，未消费的孤立/过期行由定期 TTL 任务如 7 天清理，不再引入 `owner_pending_questions`、`owner_session_incarnations`、`owner_terminal_question_messages` 三张重表或 `inbox.ts` 内部折叠清理）；
+   - 卡片投影为严格白名单 `{ id, question, header, multiSelect, options: [{ label, description? }] }`；SQLite `memory.db` 中仅存 `call_id_hash = sha256(callId)`（不存原始提供方 `callId`），写入前对 `cards_json` 与 `answers_json` 中的**全部持久化字符串字段（包括提供方传入的 `card.id`、`question`、`header`、每个选项的 `label` / `description` 与回答文本）**执行 `looksSecret` 过滤（任一命中即拒绝落库）。
+2. **基于公开 DSH API 的实时等待、超时续答与 PTC 流程（不劫持主循环与 `acp-bridge`，且记忆拒收/离线不阻塞有效作答）**：
+   - **执行作用域 `callSeq` 与落盘核验**：在 [plugins/questions/index.ts](../plugins/questions/index.ts) 中通过 `@deepseek-ai/dsh-tools` 公开的 `ctx.on('tools/execute', ...)` 解析本次 `ask_user_question`（含 PTC `tool/ptc-dispatch-start`）的持久化 `callSeq` 与**原始调用事件时间戳 `event.time`**，并在发布给前端前经 `flush() + open(id, 'read')` 确认该调用事件已真落盘（防无写句柄 `flush() === true` 陷阱），以 `AsyncLocalStorage` 传递 `(callSeq, callId, eventTime)` 随提问请求发往前端；
+   - **实时等待路径（`legacy` `ask()`、未超时 `askTimed()`、PTC 立即返回）明确区分三类结果**：受信任交互前端收到提交后、在 resolve `channel.ask()` 之前，按以下分支处理（**绝不因记忆拒收、worker 离线或回执超时阻塞或失败正常的用户作答**）：
+     - ① **合格非敏感回答（正常确认）**：发起有界超时（如 `500ms`）的 `owner_question_answers` 持久化写入（`delivery_kind = 'tool-result'`，`occurrence_key = \`call:${callSeq}:${callIdHash}\``），**严格保留真实发起归属 `answer_origin: 'human' | 'agent'`**（UI 卡片提交写 `'human'`，主模型 `answer_background_task` 代答写 `'agent'`），并同步记录原始调用事件时间 `question_at` 与提问时刻 `question_profile_gen`，收到确认后正常 resolve `channel.ask()`；
+     - ② **命中 `looksSecret` 隐私拦截，或派发前已确认 `memory-worker` 离线**：不派发也不写入 SQLite（保证零敏感落库与零来源入库），**立即正常 resolve `channel.ask()` 完成经校验的 DSH 作答**；
+     - ③ **已派发的合格写入在有界时限内 ACK 超时**：超时视为**未知写入结果**——到时立即正常 resolve `channel.ask()` 不阻塞用户回合，最终是否入库以 SQLite 中实际是否已持久提交该 `owner_question_answers` 行为准（若已提交但仅 ACK 延迟，折叠时仍正常按已提交回执接纳；若未提交则自然 fail-closed）；
+   - **超时转续答路径（`state === 'continued'`）**：
+     - [plugins/questions/lib/channel.ts](../plugins/questions/lib/channel.ts) 观察后续已提交的 `session/event` / `userQuestions` 投影跃迁——转为 `continued` 时保持 UI 卡片打开，仅真正取消/报错时发 `question_closed`；
+     - 无论活跃 agent 还是重启后空闲会话，统一通过公开 API **`ctx.sessionProjections.snapshot(session, ['userQuestions'])`** 枚举 `continued` 提问（不调用私有 `ctx.userQuestions.continued(agent)`），[acp-bridge.ts](../src/backend/acp-bridge.ts) 与 `question-channel.ts` 为 `continued: true` 卡片提供独立于活跃 ACP 回合的准入路径；**重开卡片绝不使用当前时间 `Date.now()` 或当前最新 `profileDeletionGen` 覆盖提问元数据**——`question_at` 始终取自该 `callSeq` 持久化调用起始事件的 `event.time`，`question_profile_gen` 仅在同生命周期内存中保留有原采样值时沿用，**跨重启丢失时一律置 `null`**（从而触发下方真值表第 2 行 fail-closed，绝不把删画像前的旧问题误标为删后合格）；
+     - **简单稳健的复用 `callId` 防护**：当同一会话出现复用相同 `callId` 的新调用 B（`callSeqB > callSeqA`）时，立即发 `question_closed` 退场旧卡片 A；在调用 `ctx.userQuestions.answer(agent, callId, answer)` 之前先核对当前活跃 `callId` 的 `callSeq === expectedCallSeq`（过期点击直接拒绝）；**绝不调用 `agent.cancel({ kind: 'hook' })` 中止主循环、不手工重排 `next-step` 队列，也不改造 `acp-bridge.ts` 跨两回合接管逻辑 `prompt()` Promise**（极端竞态下记忆折叠端找不到有效匹配即 fail-closed 丢弃该条记忆）；
+     - **真正空闲态 `message.id` 捕获**：因 `ctx.userQuestions.answer()` 返回前会同步入队并在空闲态立即被 `preStep()` 认领，在调用 `ctx.userQuestions.answer(...)` **之前**注册作用域限定的 `agent/inbox/inserted` 监听器同步捕获精确 `message.id`（`finally` 中卸载）；仅当 `answer() === true` 且捕获到 `message.id` 后，将回答写入 `owner_question_answers`（`delivery_kind = 'user-message'`，`occurrence_key = \`msg:${messageId}\``，保留真实 `answer_origin: 'human' | 'agent'`）。
+3. **确定性事件折叠、防 `dsh-spill` 截断与统一 fail-closed 归属边界**：
+   - 在会话日志折叠 `tool/result`、`tool/ptc-dispatch`（`name === 'ask_user_question'`）与 `user/message`（`source.kind === 'user-question-reply'`，消息 ID 在顶层 **`event.data.id`**）时：
+     - 忽略 `isPendingResult`、`TOOL_OUTCOME_UNKNOWN` 及报错结果（避免将未结算或失败调用写入记忆）；
+     - 凭 `(session, call_seq, call_id_hash)`（工具结果）或 `(session, event.data.id)`（续答 `user/message`）查询 `owner_question_answers`；
+     - **防 `dsh-spill-policy` 截断与统一 fail-closed**：因已锁定 `SpillStore` 仅提供只写 `saveText`，折叠器直接读取 `owner_question_answers` 中经隐私过滤的结构化 `answers_json`（不从截断预览猜测原文，也不调用不存在的 `SpillStore` 读接口）；若查无匹配行或 `answer_origin !== 'human'`（包括 Viva `answer_background_task` 的 `'agent'` 代答与独立 DSH 下未接入受信任交互回执的 SDK JSON-RPC 程序化回答），一律 **fail-closed 跳过入库**（绝不升格为 `author: 'answer'` 或进入 L2）；成功结算后在同一事务内删除已消费的 `owner_question_answers` 行；
+     - 共享纯函数 **`questionAnswerSourceId(sessionId, callSeq, callId, questionId)`**（`src/shared/`）将 `callSeq` 纳入确定性 UUID，既避免同会话复用 `callId`/`questionId` 碰撞，又完整保留 [memory-ipc.ts](../src/backend/memory-ipc.ts) UI 时间线链接与 `memory-handoff.test.ts` 跨库连接。
+4. **两层独立决策与统一删除水位真值表**：
+   - **自定义回答接纳**：要求 `owner_question_answers` 匹配且 `answer_origin === 'human'` + `!looksSecret(customText)`；
+   - **向 L2 画像暴露问题正文的统一真值表**（对齐 [memory-dream-jobs.ts](../src/memory/core/memory-dream-jobs.ts)）：
+
+   | 条件 | 是否允许向 L2 画像暴露 `question` 正文 | 说明 |
+   |---|---|---|
+   | 尚未发生过画像删除（`profile_deleted_at === null && profile_deletion_generation === 0`） | ✅ **允许** | 首次删画像前正常允许 |
+   | 已发生过画像删除（`profile_deletion_generation > 0`），且 `questionProfileGen` 缺失/`null` | ❌ **拒绝**（`questionUnavailable: true`） | 缺失提问时刻代数时 fail-closed |
+   | 已发生过画像删除，且 `questionProfileGen !== profile_deletion_generation`（无论 `<` 还是 `>`） | ❌ **拒绝**（`questionUnavailable: true`） | 双向失配均 fail-closed |
+   | 已发生过画像删除，`questionProfileGen === profile_deletion_generation`，且 `profile_deleted_at === null \|\| questionAt > profile_deleted_at` | ✅ **允许** | 证明提问发生在最近一次删除之后 |
+   | 其余情况（如 `questionAt <= profile_deleted_at`） | ❌ **拒绝**（`questionUnavailable: true`） | 晚到 `custom` 回答本身可按删除后时间戳接纳，删除前的问题正文扣留不暴露给 L2 |
+
+### 5.6 回合中 `memory_remember` 暂存对齐与异步旁路清理（PR 4A / PR 4B）
+
+- **移除清单**：
+  - PR 4A 删除 [compose.ts](../src/backend/compose.ts) 与 [acp-bridge.ts](../src/backend/acp-bridge.ts) 中的 `recordSource`、`sourceAlias`，删除 [host.ts](../src/memory/contracts/host.ts) 与 [owner.ts](../src/memory/node/owner.ts) 中的 `sourceAlias` 与 `owner_aliases`，删除 `memory-note-store.ts` 的 `session/dialog/*.jsonl` 新写入维护；
+  - PR 4B 删除 `onQuestionAnswer -> acceptQuestionAnswer` 异步调用与 `host.ts` / `owner.ts` 中的 `acceptQuestionAnswer`（仅保留 `onQuestionAnswer` 本地纯计算 `questionAnswerSourceId(sessionId, callSeq, callId, questionId)` 供 `history.db` UI 时间线链接使用，零记忆 RPC）。
+- **回合中 `memory_remember` 开放回合暂存（PR 4A）**：
+  - 引入 **`owner_open_turn_sources (session, turn, source_id)`**：
+    1. 模型调用 `memory_remember` 时，`adapter.ts` 先调用 `intake.synchronize(agent.session)`（内部走 `readVerifiedDurableSlice` 确认已落盘；若无写句柄 `flush() === true` 抛 `SessionPersistenceNotFoundError` 或读核验失败，`memory_remember` 立即以 `{"status":"unavailable"}` 中止且不写入规范来源或回执）；
+    2. 核验通过后，仅将已落盘且经 `humanSpans` / 人类 `ask_user_question` 校验、`author IN ('user', 'answer')` 的本回合事件幂等写入 `memory_sources` 并登记 `owner_open_turn_sources (session, turn, source_id)`（保持 `owner_intake_cursors.next_seq` 停在上一已完成回合不动）；
+    3. `memory-worker` 凭 `owner_open_turn_sources` 校验当轮归属与精确原文 span（自动拒绝 `task-brief`、模型代答 `task-agent-answer`、Feed 生成正文与助手输出），在 `owner_operations` 中以确定性回执完成受管文档写入；
+    4. 待 `turn/end` 到达时，原子事务清理 `owner_open_turn_sources` 并按 CAS 推进 `next_seq`；仅当 `reason.kind === 'completed'` 时在同一事务内幂等写入/复用本回合全部过滤后的规范 `memory_sources`（包括未暂存的普通提示与已暂存的 `source_id`）并登记 `memory_note_ranges`。
+
+### 5.7 阶段四验收标准
+
+1. **PR 4A — 单一日志事实源、防跳洞 CAS、终态分流、只读冷补扫与删除独立性**：
+   - `flush` 返回 `false` 以及**无持久化写句柄会话上 `flush() === true`（`open('read')` 抛 `SessionPersistenceNotFoundError`）**：`next_seq` 不前进、零规范 `memory_sources` 入库，`memory_remember` 返回 `unavailable`；重启后已持久化前缀零丢失重放；
+   - CAS 防跳洞与普通回合原子回滚：向 `next_seq = 100` 提交 `from_seq = 150` 的乱序回合被拒绝不推进游标，补齐中间回合后顺序入库；同日同一 `note_key` 连续两批回合写入均正常合并；**对从未调用 `memory_remember` 的普通完成回合注入结算事务异常/回滚，断言规范 `memory_sources`、`memory_note_ranges` 与 `owner_intake_cursors.next_seq` 整体回滚且无孤立区间或跳过的游标**；
+   - 只读冷补扫、终态分流与崩溃恢复：注入 `sessionPersistence.list()` 首次调用失败能自动退避重试追平冷会话；**分别验证真实用户取消（断言 DSH 持久化的 `turn/end` `reason.kind === 'aborted'` 且 `reason.reason.kind === 'user'`）与崩溃后重开经 DSH `repair.ts` 补发物理修复闭合（`reason.kind === 'interrupted'`）**：冷扫期间未闭合回合保持只读不抢写锁，收到 `aborted` 或 `interrupted` `turn/end` 后均推进游标并清理 `owner_open_turn_sources`，但**绝不创建 `memory_note_ranges` 或发布中间助手输出为 `task-assistant`**；Markdown 发布后、区间结算前注入崩溃重启幂等无重复；
+   - Fork 子会话（`plugins/fork` 零改动）：仅消费 `inheritedEventCount` 之后的新事件，不重复记账；切目录后按新项目域隔离；
+   - 源会话删除与读错区分：`open()` / `read()` 抛 `SessionPersistenceNotFoundError` 结清跳过不阻塞其他会话；临时 I/O 报错或短读保留待写区间并重试；物理删除已整理源会话的 `<dshHome>/sessions` 文件后，已生成的 Daily Note、Digest 与常驻画像仍正常通过 `refsCurrent`、共享读策略、Dream 核验、读写、启停与删除。
+2. **PR 4A — 来源归属、无损 `humanSpans`、统一 L3 提取、三路时间线链接、直接问题元数据留存与 `memory_remember`**：
+   - 覆盖：① 主对话带 `carried` 上下文的人类提问、② 纯 Feed 续写（`humanSpans: []`）与 Feed + 人工补充、③ 含原始头文本及用户字面 `\u200B` 的已转义头文本（实时 + 冷回放均逐字无损）、④ 重启后普通 ACP 提示、`viva-main-human-steer`、`viva-task-human-steer`（含 payload 相对 `humanSpans` 偏移转换）三路 `historyDb.sourceLink()` 冷解析与统一 `extractHumanMessages` 精确 L3 查询正文（零包装头）和冷回放入库文本、⑤ 相同文本的路由 `message` vs. 用户任务卡片插话（`task-human-steer`）、⑥ 路由 `task-brief` + 助手结论 `task-assistant`（主对话可召回且不进 L2）、⑦ 主对话 `viva-report` 与空闲批量 `viva-report-batch`（零重复入库）、⑧ 无人值守 `unattended` 隔离、⑨ 独立 DSH 非项目域（`profileEligible: true`）与项目域（`profileEligible: false`）；
+   - 无 `sourceAlias` 下，当轮内 `memory_remember` 写入成功并立即可召回；尝试用 `memory_remember` 保存 `task-brief` 或 Feed 生成正文被拒绝（`no-explicit-user-source`）；
+   - **区间结清与日志删除后的有效/撤销问题双验**：在 `memory_note_ranges` 被 `WRITE_NOTE` 结清且源 DSH 会话日志物理删除之后，分别验证：① 有效问题仍经 `memory_sources` 直接元数据进入 Dream 画像输入；② 撤销仅被问题正文引用的前置来源时，独立合法的人类自定义回答正文仍保留可用，仅问题正文被扣留。
+3. **PR 4B — 开放题真实 DSH 折叠（阻塞/续答/PTC）、非阻塞拒收/离线、防 `dsh-spill` 截断、防冒充与重开删除水位**：
+   - 在真实 DSH 栈下验证阻塞模式（`tools/execute` 先 `flush + open('read')` 再发布 `callSeq`）、超时→回合结束→重启空闲态经公开 `sessionProjections.snapshot` 重开卡片→`agent/inbox/inserted` + `ctx.userQuestions.answer()` 经真实 `user/message`（`event.data.id`）折叠入库，以及 PTC（立即返回 `answers[]`、`pending` 与报错清理）；
+   - **阻塞作答遇隐私拒收、worker 离线与提交后 ACK 延迟超时均不阻塞**：在阻塞 `ask_user_question` 工具上分别验证：① 命中 `looksSecret` 的卡片/回答（含敏感 `card.id`）与派发前 `memory-worker` 已离线：DSH 正常收到经校验的用户回答且回合完成，`memory.db` 保留零来源与零敏感字段；② **已提交 SQLite 但刻意延迟 ACK 超过有界时限（`500ms`）**：`channel.ask()` 到时正常完成不阻塞，随后折叠按已落库回执正常接纳该合法回答；
+   - 用相同自定义回答文本对照用户 UI 卡片提交（`answer_origin: 'human'`）vs. 主模型 `answer_background_task` 代答（`answer_origin: 'agent'`）vs. 独立 DSH 未提供受信任回执的 SDK JSON-RPC 回答：仅经认证的人类 UI 回答入库并进 L2，代答与未证明程序化回答一律 fail-closed 拒绝且绝不进 L2 或 `memory_remember`；
+   - 复用 `callId` 过期点击防护：新调用 B 进入 `continued` 时旧卡片 A 收到 `question_closed`，过期点击在 `answer()` 前被 `callSeq` 复核拒绝；
+   - `dsh-spill-policy` 溢出截断冷回放（512-token 上限下大段自定义回答）凭 `owner_question_answers` 完整无损入库，且 **SQLite `memory.db` 中零敏感文本（含 `card.id`）与零原始 `callId`**；
+   - **更新 [memory-handoff.test.ts](../test/memory-handoff.test.ts)**（移除 4B 废弃的 `acceptQuestionAnswer` RPC 拦截与旧任务域隔离断言，改为走原生回答结算并断言全局 `user` 可召回），完整保留 `(conversation_id, source_id)` 跨库连接与真实新任务（Viva 段 ID ≠ DSH `sessionId`）时间线跳转断言；验证 `profile_deleted_at` / `profile_deletion_generation` 统一真值表全部 5 行边界，**并专项验证 `提问超时 → 删除常驻画像 → 重启 Viva → 重开卡片提交有效自定义回答` 序列中，真实 Dream 画像步输入包含该合法自定义回答且扣留删除前的旧问题正文**。
 
 ---
 
-## 6. 推荐落地顺序与验收门槛
+## 6. 交付顺序与验收门槛
 
-建议拆分为 **4 个独立小 PR** 渐进交付，每批均可独立验证与回滚：
+拆分为独立渐进 PR，每批均可独立验证与回滚：
 
-1. **PR 1（阶段一）**：自动注入三层拆分 + 前置短竞速 + 5 态协议（用户体感最直接，改动面最小，且通过 `{ epoch, revision, text }` 为阶段二搭好与底层格式无关的 L2 通道）。
-2. **PR 2（阶段二）**：关闭手工画像并一步切换到 Dream 自动维护的常驻画像（复用 PR 1 的 L2 通道，先闭环产品体验并卸掉旧 `profile` 表、IPC 与填表 UI 负担）。
-3. **PR 3（阶段三 · 修订）**：将 `memory-worker` 托管权从 Viva 主进程收回 `viva-memory` DSH 插件（删除 `desktop-memory-owner.ts`、`fromViva()` 与主进程预取桥接，统一为单路径插件），并在插件内原地补齐 429/5xx 退避与前台流式软让路（也可前置为 PR 1 先完成架构减法，再合入阶段一、二主体）。
-4. **PR 4（阶段四）**：Viva 素材摄取收口到持久化事件单一事实源（彻底清零双通道竞态并精简 DSH 插件）。
+1. **PR #178（阶段一 + 阶段二 · 已合入 `5e96068`）**：自动注入三层拆分（L1/L2/L3）+ 5 态协议 + 向量快慢分离 + 关闭手工画像一步切换为 Dream 自动常驻画像及完整检查点恢复。
+2. **PR 3（阶段三 · 收口版）**：将 `memory-worker` 托管权从 Viva 主进程收回 `viva-memory` DSH 插件（删除 `desktop-memory-owner.ts`、`memory-prefetch.ts`、`fromViva()`，收敛为单路径 `standaloneOwner`），补全父进程 IPC 协议（`memory_host_result`、`memory_host_cancel`、`memoryHostFailure`、跨两跳执行选项与旧连接围栏）、轻量 `ready` 过渡重放、worker 权威版本夹检、`recovering → profile → ready` 三段推送与晚订阅回放，以及全链路 429/5xx `Retry-After`（在既有 `effects` 行新增单列 `cooldown_until`，跨重启防覆盖且不新增表/JOIN）与轻量前台软让路。
+3. **PR 4A（阶段四上 · 单一日志事实源与后台任务归属）**：以 DSH `session-persistence` 持久化会话日志为单一事实源（`flush + open('read')`、防跳洞 CAS 游标、只读冷补扫、递增 `MEMORY_CONTRACT` 干净建库），移除 `session/dialog/*.jsonl` 与 `sourceAlias`，实现发起动作显式归属、无损 `humanSpans`、统一人类消息 L3 提取器、三路时间线链接、后台任务记忆打通全局召回与回合中 `memory_remember` 暂存（对 `fork`、`history`、`tasks`、`routing`、`compaction` 保持零侵入）。
+4. **PR 4B（阶段四下 · `ask_user_question` 原生消费）**：移除 `acceptQuestionAnswer` 异步旁路，基于 DSH 公开 API（`tools/execute`、`sessionProjections.snapshot`、`userQuestions.answer`）与单张轻量表 `owner_question_answers`（带 TTL 与隐私过滤）实现阻塞/续答/PTC 原生消费、人/机归属 fail-closed 隔离、防 `dsh-spill` 截断恢复与 `profile_deleted_at` 水位校验（不劫持 `acp-bridge` 回合生命周期）。
 
-每个 PR 涉及主进程、DSH 插件、IPC 或存储时，合入前均需本地运行 `npm run typecheck`、`npm test`、`npm run check:i18n`，以及 `npm run build` 和 `npm run smoke`（重点覆盖 `smoke:memory`）。
+依据 [AGENTS.md](../AGENTS.md) 冒烟门槛，PR 3、PR 4A 与 PR 4B 均涉及主进程、DSH 生命周期、IPC 或存储架构变更，合入前均须本地运行 `npm run typecheck`、`npm test`、`npm run check:i18n`、`npm run build`、`npm run test:memory-plugin`、`npm run smoke:memory` 与完整 **`npm run smoke`**，并通过 GitHub macOS + Windows 双平台 CI。

@@ -70,8 +70,12 @@ export function createOwnerRpcPeer(options: PeerOptions) {
           else if (frame.error.code === 'timeout') reject(new RequestTimeout())
           else {
             const details = parseMemoryDomainErrorDetails(frame.error.details)
+            const retryAfterMs = typeof frame.error.retryAfterMs === 'number' && Number.isInteger(frame.error.retryAfterMs) && frame.error.retryAfterMs > 0
+              ? frame.error.retryAfterMs : undefined
             reject(Object.assign(new Error(frame.error.message), {
-              code: frame.error.code, reason: frame.error.reason, ...(details ? { details } : {}),
+              code: frame.error.code, reason: frame.error.reason,
+              ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+              ...(details ? { details } : {}),
             }))
           }
         },
@@ -93,9 +97,13 @@ export function createOwnerRpcPeer(options: PeerOptions) {
         const details = parseMemoryDomainErrorDetails(
           'details' in error ? error.details : 'domainDetails' in error ? error.domainDetails : undefined,
         )
+        const retryAfterMs = 'retryAfterMs' in error && typeof error.retryAfterMs === 'number'
+          && Number.isInteger(error.retryAfterMs) && error.retryAfterMs > 0
+          ? error.retryAfterMs : undefined
         options.send({ ...base, ok: false, error: { message: error.message.slice(0, 2_048),
           ...('code' in error && typeof error.code === 'string' ? { code: error.code } : {}),
           ...('reason' in error && typeof error.reason === 'string' ? { reason: error.reason } : {}),
+          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
           ...(details ? { details } : {}),
         } })
       }
