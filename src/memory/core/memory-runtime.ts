@@ -468,7 +468,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   } | null = null
   function residentProfileText(): string {
     if (closed || !filePolicy || !documents) return ''
-    const row = documents.fileRegistry(userWorkspace).find(entry => entry.path === RESIDENT_PROFILE_PATH)
+    const row = documents.fileRegistration(userWorkspace, RESIDENT_PROFILE_PATH)
     if (!row || row.state !== 'active') {
       cachedResidentProfile = null
       return ''

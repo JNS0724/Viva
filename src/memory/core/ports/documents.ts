@@ -71,6 +71,7 @@ export interface MemoryDocuments {
   registered(workspace: string): Array<DocumentFileRegistration & { sources: DocumentSourceRef[] }>
   /** Registry metadata for management, including forgotten entries only while a restriction remains. */
   fileRegistry(workspace: string): DocumentFileRegistration[]
+  fileRegistration(workspace: string, path: string): DocumentFileRegistration | null
   recoverDeletedFiles(): void
   deletedFileCleanupPending(workspace: string, id: string): boolean
   checkpointCleanup(): void

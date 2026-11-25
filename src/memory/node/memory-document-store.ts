@@ -411,6 +411,14 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       FROM memory_documents d WHERE d.workspace=? AND d.forgotten=0`).all(scope) as Array<Pick<Row, 'id' | 'workspace' | 'path' | 'revision' | 'usage_version' | 'enabled' | 'forgotten'>>)
       .map(row => ({ id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
         usageVersion: row.usage_version, state: row.forgotten ? 'forgotten' : row.enabled ? 'active' : 'disabled' })),
+    fileRegistration(scope, path) {
+      const row = db.prepare(`SELECT id,workspace,path,revision,usage_version,enabled,forgotten
+        FROM memory_documents WHERE workspace=? AND path=? AND forgotten=0`).get(scope, path) as Pick<Row, 'id' | 'workspace' | 'path' | 'revision' | 'usage_version' | 'enabled' | 'forgotten'> | undefined
+      return row
+        ? { id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
+            usageVersion: row.usage_version, state: row.enabled ? 'active' : 'disabled' }
+        : null
+    },
     workspaces: () => db.prepare('SELECT DISTINCT workspace FROM memory_documents').all().map(row => String(row.workspace)),
     indexFile(scope, id) {
       const row = rowById(id)

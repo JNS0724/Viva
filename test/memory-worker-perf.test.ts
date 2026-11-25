@@ -77,10 +77,21 @@ test('residentProfileText skips disk when absent, reuses cached stat+projection 
   defer(() => baseResources.effects.close())
 
   const commitCalls: Array<{ path: string, hadCached: boolean, reused: boolean }> = []
+  let fullRegistryScans = 0
   const resources = {
     ...baseResources,
+    openDocuments(...args: Parameters<typeof baseResources.openDocuments>) {
+      const opened = baseResources.openDocuments(...args)
+      return {
+        ...opened,
+        fileRegistry(ws: string) {
+          fullRegistryScans++
+          return opened.fileRegistry(ws)
+        },
+      }
+    },
     readFileAtCommit(workspace: string, filePath: string, cached?: MemoryPhysicalFile) {
-      const result = baseResources.readFileAtCommit!(workspace, filePath, cached)
+      const result = baseResources.readFileAtCommit(workspace, filePath, cached)
       commitCalls.push({ path: filePath, hadCached: Boolean(cached), reused: Boolean(cached && result === cached) })
       return result
     },
@@ -163,6 +174,7 @@ test('residentProfileText skips disk when absent, reuses cached stat+projection 
   assert.match(runtime.residentProfileText(), /更新后的偏好/)
   assert.equal(commitCalls.length, 1)
   assert.equal(commitCalls[0]!.hadCached && commitCalls[0]!.reused, true)
+  assert.equal(fullRegistryScans, 0, 'residentProfileText must use indexed point lookup instead of scanning full fileRegistry')
 })
 
 test('owner-worker deduplicates memory_owner_profile across unrelated memory changes while pushing real profile updates', async t => {
