@@ -118,7 +118,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   }, port)
   const owner = createRemoteMemoryOwner(connection)
   const available = () => !lifetime.signal.aborted && owner.ready()
-  const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session), { host: Boolean(config.host) })
+  const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session), { host: Boolean(config.host), onError: report })
   let cachedProfile: MemoryProfileSnapshot | undefined
   let currentRevision: number | undefined
   let observedEpoch: string | undefined

@@ -36,7 +36,7 @@ export function humanMessages(messages: readonly UserMessage[]) {
 export function createSessionIngestion(
   owner: Owner,
   flush: (session: Session) => Promise<unknown>,
-  { host = false, aliasGraceMs = DEFAULT_ALIAS_GRACE_MS }: { host?: boolean, aliasGraceMs?: number } = {},
+  { host = false, aliasGraceMs = DEFAULT_ALIAS_GRACE_MS, onError }: { host?: boolean, aliasGraceMs?: number, onError?: (error: unknown) => void } = {},
 ) {
   const sessions = new Map<string, Replay>()
   let closed = false
@@ -71,12 +71,12 @@ export function createSessionIngestion(
     return entry.work
   }
 
-  async function original(state: Replay, message: UserMessage, at: number, live: boolean, deferMissingAlias = false) {
+  async function original(state: Replay, turn: number, message: UserMessage, at: number, live: boolean, deferMissingAlias = false) {
     if (message.source.kind !== 'user') return
     const text = textOf(message)
     if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) return
     return owner.receiveSource({ sessionId: String(state.session.id), messageId: message.id, text, at, timezone: timezone(),
-      turn: state.turn, live, cwd: state.session.header.cwd, task: state.session.header.origin === 'subagent',
+      turn, live, cwd: state.session.header.cwd, task: state.session.header.origin === 'subagent',
       derived: state.session.header.origin === 'subagent'
         && !('rpcId' in message.source && typeof message.source.rpcId === 'string'),
       ...(deferMissingAlias ? { deferMissingAlias: true } : {}) })
@@ -111,7 +111,7 @@ export function createSessionIngestion(
         const nowMs = Date.now()
         let firstSeen = state.awaitingSince.get(msgId)
         const canDefer = host && (firstSeen === undefined || nowMs - firstSeen < aliasGraceMs)
-        const receipt = await original(state, event.data, event.time, false, canDefer)
+        const receipt = await original(state, state.turn, event.data, event.time, false, canDefer)
         if (receipt?.awaitingAlias) {
           if (firstSeen === undefined) {
             firstSeen = nowMs
@@ -136,21 +136,21 @@ export function createSessionIngestion(
       state.nextSeq = event.seq + 1
     }
     state.pendingEvents = null
-    if (state.released && state.awaitingSince.size === 0 && sessions.get(session) === state) {
-      clearRetry(state)
-      sessions.delete(session)
-    }
   }
 
   async function scan(state: Replay, end: SessionLogOffset, persisted: Promise<unknown>) {
-    let ok = false
-    try { ok = await persisted === true } catch { ok = false }
-    if (!ok) {
-      if (state.awaitingSince.size > 0 && state.pendingEvents?.length) {
-        clearRetry(state)
-        await processEvents(state, state.pendingEvents)
+    if (!state.released) {
+      if (await persisted !== true) return
+    } else {
+      let ok = false
+      try { ok = await persisted === true } catch { ok = false }
+      if (!ok) {
+        if (state.awaitingSince.size > 0 && state.pendingEvents?.length) {
+          clearRetry(state)
+          await processEvents(state, state.pendingEvents)
+        }
+        return
       }
-      return
     }
     clearRetry(state)
     const session = String(state.session.id)
@@ -183,10 +183,23 @@ export function createSessionIngestion(
       clearRetry(state)
       const pending = state.pendingEvents
       if (!pending || pending.length === 0) {
-        if (state.awaitingSince.size === 0) sessions.delete(sessionId)
+        state.awaitingSince.clear()
         return
       }
-      await processEvents(state, pending)
+      try {
+        await processEvents(state, pending)
+      } catch (error) {
+        const nowMs = Date.now()
+        const earliest = state.awaitingSince.size > 0 ? Math.min(...state.awaitingSince.values()) : 0
+        const remaining = earliest > 0 ? aliasGraceMs - (nowMs - earliest) : 0
+        if (!closed && remaining > 0 && sessions.get(sessionId) === state) {
+          scheduleResume(state, Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, remaining)))
+        } else {
+          state.awaitingSince.clear()
+          state.pendingEvents = null
+          onError?.(error)
+        }
+      }
     })).finally(() => {
       state.inFlight = Math.max(0, state.inFlight - 1)
       if (state.released && state.inFlight === 0 && (state.awaitingSince.size === 0 || state.epoch !== owner.epoch) && sessions.get(sessionId) === state) {
@@ -204,8 +217,7 @@ export function createSessionIngestion(
     return enqueue(session, async state => {
       await scan(state, end, persisted)
       if (!current) return
-      state.turn = current.turn
-      for (const message of current.messages) await original(state, message, Date.now(), true)
+      for (const message of current.messages) await original(state, current.turn, message, Date.now(), true)
     })
   }
   return {

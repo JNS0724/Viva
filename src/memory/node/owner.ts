@@ -534,17 +534,21 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const existing = store.readSource(sourceId)
         if (existing) {
           if (existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
-            || existing.requestId !== input.requestId || existing.conversation !== input.conversation) throw new Error('Answer operation identity conflicts')
+            || existing.requestId !== input.requestId || existing.conversation !== input.conversation) {
+            throw new MemoryDomainError('operation.conflict', 'Answer operation identity conflicts')
+          }
           return { sourceId }
         }
         const { session, turn } = input
         const context = sessionContext(session)
         if (context.conversation !== input.conversation || context.project?.id !== input.project?.id
-          || db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND turn=?').get(session, turn)) throw new Error('Answer context is unavailable')
+          || db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND turn=?').get(session, turn)) {
+          throw new MemoryDomainError('not.found', 'Answer context is unavailable')
+        }
         const question = input.cards.find(card => card.id === input.questionId)
         if (!question || input.cards.some(card => [card.question, card.header,
           ...card.options.flatMap(option => [option.label, option.description ?? ''])].some(looksSecret))) {
-          throw new Error('Question cannot be retained')
+          throw new MemoryDomainError('credentials', 'Question cannot be retained')
         }
         store.tx(() => {
           assertIntakeCurrent()
@@ -553,7 +557,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
               ...(input.questionAt !== undefined ? { questionAt: input.questionAt } : {}),
               ...(input.questionProfileGen !== undefined ? { questionProfileGen: input.questionProfileGen } : {}) },
             { deferAutomatic: true, at: (options.now ?? Date.now)(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
-          if (!runtime.sourceCurrent(sourceId)) throw new Error('Answer cannot be retained')
+          if (!runtime.sourceCurrent(sourceId)) throw new MemoryDomainError('credentials', 'Answer cannot be retained')
           db.prepare('INSERT INTO owner_answer_sources VALUES (?,?,?)').run(session, String(turn), sourceId)
         })
         return { sourceId }

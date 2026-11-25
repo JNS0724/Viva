@@ -1164,6 +1164,201 @@ test('incremental two-scan ingestion preserves prior turn sources and receivedRe
   assert.equal(completedTurns[0]!.assistant, '', 'receivedReport must remain preserved so report assistant text is excluded')
 })
 
+test('ingestion isolates live turn from deferred scan turn, keeps state across queued release scans, propagates active flush EIO, and retries transient released RPC failures (R3 P1-1, P1-2, P1-3, P2-2)', { timeout: 20_000 }, async t => {
+  const { dir } = scratch(t, 'phase3-r3-ingestion-')
+  const root = path.join(dir, 'memory')
+  const port = createMockParentPort()
+  const connection = openPluginOwner({ root, hostNamespace: 'viva', dailyNotes: true }, port as unknown as NodeJS.Process)
+  t.after(async () => { await connection.close() })
+  await connection.start()
+  const ownerApi = {
+    get epoch() { return connection.epoch() },
+    inEpoch: async <T>(epoch: string | undefined, fn: () => Promise<T>) => {
+      if (epoch !== connection.epoch()) throw new Error('stale epoch')
+      return fn()
+    },
+    intakeWatermark: (session: string) => connection.callAdapter('intakeWatermark', [session]),
+    advanceIntake: (session: string, nextSeq: number) => connection.callAdapter('advanceIntake', [session, nextSeq]),
+    receiveSource: (input: Parameters<ReturnType<typeof createSessionIngestion>['synchronize']>[0] extends never ? never : Parameters<typeof connection.callAdapter<'receiveSource'>>[1][0]) =>
+      connection.callAdapter('receiveSource', [input]),
+    completeTurn: (input: Parameters<typeof connection.callAdapter<'completeTurn'>>[1][0]) =>
+      connection.callAdapter('completeTurn', [input]),
+  }
+
+  // 1. R3 P1-1: Turn 1 awaits alias for A; Turn 2 pre-step runs receive(..., 2) before A's alias arrives -> both turns settle cleanly!
+  const sess1 = randomUUID()
+  const msgA = randomUUID()
+  const msgB = randomUUID()
+  const textA = '第一回合迟到别名原话 A'
+  const textB = '第二回合正常别名原话 B'
+  const events1: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msgA, source: { kind: 'user' }, content: [{ type: 'text', text: textA }] } },
+    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const fakeSession1 = {
+    id: sess1,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events1.length },
+    snapshotEvents(from: number, end: number) { return events1.slice(from, end) },
+  }
+  const ing1 = createSessionIngestion(ownerApi, async () => true, { host: true, aliasGraceMs: 1_500 })
+  t.after(() => ing1.drain())
+  await ing1.synchronize(fakeSession1 as unknown as Parameters<typeof ing1.synchronize>[0])
+
+  // Turn 2 begins while Turn 1 message A is still awaiting its alias!
+  const srcB = randomUUID()
+  await connection.callHost('sourceAlias', {
+    operationId: srcB, sourceId: srcB, session: sess1, conversation: sess1,
+    text: textB, wireText: textB, cwd: dir, origin: 'original',
+  })
+  events1.push(
+    { seq: 3, time: Date.now(), type: 'turn/start', data: { turn: 2 } },
+    { seq: 4, time: Date.now(), type: 'user/message', data: { id: msgB, source: { kind: 'user' }, content: [{ type: 'text', text: textB }] } },
+    { seq: 5, time: Date.now(), type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
+  )
+  await ing1.receive(
+    fakeSession1 as unknown as Parameters<typeof ing1.receive>[0],
+    [{ id: msgB, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: textB }] } as unknown as Parameters<typeof ing1.receive>[1][0]],
+    2,
+  )
+
+  // Now A's alias arrives -> wakeIfAwaiting must register A on turn 1 (NOT turn 2!) and settle BOTH turns!
+  const srcA = randomUUID()
+  await connection.callHost('sourceAlias', {
+    operationId: srcA, sourceId: srcA, session: sess1, conversation: sess1,
+    text: textA, wireText: textA, cwd: dir, origin: 'original',
+  })
+  ing1.wakeIfAwaiting(sess1)
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT turn FROM owner_turns WHERE session = ? ORDER BY turn').all(sess1) as Array<{ turn: number }>
+      return turns.length === 2 && turns[0]!.turn === 1 && turns[1]!.turn === 2
+    } finally { db.close() }
+  }, { timeoutMs: 5_000 }), 'both turn 1 and turn 2 must settle cleanly without cross-turn turn-number corruption')
+
+  // 2. R3 P1-2: queued short scan (up to turn/start) + queued full scan + immediate release() must NOT delete state before second scan runs!
+  const sess2 = randomUUID()
+  const msg2 = randomUUID()
+  const text2 = '两段排队扫描后关闭会话的原话'
+  const flushGate1 = deferred<boolean>()
+  let flushCalls2 = 0
+  const events2: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+  ]
+  const fakeSession2 = {
+    id: sess2,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events2.length },
+    snapshotEvents(from: number, end: number) { return events2.slice(from, end) },
+  }
+  const ing2 = createSessionIngestion(ownerApi, () => {
+    flushCalls2++
+    return flushCalls2 === 1 ? flushGate1.promise : Promise.resolve(true)
+  }, { host: true, aliasGraceMs: 1_500 })
+  t.after(() => ing2.drain())
+  const scan1Promise = ing2.synchronize(fakeSession2 as unknown as Parameters<typeof ing2.synchronize>[0])
+  events2.push(
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg2, source: { kind: 'user' }, content: [{ type: 'text', text: text2 }] } },
+    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  )
+  const scan2Promise = ing2.synchronize(fakeSession2 as unknown as Parameters<typeof ing2.synchronize>[0])
+  ing2.release(fakeSession2 as unknown as Parameters<typeof ing2.release>[0])
+  flushGate1.resolve(true)
+  await Promise.all([scan1Promise, scan2Promise])
+
+  const src2 = randomUUID()
+  await connection.callHost('sourceAlias', {
+    operationId: src2, sourceId: src2, session: sess2, conversation: sess2,
+    text: text2, wireText: text2, cwd: dir, origin: 'original',
+  })
+  ing2.wakeIfAwaiting(sess2)
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess2) as { n: number }
+      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(sess2) as { n: number }
+      return turns.n === 1 && aliases.n === 0
+    } finally { db.close() }
+  }, { timeoutMs: 5_000 }), 'queued release scans must keep state until inFlight===0 and settle when late alias arrives')
+
+  // 3. R3 P1-3: Active session flush EIO MUST propagate (never swallowed) so memory_remember fails rather than succeeding on unpersisted input!
+  const sess3 = randomUUID()
+  const fakeSession3 = {
+    id: sess3,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    seq: 1,
+    snapshotEvents: () => [],
+  }
+  const ing3 = createSessionIngestion(ownerApi, async () => { throw Object.assign(new Error('disk EIO'), { code: 'EIO' }) }, { host: true })
+  t.after(() => ing3.drain())
+  await assert.rejects(
+    () => ing3.synchronize(fakeSession3 as unknown as Parameters<typeof ing3.synchronize>[0]),
+    /disk EIO/,
+    'active session flush EIO must propagate to callers such as memory_remember',
+  )
+
+  // 4. R3 P2-2: Released session hitting one transient RPC error retries automatically within grace window and settles; persistent errors clean up after grace expiry!
+  const sess4 = randomUUID()
+  const msg4 = randomUUID()
+  const text4 = '关闭会话临时 RPC 失败后自动重试'
+  let injectOnce = true
+  const flakyOwner = {
+    ...ownerApi,
+    async receiveSource(input: Parameters<typeof ownerApi.receiveSource>[0]) {
+      if (input.sessionId === sess4 && !input.live && injectOnce && !input.deferMissingAlias === false) {
+        // Trigger transient failure on the FIRST retry after alias arrives (second receiveSource call).
+      }
+      return ownerApi.receiveSource(input)
+    },
+  }
+  let sess4Calls = 0
+  flakyOwner.receiveSource = async input => {
+    if (input.sessionId === sess4) {
+      sess4Calls++
+      if (sess4Calls === 2 && injectOnce) {
+        injectOnce = false
+        throw new Error('Memory owner request limit reached')
+      }
+    }
+    return ownerApi.receiveSource(input)
+  }
+  const events4: Array<Record<string, unknown>> = [
+    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg4, source: { kind: 'user' }, content: [{ type: 'text', text: text4 }] } },
+    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const fakeSession4 = {
+    id: sess4,
+    inheritedEventCount: 0,
+    header: { cwd: dir, origin: 'main' },
+    get seq() { return events4.length },
+    snapshotEvents(from: number, end: number) { return events4.slice(from, end) },
+  }
+  const ing4 = createSessionIngestion(flakyOwner, async () => true, { host: true, aliasGraceMs: 1_500 })
+  t.after(() => ing4.drain())
+  await ing4.synchronize(fakeSession4 as unknown as Parameters<typeof ing4.synchronize>[0])
+  ing4.release(fakeSession4 as unknown as Parameters<typeof ing4.release>[0])
+  const src4 = randomUUID()
+  await connection.callHost('sourceAlias', {
+    operationId: src4, sourceId: src4, session: sess4, conversation: sess4,
+    text: text4, wireText: text4, cwd: dir, origin: 'original',
+  })
+  // Wake once -> hits transient RPC error -> must reschedule automatically within grace window without a second manual wake!
+  ing4.wakeIfAwaiting(sess4)
+  assert.ok(await eventually(() => {
+    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+    try {
+      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess4) as { n: number }
+      return turns.n === 1
+    } finally { db.close() }
+  }, { timeoutMs: 5_000 }), 'released session must automatically retry transient RPC failure within grace window')
+})
+
 test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {
   const { dir } = scratch(t, 'phase3-dream-race-p14-')
   const root = path.join(dir, 'memory')

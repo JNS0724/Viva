@@ -1795,8 +1795,14 @@ test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_
   assert.ok(await eventually(() => heldReadyFrames.length > 0, { timeoutMs: 10_000 }))
 
   const beforeSucceeded = succeeded
+  const submittedIds: string[] = []
+  const submittedTexts: string[] = []
   for (let i = 0; i < 70; i++) {
-    await app.call<Promise<unknown>>('agent:prompt', `批量别名队列项 ${i}`, [], randomUUID()).catch(() => {})
+    const id = randomUUID()
+    const text = `批量别名队列项 ${i}`
+    submittedIds.push(id)
+    submittedTexts.push(text)
+    await app.call<Promise<unknown>>('agent:prompt', text, [], id).catch(() => {})
   }
   dropReady = false
   for (const held of heldReadyFrames.splice(0)) {
@@ -1805,12 +1811,15 @@ test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_
   assert.ok(await eventually(() => succeeded - beforeSucceeded >= 70, { timeoutMs: 15_000 }),
     `expected all 70 queued aliases to drain cleanly, drained=${succeeded - beforeSucceeded}`)
   assert.ok(maxInflight <= 16, `pending alias replay must cap concurrency <= 16, saw ${maxInflight}`)
-  const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
-  try {
-    const rows = memoryDb.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE kind IN ('original', 'ignored')").get() as { n: number }
-    const aliases = memoryDb.prepare('SELECT COUNT(*) AS n FROM owner_aliases').get() as { n: number }
-    assert.ok(rows.n + aliases.n >= 70, `expected queued aliases to be tracked cleanly in SQLite, messages=${rows.n} aliases=${aliases.n}`)
-  } finally { memoryDb.close() }
+  const placeholders = submittedIds.map(() => '?').join(',')
+  assert.ok(await eventually(() => {
+    const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+    try {
+      const leftover = memoryDb.prepare(`SELECT COUNT(*) AS n FROM owner_aliases WHERE source IN (${placeholders})`).get(...submittedIds) as { n: number }
+      const finalized = memoryDb.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE kind IN ('original', 'ignored')").get() as { n: number }
+      return leftover.n === 0 && finalized.n >= 70
+    } finally { memoryDb.close() }
+  }, { timeoutMs: 10_000 }), 'all 70 queued aliases must be finalized as original or ignored with 0 orphan rows in owner_aliases')
 })
 
 test('custom ask_user_question answer recovers across unavailable(A)->recovering(B)->ready(B) within budget and preserves sourceId on post-commit disconnect (R2 P1-3, P2-1)', { timeout: 30_000 }, async t => {
@@ -1857,6 +1866,7 @@ test('custom ask_user_question answer recovers across unavailable(A)->recovering
 
   const brief1 = '预算内换代恢复写入回答'
   const brief2 = '提交后断连保留确定性来源编号'
+  const brief3 = '敏感问题被worker明确拒绝不落空链接'
   const app = await setup(t, request => {
     if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
     const q = questionOf(request.messages)
@@ -1865,6 +1875,9 @@ test('custom ask_user_question answer recovers across unavailable(A)->recovering
     ] } } }
     if (q === brief2) return { tool: { name: 'ask_user_question', input: { questions: [
       { id: 'disc-city', question: '断连测试城市？', header: '城市', options: [{ label: '北京', description: '使用北京' }], multiSelect: false },
+    ] } } }
+    if (q === brief3) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'sec-key', question: '请确认密钥 sk-1234567890abcdefghijklmnop 的用途？', header: '敏感', options: [{ label: '测试', description: '测试' }], multiSelect: false },
     ] } } }
     return null
   })
@@ -1888,6 +1901,15 @@ test('custom ask_user_question answer recovers across unavailable(A)->recovering
   assert.equal(await answerPromise1, true)
   assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev1.taskId && task.endedAt)))
 
+  // Case 3 (R3 P2-1): worker explicitly rejects secret-bearing question -> must NOT publish unbacked source_id in history!
+  const evOffset3 = app.events.length
+  await app.ask(`后台做：${brief3}`)
+  const ev3 = await eventually(() => app.events.slice(evOffset3).find(item => item.type === 'task_question'))
+  assert.ok(ev3 && 'questionId' in ev3 && typeof ev3.questionId === 'string' && 'taskId' in ev3 && typeof ev3.taskId === 'string')
+  const answer3 = '这是敏感问题的回答文本'
+  assert.equal(await app.call('agent:answer', ev3.questionId, [{ id: 'sec-key', selected: [], custom: answer3 }], randomUUID()), true)
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev3.taskId && task.endedAt)))
+
   // Case 2 (R2 P2-1): commit succeeds in worker, then unavailable arrives before ACK -> sourceId must still match memory_sources.id!
   mode = 'disconnect-after-commit'
   const evOffset = app.events.length
@@ -1905,6 +1927,12 @@ test('custom ask_user_question answer recovers across unavailable(A)->recovering
     const src1 = await eventually(() => memory.prepare("SELECT id, conversation FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer1)))
     assert.ok(src1, 'answer submitted during unavailable(A)->recovering(B)->ready(B) within budget must persist in memory_sources')
     assert.equal(history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer1)?.source_id, src1.id)
+
+    assert.equal(memory.prepare("SELECT id FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer3)), undefined,
+      'secret-bearing question answer rejected by worker must not exist in memory_sources')
+    const hist3 = history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer3) as { source_id: string | null } | undefined
+    assert.ok(hist3, 'rejected answer text must still be recorded in conversation history')
+    assert.equal(hist3.source_id, null, 'explicit worker rejection must NOT publish an unbacked source_id in history')
 
     const src2 = await eventually(() => memory.prepare("SELECT id, conversation FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer2)))
     assert.ok(src2, 'post-commit disconnect answer must exist in memory_sources')
