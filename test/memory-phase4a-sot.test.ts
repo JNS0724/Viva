@@ -2695,7 +2695,8 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
   assert.equal(nextRunState.tasks.list[0]!.view.messages.some(m => m.text === 'refused r6'), false,
     'task that already moved to a newer run must still apply late task_steer_retracted by unique key')
 
-  // R6 P2-3: Two cards sharing one requestId in the same ask_user_question batch do NOT depend on each other!
+  // R6 P2-3 + R7 P2: Rejecting card 1 in the same requestId BEFORE settleTurn() must NOT invalidate sibling card 2 question
+  // (while a later different-requestId card 3 STILL depends on card 1)!
   const rootBatch = path.join(dir, 'mem-r6-same-req')
   const noteInputsBatch: Array<{ turns: Array<{ user: Array<{ sourceId: string, text: string, question: string | null }> }> }> = []
   const ownerBatch = openMemoryOwner({
@@ -2708,7 +2709,7 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
   })
   defer(() => ownerBatch.close())
   await ownerBatch.recover()
-  const sidB = 'sess-r6-same-req', card1 = randomUUID(), card2 = randomUUID()
+  const sidB = 'sess-r6-same-req', card1 = randomUUID(), card2 = randomUUID(), card3 = randomUUID()
   ownerBatch.beginTurn({ sessionId: sidB, turn: 1, sessionKind: 'main', conversation: 'conv-r6-b', cwd: dir })
   await ownerBatch.handleHost('acceptQuestionAnswer', {
     operationId: card1, text: 'secret-food', session: sidB, turn: 1, conversation: 'conv-r6-b',
@@ -2720,18 +2721,29 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
     cards: [{ id: 'c2', question: 'favorite drink?', header: 'drink', options: [{ label: 'B' }], multiSelect: false }],
     requestId: 'shared-req-1', questionId: 'c2', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
   })
+  await ownerBatch.handleHost('acceptQuestionAnswer', {
+    operationId: card3, text: 'evening', session: sidB, turn: 1, conversation: 'conv-r6-b',
+    cards: [{ id: 'c3', question: 'when do you eat that food?', header: 'time', options: [{ label: 'C' }], multiSelect: false }],
+    requestId: 'later-req-2', questionId: 'c3', context: { kind: 'user' }, questionAt: nowMs + 15, questionProfileGen: 0,
+  })
+  const dbBatch = new DatabaseSync(path.join(rootBatch, 'memory.db'))
+  defer(() => dbBatch.close())
+  // Reject card 1 BEFORE settleTurn()!
+  dbBatch.prepare("UPDATE memory_sources SET outcome='rejected' WHERE id=?").run(card1)
   await ownerBatch.settleTurn({
     sessionId: sidB, cwd: dir, sessionKind: 'main', conversation: 'conv-r6-b', inheritedSeq: 0,
     expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
     sources: [], assistantText: '', at: nowMs + 20, timezone: 'UTC',
   })
-  const dbBatch = new DatabaseSync(path.join(rootBatch, 'memory.db'))
-  defer(() => dbBatch.close())
-  dbBatch.prepare("UPDATE memory_sources SET outcome='rejected' WHERE id=?").run(card1)
   ownerBatch.runtime.flushNoteTurns?.(sidB)
   await ownerBatch.runtime.wake()
   assert.equal(noteInputsBatch.length, 1)
-  const keptCard2 = noteInputsBatch[0]!.turns.flatMap(turn => turn.user).find(u => u.sourceId === card2)
+  const batchUsers = noteInputsBatch[0]!.turns.flatMap(turn => turn.user)
+  assert.equal(batchUsers.some(u => u.sourceId === card1), false)
+  const keptCard2 = batchUsers.find(u => u.sourceId === card2)
   assert.ok(keptCard2)
-  assert.equal(keptCard2.question, 'favorite drink?', 'rejecting card 1 in the same requestId must NOT invalidate sibling card 2 question')
+  assert.equal(keptCard2.question, 'favorite drink?', 'rejecting card 1 in the same requestId BEFORE settleTurn must NOT invalidate sibling card 2 question')
+  const keptCard3 = batchUsers.find(u => u.sourceId === card3)
+  assert.ok(keptCard3)
+  assert.equal(keptCard3.question, null, 'rejecting card 1 BEFORE settleTurn MUST still withhold later different-requestId card 3 question')
 })

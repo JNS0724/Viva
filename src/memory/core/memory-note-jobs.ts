@@ -76,8 +76,8 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       session, day, fromSeq, toSeq, turn, sources,
       assistantDigest: safeAssistant ? hash(safeAssistant) : null,
       assistantSources: safeAssistant && dependencies ? dependencies : [],
-      questionSources: contextCurrent && dependencies ? dependencies : [],
-      questionCurrent: contextCurrent,
+      questionSources: dependencies ?? [],
+      questionCurrent: dependencies !== null,
     })
     if (!key) return null
     let pendingCount = 0
@@ -107,7 +107,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     // metadata. Suppress that copy without discarding independent human input.
     const safeAssistant = contextCurrent && sources.every(item => allowsText(assistant, item)) ? assistant : ''
     const key = notes.add(session, day, sources, safeAssistant, ids[0]!, safeAssistant && dependencies ? dependencies : [], assistant,
-      { questionSources: contextCurrent && dependencies ? dependencies : [], questionCurrent: contextCurrent })
+      { questionSources: dependencies ?? [], questionCurrent: dependencies !== null })
     if (!key) return
     let pendingCount = 0
     store.tx(() => {

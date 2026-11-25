@@ -351,9 +351,11 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     const assistantRefs = assistantDigest ? snapshot([...sources.map(source => source.id), ...(input.assistantSources ?? [])]) : []
     const answers = sources.filter(source => source.author === 'answer')
     const hasQuestions = answers.length > 0
-    const questionCurrent = !hasQuestions || (input.questionCurrent === true && answers.every(source => Boolean(source.question)))
+    const baseQuestionDeps = input.questionSources ?? []
+    const baseQuestionAllReadable = baseQuestionDeps.every(readable)
+    const questionCurrent = !hasQuestions || (input.questionCurrent === true && baseQuestionAllReadable && answers.every(source => Boolean(source.question)))
     const nonAnswerIds = sources.filter(source => source.author !== 'answer').map(source => source.id)
-    const questionRefs = hasQuestions && questionCurrent ? snapshot([...nonAnswerIds, ...(input.questionSources ?? [])]) : []
+    const questionRefs = hasQuestions && questionCurrent ? snapshot([...nonAnswerIds, ...baseQuestionDeps]) : []
     db.prepare(`INSERT INTO memory_note_ranges(
       range_id, note_key, session, workspace, day, from_seq, to_seq, turn,
       sources_json, source_tokens_json, assistant_sources_json, assistant_digest, assistant_valid,
@@ -381,10 +383,17 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
               ? idx < i && (!answer.requestId || source.requestId !== answer.requestId)
               : source.at <= askedAt))
           .map(source => source.id)
-        const answerQuestionRefs = questionCurrent
-          ? snapshot([...precedingIds, ...(input.questionSources ?? [])])
-          : []
-        store.updateSourceQuestionContext?.(answer.id, questionCurrent, answerQuestionRefs)
+        // Exclude rejected sibling cards sharing the same `requestId` (already shown together
+        // before either card was answered), while still checking genuine prior prerequisites.
+        const priorDeps = baseQuestionDeps.filter(depId => {
+          if (!answer.requestId) return true
+          const dep = store.readSource(depId)
+          return !(dep?.author === 'answer' && dep.requestId === answer.requestId)
+        })
+        const depIds = [...precedingIds, ...priorDeps]
+        const answerQuestionCurrent = input.questionCurrent === true && Boolean(answer.question) && depIds.every(readable)
+        const answerQuestionRefs = answerQuestionCurrent ? snapshot(depIds) : []
+        store.updateSourceQuestionContext?.(answer.id, answerQuestionCurrent, answerQuestionRefs)
       }
     }
     if (input.ephemeralAssistant && assistantDigest) {
