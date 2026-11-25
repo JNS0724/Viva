@@ -17,7 +17,7 @@ import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { openMemoryStore, memoryHash } from '../src/memory/node/memory-store.ts'
-import { createMemoryPhysicalFileReader } from '../src/memory/node/memory-file-store.ts'
+import { createMemoryPhysicalFileReader, readMemoryFileAtCommit } from '../src/memory/node/memory-file-store.ts'
 import type { DocumentReceipt, ReadMemoryPhysicalFile } from '../src/memory/core/ports/documents.ts'
 import type { MemorySource } from '../src/memory/core/ports/store.ts'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
@@ -51,7 +51,9 @@ function harness(t: TestContext, options: {
   let beforeMutation = () => {}
   let afterCommit: (receipt: DocumentReceipt) => void = () => {}
   const start = () => createMemoryDreamJobs({ store, notes, documents, effects, identity: { newId: randomUUID, hash: memoryHash }, now: () => now,
-    diagnostics: options.diagnostics, readPhysicalFile: options.readPhysicalFile, searchDigestNodes: options.searchDigestNodes,
+    diagnostics: options.diagnostics, readPhysicalFile: options.readPhysicalFile,
+    readFileAtCommit: (workspace, filePath, cached) => readMemoryFileAtCommit(store.fileRoot, workspace, filePath, cached),
+    searchDigestNodes: options.searchDigestNodes,
     settings: { timezone: 'UTC', dreamUnits: options.units ?? 5, dreamBatchBytes: options.budget ?? 40_000 },
     readable, eligible: options.eligible ?? (() => true), source: id => store.readSource(id) ?? undefined,
     reference: id => { const original = store.readSource(id); return original ? { namespace: 'canonical', sourceId: id, revision: original.version } : null },

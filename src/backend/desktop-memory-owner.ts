@@ -114,21 +114,6 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
           signal: lifetime ? AbortSignal.any([signal, lifetime]) : signal,
         })
       }
-      if (method === 'claimPrefetchBatch') {
-        if (!link.attached || adapter !== link || !data
-          || !Array.isArray(data.requestIds) || typeof data.sessionId !== 'string'
-          || !data.requestIds.every(item => typeof item === 'string')) {
-          return []
-        }
-        const requestIds = data.requestIds as string[]
-        const lifetime = foregroundSignal(data.sessionId)
-        if (lifetime?.aborted) return requestIds.map(() => ({ found: true, result: { status: 'unavailable' } }))
-        return prefetch.claimPrefetchBatch({
-          requestIds,
-          sessionId: data.sessionId,
-          signal: lifetime ? AbortSignal.any([signal, lifetime]) : signal,
-        })
-      }
       if (method !== 'adapter' || !link.attached || adapter !== link || !owner
         || typeof data?.method !== 'string' || !Array.isArray(data.args) || !data.epoch || data.epoch !== owner.epoch()) {
         throw new MemoryOwnerUnavailable()

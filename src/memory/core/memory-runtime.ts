@@ -42,7 +42,7 @@ import {
   mergeUserProfileEdit, projectProfileL2, RESIDENT_PROFILE_PATH, userWorkspaceId,
 } from './resident-profile.ts'
 import { looksSecret } from './memory-sensitive.ts'
-import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments } from './ports/documents.ts'
+import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments, MemoryPhysicalFile } from './ports/documents.ts'
 import type { Effect, Outcome } from './ports/effects.ts'
 import type { MemoryFileIndexChanges, MemoryRuntimeResources } from './ports/runtime.ts'
 import type { MemoryFileDependency, MemorySource, MemoryStore } from './ports/store.ts'
@@ -458,11 +458,56 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (result.partial || result.status === 'unavailable') return { status: 'timeout' }
     return { status: 'empty' }
   }
+  let cachedResidentProfile: {
+    id: string
+    revision: string
+    usageVersion: number
+    sources: readonly DocumentSourceRef[]
+    physical: MemoryPhysicalFile
+    text: string
+  } | null = null
   function residentProfileText(): string {
-    if (closed || !filePolicy) return ''
-    const view = filePolicy.read(userWorkspace, RESIDENT_PROFILE_PATH)
-    if (!view) return ''
-    return projectProfileL2(view.markdown, MAX_PROFILE_L2_CHARS)
+    if (closed || !filePolicy || !documents) return ''
+    const row = documents.fileRegistration(userWorkspace, RESIDENT_PROFILE_PATH)
+    if (!row || row.state !== 'active') {
+      cachedResidentProfile = null
+      return ''
+    }
+    if (cachedResidentProfile
+      && cachedResidentProfile.id === row.id
+      && cachedResidentProfile.revision === row.revision
+      && cachedResidentProfile.usageVersion === row.usageVersion
+      && documentEvidence?.refsCurrent(cachedResidentProfile.sources)) {
+      try {
+        const live = resources.readFileAtCommit(userWorkspace, RESIDENT_PROFILE_PATH, cachedResidentProfile.physical)
+        if (live && live.revision === cachedResidentProfile.revision) {
+          cachedResidentProfile.physical = live
+          return cachedResidentProfile.text
+        }
+      } catch { /* Fall through to full policy read. */ }
+    }
+    let physical: MemoryPhysicalFile | null
+    try { physical = resources.readFileAtCommit(userWorkspace, RESIDENT_PROFILE_PATH) }
+    catch { physical = null }
+    const view = filePolicy.read(userWorkspace, RESIDENT_PROFILE_PATH, () => physical)
+    if (!view) {
+      cachedResidentProfile = null
+      return ''
+    }
+    const text = projectProfileL2(view.markdown, MAX_PROFILE_L2_CHARS)
+    if (physical && view.backing) {
+      cachedResidentProfile = {
+        id: view.backing.id,
+        revision: view.revision,
+        usageVersion: view.usageVersion,
+        sources: view.sourceTokens,
+        physical,
+        text,
+      }
+    } else {
+      cachedResidentProfile = null
+    }
+    return text
   }
   function residentProfileIdentity(): MemoryManagedFileIdentity | null {
     if (closed || !documents) return null
@@ -568,7 +613,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
     store, notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics, digestNodes: fileIndex?.digestNodes,
     readFileAtCommit: resources.readFileAtCommit,
-    readFileRevisionAtCommit: resources.readFileRevisionAtCommit,
     searchDigestNodes: fileRetrieval
       ? async (workspace, query, limit, offset, signal) => {
           const batch = filePolicy?.readBatch(signal)
@@ -1096,7 +1140,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     },
     finishTurn,
     wake: () => effects.wake(),
-    close() { closed = true; clearTimeout(staleProjectionTimer); staleProjections.clear(); fileRetrieval?.close(); embedder?.close(); effects.close(); store.close() }
+    close() { closed = true; cachedResidentProfile = null; clearTimeout(staleProjectionTimer); staleProjections.clear(); fileRetrieval?.close(); embedder?.close(); effects.close(); store.close() }
   }
 }
 export type MemoryRuntime = ReturnType<typeof createMemoryRuntime>

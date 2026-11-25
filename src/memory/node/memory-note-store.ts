@@ -2,7 +2,6 @@ import type { MemoryFileIndexChanges } from '../core/ports/runtime.ts'
 import type { DailyAllocation, DailyFileRegistration } from '../core/ports/notes.ts'
 import { truncateMemoryJournal } from './sqlite.ts'
 import { documentSourceProofCurrent } from '../core/memory-source-proof.ts'
-import { MemoryPhysicalReadError } from '../core/ports/documents.ts'
 import type { MemoryPhysicalFile } from '../core/ports/documents.ts'
 import { memoryFileRevision } from './memory-file-store.ts'
 import { memorySourceWorkspace as workspaceOf, memorySourceToken as token } from './source-identity.ts'
@@ -118,21 +117,15 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       }
     },
   })
-  function read(key: string, physical?: MemoryPhysicalFile | null, options?: { throwOnPhysicalError?: boolean }): Note | undefined {
+  function read(key: string, physical?: MemoryPhysicalFile | null): Note | undefined {
     const row = rawNote(key)
     if (!row?.file_revision || !journal.visible(row.workspace, row.path)) return
     const refs = references(key)
     if (!refs.every(validRef)) return
     let file: MemoryPhysicalFile | null
     if (physical === undefined) {
-      if (options?.throwOnPhysicalError) {
-        try { file = journal.files(row.workspace).read(row.path) }
-        catch (error) { throw new MemoryPhysicalReadError('Memory note file is temporarily unavailable', { cause: error }) }
-        if (!file) throw new MemoryPhysicalReadError('Memory note file is missing')
-      } else {
-        try { file = journal.files(row.workspace).read(row.path) }
-        catch { return undefined }
-      }
+      try { file = journal.files(row.workspace).read(row.path) }
+      catch { return undefined }
     } else {
       file = physical
     }

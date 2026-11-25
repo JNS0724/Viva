@@ -267,6 +267,7 @@ export const testLevels = {
     'memory-phase2-resident-profile',
     'memory-plugin',
     'memory-recovery',
+    'memory-worker-perf',
     'model-discovery',
     'model-routes',
     'model-switch',

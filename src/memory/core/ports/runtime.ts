@@ -24,7 +24,7 @@ export interface MemoryRuntimeResources {
   effects: Effects
   openFileIndex(onCleanupPending: () => void): MemoryFileIndex
   readFileRevisionAtCommit(workspace: string, path: string): string | undefined
-  readFileAtCommit?(workspace: string, path: string): MemoryPhysicalFile | null
+  readFileAtCommit(workspace: string, path: string, cached?: MemoryPhysicalFile): MemoryPhysicalFile | null
   readPhysicalFile?: ReadMemoryPhysicalFile
   openNotes(readable: (id: string) => boolean, currentJob: (key: string, generation: number) => boolean, options?: { onCommitted(): void, index?: MemoryFileIndexChanges, deferRecovery?: boolean }): MemoryNotes
   openDocuments(readable: (id: string) => boolean, onCommitted: (receipt: DocumentReceipt) => void, policy?: { managementCurrent(before: DocumentSnapshot, guard: DocumentManagementGuard, after: DocumentSnapshot, staged?: MemorySource): boolean,
