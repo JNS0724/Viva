@@ -100,6 +100,7 @@ export interface IpcResults {
   'task:close': void
   'task:stop': void
   'task:resume': { ok: boolean, problem?: string }
+  'task:message': { taskId: string, delivered: string, sourceId?: string }
   'memory:get': { cleanupPending: number, revision: number, residentProfile: MemoryManagedFileIdentity | null, habits: { text: string, samples: number } }
   'memory:dream-status': MemoryDreamStatus
   'memory:run-dream': MemoryDreamStatus

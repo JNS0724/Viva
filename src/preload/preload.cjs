@@ -146,6 +146,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   closeTask: (taskId) => ipcRenderer.invoke('task:close', taskId),
   stopTask: (taskId) => ipcRenderer.invoke('task:stop', taskId),
   resumeTask: (taskId) => ipcRenderer.invoke('task:resume', taskId),
+  messageTask: (taskId, text) => ipcRenderer.invoke('task:message', taskId, text),
   /** What the part that would fold did to the computer ({ keep }): { files: [{ path, times }], commands }. */
   rewindEffects: (request) => ipcRenderer.invoke('timeline:rewind-effects', request),
   /** A path folded off the conversation on screen: what it holds after the shared part ({ messages }), or back onto it. */

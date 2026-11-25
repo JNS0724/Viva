@@ -241,6 +241,7 @@ export interface TaskPayloads {
   task_question: TaskStream & ConversationPayloads['question_request']
   task_question_closed: TaskStream & ConversationPayloads['question_closed']
   task_steer: TaskStream & ConversationPayloads['user_steer']
+  task_steer_retracted: TaskStream & ConversationPayloads['user_steer_retracted']
   task_end: TaskStream & ConversationPayloads['turn_end'] & { message?: string | null }
   task_question_pick: { taskId: string, questionId: string } & ConversationPayloads['question_pick']
   task_question_custom: { taskId: string, questionId: string, id: string, text: string }

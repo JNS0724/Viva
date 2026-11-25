@@ -10,17 +10,45 @@
  */
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, freezeMessage, MessageId, type ContextFormed } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { createUserMessage, freezeMessage, MessageId, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { SessionId, SessionSeq, type Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import type {} from '@deepseek-ai/dsh-tools'
 import { createSteerChannel, REASONS } from './lib/channel.ts'
 import { createReportDesk, REPORT_SOURCE, reportMessageId, type ReportAgent, type ReportMessage } from './lib/reports.ts'
+import {
+  liftProvenanceDraft,
+  type SteerMessageSource,
+  type VivaProvenanceHeader,
+} from '../../src/shared/request-routing/provenance.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     /** A background task's result the app steered in (lib/reports.ts), named by its report. */
     'viva-report': { kind: 'viva-report', reportId: string, token: string } & ContextFormed
+    'viva-main-human-steer': Extract<SteerMessageSource, { kind: 'viva-main-human-steer' }>
+    'viva-task-human-steer': Extract<SteerMessageSource, { kind: 'viva-task-human-steer' }>
+    'viva-task-router-message': Extract<SteerMessageSource, { kind: 'viva-task-router-message' }>
+    'viva-user-provenance': { kind: 'user', vivaProvenance: VivaProvenanceHeader }
+    'viva-report-batch': { kind: 'viva-report-batch', vivaProvenance: VivaProvenanceHeader }
+    'viva-unattended': { kind: 'viva-unattended', vivaProvenance: VivaProvenanceHeader }
+    'viva-task-brief': { kind: 'viva-task-brief', vivaProvenance: VivaProvenanceHeader }
   }
+}
+
+/**
+ * Unwrap a leading Viva transport provenance header (`【Viva 元数据：...】\n`) out of `UserMessage.content`
+ * into `UserMessage.source`, preserving original `message.id` and returning `freezeMessage(...)`.
+ * Strictly idempotent via `'vivaProvenance' in message.source` and `source.kind === 'user'` guard.
+ */
+export function liftProvenance(message: UserMessage): UserMessage {
+  const lifted = liftProvenanceDraft(message.content, message.source as Readonly<Record<string, unknown>>)
+  if (!lifted) return message
+  return freezeMessage({
+    ...message,
+    content: lifted.content,
+    source: lifted.source as UserMessage['source'],
+  })
 }
 
 export const name = 'viva-steer'
@@ -29,18 +57,81 @@ export const Config = z.object({})
 
 const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
 
+/**
+ * Whether the current open turn (events since `openTurnStartSeq`) contains a human
+ * `source.kind === 'user'` message. Uses O(1) `session.eventAt(seq)` indexed reads bounded by
+ * `turnBoundaryOf(session).openTurnStartSeq` so ordinary human `web_search` calls never copy the
+ * full session log snapshot.
+ */
+function currentTurnHasUserPrompt(session: Session, openTurnStartSeq: number | undefined): boolean {
+  const end = Number(session.seq)
+  const start = openTurnStartSeq ?? 0
+  for (let seq = end - 1; seq >= start; seq--) {
+    const event = session.eventAt(SessionSeq(seq))
+    if (!event) continue
+    if (event.type === 'turn/start') return false
+    if (event.type === 'user/message' && event.data.source.kind === 'user') return true
+  }
+  return false
+}
+
 /** @param port the channel to the app (tests pass their own) */
 export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') {
     log('dsh was not started by the app: nothing to steer from')
     return
   }
+
+  // Unwrap Viva transport provenance headers before commit and LLM send (docs/memory-runtime-decoupling.md §5.4).
+  // Deliberately registered WITHOUT `{ prepend: true }` to respect Cordis waterfall onion ordering,
+  // and ONLY when launched by the Viva host (`typeof port.send === 'function'`).
+  ctx.on('agent/pre-step', async (_payload, next) => {
+    const decision = await next()
+    if (decision.kind === 'reject' || decision.messages.length === 0) return decision
+    let changed = false
+    const messages = decision.messages.map(msg => {
+      const lifted = liftProvenance(msg)
+      if (lifted !== msg) changed = true
+      return lifted
+    })
+    return changed ? { ...decision, messages } : decision
+  })
+
+  // Guard `web_search` on non-human turns (`viva-task-brief`, `viva-report-batch`, `viva-unattended`):
+  // keep `session.requestContext()` intact for DeepSeek billing while hiding prior-turn human prompts
+  // from `dsh-web-deepseek-api`'s `latestUserQuestion` scan so unrelated earlier messages are never
+  // leaked as `ori_question`.
+  ctx.inject(['tools'], scoped => {
+    scoped.on('tools/execute', (execution, next) => {
+      if (execution.name !== 'web_search') return next()
+      const initiator = ctx.agents.currentInitiator()
+      if (!initiator) return next()
+      const boundary = ctx.agents.turnBoundaryOf(initiator.session)
+      const turnStartSeq = boundary?.openTurnStartSeq !== undefined ? Number(boundary.openTurnStartSeq) : undefined
+      if (currentTurnHasUserPrompt(initiator.session, turnStartSeq)) return next()
+      const maskedSession = new Proxy(initiator.session, {
+        get(target, prop) {
+          if (prop === 'deriveMessages') return () => []
+          const value = Reflect.get(target, prop, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+      const maskedAgent = new Proxy(initiator, {
+        get(target, prop) {
+          if (prop === 'session') return maskedSession
+          const value = Reflect.get(target, prop, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+      return ctx.agents.withInitiator(maskedAgent, () => next())
+    })
+  })
   /** Only a running turn takes steering; an idle agent would start a turn of its own, outside the app's prompt. */
-  function steer(sessionId: string, text: string) {
+  function steer(sessionId: string, text: string, source?: SteerMessageSource) {
     const agent = ctx.agents.get(SessionId(sessionId))
     if (!agent) return REASONS.missing
     if (agent.status !== 'running') return REASONS.idle
-    agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+    agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: source ?? { kind: 'user' } }))
     return null
   }
   /** The main conversation's agent, as lib/reports.ts reads it. */

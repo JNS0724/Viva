@@ -42,17 +42,50 @@ export async function startFakeMemoryOwner() {
   await connection.start()
   process.channel?.unref()
   process.once('beforeExit', () => { lifetime.abort(); relay.close(); unsubscribe(); void owner.close() })
-  let ordinal = Date.now()
+  let ordinal = 0
+  const seqBySession = new Map<string, number>()
+  const pendingByTurn = new Map<string, { sourceId: string, text: string, at: number }>()
   return {
     async receive(sessionId: string, text: string) {
       const turn = ++ordinal
-      const receipt = await owner.receiveSource({ sessionId, messageId: randomUUID(), text, at: Date.now(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, turn, cwd: process.cwd() })
-      return { turn, sourceIds: receipt.handledIntent ? [] : [receipt.sourceId] }
+      const sourceId = randomUUID()
+      const at = Date.now()
+      pendingByTurn.set(`${sessionId}:${turn}`, { sourceId, text, at })
+      await owner.stageOpenTurnSources({
+        sessionId,
+        turn,
+        sessionKind: 'main',
+        conversation: sessionId,
+        cwd: process.cwd(),
+        sources: [{ sourceId, author: 'user', sourceKind: 'main-human', profileEligible: true, text, conversation: sessionId, at, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }],
+      })
+      return { turn, sourceIds: [sourceId] }
     },
-    async complete(sessionId: string, turn: number, sourceIds: readonly string[], completed: boolean) {
-      await owner.completeTurn({ sessionId, turn, sourceIds, assistant: '', completed, eventSeq: ++ordinal,
-        at: Date.now(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
+    async complete(sessionId: string, turn: number, _sourceIds: readonly string[], completed: boolean) {
+      const key = `${sessionId}:${turn}`
+      const saved = pendingByTurn.get(key)
+      pendingByTurn.delete(key)
+      const prev = seqBySession.get(sessionId) ?? null
+      const fromSeq = prev ?? 0
+      const toSeq = fromSeq + 3
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+      await owner.settleTurn({
+        sessionId,
+        cwd: process.cwd(),
+        sessionKind: 'main',
+        conversation: sessionId,
+        inheritedSeq: 0,
+        expectedNextSeq: prev,
+        fromSeq,
+        toSeq,
+        turn,
+        reasonKind: completed ? 'completed' : 'aborted',
+        sources: saved ? [{ sourceId: saved.sourceId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: saved.text, conversation: sessionId, at: saved.at, timezone: tz }] : [],
+        assistantText: '',
+        at: Date.now(),
+        timezone: tz,
+      })
+      seqBySession.set(sessionId, toSeq)
     },
   }
 }

@@ -284,6 +284,7 @@ export const testLevels = {
   critical: [
     'memory-owner-lock',
     'memory-phase3-decoupling',
+    'memory-phase4a-sot',
     'app-plugins',
     'backend-keeper',
     'backend-wire',

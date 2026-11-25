@@ -276,7 +276,10 @@ test('two-section user correction protects appended items across Dream REFINES, 
 
   const session = randomUUID()
   const src1 = randomUUID()
-  await owner.receiveSource({ sessionId: session, messageId: src1, text: '我习惯先看结论', at: TODAY_MS, timezone: 'UTC', turn: 1, cwd: null })
+  owner.stageOpenTurnSources({
+    sessionId: session, turn: 1, sessionKind: 'main', cwd: null,
+    sources: [{ sourceId: src1, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '我习惯先看结论', at: TODAY_MS, timezone: 'UTC' }],
+  })
   const srcRow = store.readSource(src1)!
   const userWs = memorySourceWorkspace(srcRow)
   const created = documents.commit({
@@ -956,7 +959,10 @@ test('real Dream-generated resident profile with 64-hex daily note provenance li
 
   const session = randomUUID()
   const src1 = randomUUID()
-  await owner.receiveSource({ sessionId: session, messageId: src1, text: '我习惯先看结论', at: TODAY_MS, timezone: 'UTC', turn: 1, cwd: null })
+  owner.stageOpenTurnSources({
+    sessionId: session, turn: 1, sessionKind: 'main', cwd: null,
+    sources: [{ sourceId: src1, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '我习惯先看结论', at: TODAY_MS, timezone: 'UTC' }],
+  })
   const srcRow = store.readSource(src1)!
   const userWs = memorySourceWorkspace(srcRow)
   const noteKey = notes.add(session, '2026-11-16', [srcRow], '好的', src1)!
@@ -1025,6 +1031,8 @@ test('pre-deletion question answered after profile deletion hides pre-deletion q
     conversation: 'conv-q', session: 'sess-q',
     scope: { kind: 'user' as const }, context: { kind: 'user' as const }, project: null,
     author: 'answer' as const,
+    sourceKind: 'question-answer' as const,
+    profileEligible: true,
     text: '是的，以后都用英文',
     hash: memoryHash('是的，以后都用英文'),
     length: 9,
@@ -1328,7 +1336,10 @@ test('profile_deleted_at watermark stays monotonic across system clock rollback 
 
   const session = randomUUID()
   const src1 = randomUUID()
-  await owner.receiveSource({ sessionId: session, messageId: src1, text: '初版偏好', at: TODAY_MS + 1_000, timezone: 'UTC', turn: 1, cwd: null })
+  owner.stageOpenTurnSources({
+    sessionId: session, turn: 1, sessionKind: 'main', cwd: null,
+    sources: [{ sourceId: src1, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '初版偏好', at: TODAY_MS + 1_000, timezone: 'UTC' }],
+  })
   const srcRow1 = store.readSource(src1)!
   const ws = memorySourceWorkspace(srcRow1)
   const first = documents.commit({
@@ -1345,7 +1356,10 @@ test('profile_deleted_at watermark stays monotonic across system clock rollback 
 
   // Recreate with post-delete source at t = TODAY_MS + 12_000
   const src2 = randomUUID()
-  await owner.receiveSource({ sessionId: session, messageId: src2, text: '重建偏好', at: TODAY_MS + 12_000, timezone: 'UTC', turn: 2, cwd: null })
+  owner.stageOpenTurnSources({
+    sessionId: session, turn: 2, sessionKind: 'main', cwd: null,
+    sources: [{ sourceId: src2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '重建偏好', at: TODAY_MS + 12_000, timezone: 'UTC' }],
+  })
   const srcRow2 = store.readSource(src2)!
   const second = documents.commit({
     operationId: randomUUID(), workspace: ws, path: RESIDENT_PROFILE_PATH,
@@ -1484,7 +1498,10 @@ test('pre-deletion question with clock rollback is blocked by profile_deletion_g
 
   // Seed & delete profile #1 after rolling clock BACKWARDS relative to question's askedAt!
   const src1 = randomUUID()
-  await owner.receiveSource({ sessionId: session, messageId: src1, text: '初始画像来源', at: TODAY_MS, timezone: 'UTC', turn: 1, cwd: null })
+  owner.stageOpenTurnSources({
+    sessionId: session, turn: 1, sessionKind: 'main', cwd: null,
+    sources: [{ sourceId: src1, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '初始画像来源', at: TODAY_MS, timezone: 'UTC' }],
+  })
   const srcRow1 = store.readSource(src1)!
   const ws = memorySourceWorkspace(srcRow1)
   const documents = openMemoryDocuments({

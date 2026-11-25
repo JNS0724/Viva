@@ -115,7 +115,8 @@ const unique = <T>(values: readonly T[]) => [...new Set(values)]
 const parse = (text: string) => JSON.parse(text) as unknown
 const isModelTimeout = (error: unknown) => error instanceof MemoryComputeError && error.reason === 'timeout'
 const isPureUserSource = (item: MemorySource) =>
-  item.scope.kind === 'user' && item.context?.kind === 'user' && (item.project ?? null) === null
+  item.profileEligible === true && item.scope.kind === 'user' && (item.project ?? null) === null
+  && (item.author === 'user' || item.author === 'answer')
 const STALE_COMMIT_ERRORS = new Set([
   'memory-document-version',
   'memory-document-source-version',

@@ -49,7 +49,7 @@ export async function failureDiagnostics(session: SmokeApplication | null, profi
       try {
         db.exec('PRAGMA busy_timeout = 1000')
         const present = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => String(row.name)))
-        const tables = ['memory_sources', 'memory_documents', 'memory_note_turns', 'owner_operations', 'owner_host_effects',
+        const tables = ['memory_sources', 'memory_documents', 'memory_note_ranges', 'owner_intake_cursors', 'owner_open_turn_sources', 'owner_operations', 'owner_host_effects',
           'owner_file_host_receipts', 'owner_file_native_erasures', 'owner_native_original_completed', 'owner_native_cleanup_receipts']
         const tableCounts = Object.fromEntries(tables.filter(table => present.has(table)).map(table =>
           [table, Number(db.prepare(`SELECT count(*) AS count FROM ${table}`).get()?.count)]))

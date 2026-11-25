@@ -1,6 +1,6 @@
 import type { ConversationHandlers, AskedQuestion } from './conversation-types.ts'
 import { answerText, type QuestionAnswer } from '../shared/question-answer.ts'
-import { closeStreams } from './streams.ts'
+import { closeStreams, nextMessageSeq } from './streams.ts'
 
 /**
  * A question the agent asked mid-turn (ask_user_question, through the app's questions plugin). While it
@@ -62,7 +62,7 @@ export const QUESTION_ACTIONS = {
     const parts = sourceIds && Object.keys(sourceIds).length ? questions.map(question => ({
       text: answerText([question], answers), asked: question.question, sourceId: Object.hasOwn(sourceIds, question.id) ? sourceIds[question.id] : undefined,
     })) : [{ text, asked: askedText(questions), sourceId }]
-    const base = (state.historyOffset ?? 0) + state.messages.length
+    const base = nextMessageSeq(state.messages, state.historyOffset ?? 0)
     const replies = inHistory ? [] : parts.map((part, index) => ({ id: `m${base + index}`, role: 'user', text: part.text, asked: part.asked,
       ...(part.sourceId ? { sourceId: part.sourceId } : {}), open: false, receipt: null }))
     const entry = { kind: 'answer' as const, ref: questionId, at, title: text, answered: true }

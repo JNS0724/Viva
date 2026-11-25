@@ -146,8 +146,12 @@ test('dream model waits, repeated retry and persisted recovery never become a de
   await owner.recover()
   const source = { sessionId: randomUUID(), messageId: randomUUID(), text: 'The weekly report is due Friday.',
     at: Date.now(), timezone: 'UTC', turn: 1, cwd: null }
-  const receipt = await owner.receiveSource(source)
-  await owner.completeTurn({ sessionId: source.sessionId, turn: 1, eventSeq: 3, sourceIds: [receipt.sourceId], assistant: 'Noted.', completed: true, at: source.at, timezone: 'UTC' })
+  await owner.settleTurn({
+    sessionId: source.sessionId, cwd: null, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 4, turn: 1, reasonKind: 'completed',
+    sources: [{ sourceId: source.messageId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: source.text, at: source.at, timezone: 'UTC' }],
+    assistantText: 'Noted.', at: source.at, timezone: 'UTC',
+  })
   await owner.runtime.wake()
   t.diagnostic('daily note committed')
   const channel = createRemoteMemoryChannel({ send(raw) {

@@ -15,28 +15,84 @@ import type { DocumentSourceRef } from '../core/ports/documents.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { looksSecret } from '../core/memory-sensitive.ts'
 import { parseHostMemoryCommand } from '../contracts/host.ts'
-import type { MemorySourceAlias, HostMemoryCommand, MemoryOwnerContextUsed, MemoryProject } from '../contracts/host.ts'
+import type { HostMemoryCommand, MemoryOwnerContextUsed, MemoryProject } from '../contracts/host.ts'
 import type { MemoryOperationOutcome } from '../contracts/service.ts'
 import type { MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
 import { memoryFileCreateRequest, memoryFileForgetRequest } from '../contracts/file-management.ts'
 import { parseMemoryDomainErrorDetails, type MemoryDomainErrorCode } from '../contracts/domain-error.ts'
-import type { AutomaticRecallResult, MemoryScope } from '../contracts/memory-contract.ts'
-import type { TextSpan } from '../contracts/text-spans.ts'
+import type { MemoryScope } from '../contracts/memory-contract.ts'
+import type { MemorySessionKind as SessionKind, MemorySource, MemorySourceKind } from '../contracts/records.ts'
 
-// Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
-export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
-  turn: number, live?: boolean, derived?: boolean, cwd?: string | null, task?: boolean, deferMissingAlias?: boolean }
-export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number, sourceIds: readonly string[],
-  assistant: string, completed: boolean, at: number, timezone: string }
-type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route'> & {
+export type TurnSourceCandidate = {
+  sourceId: string
+  author: 'user' | 'answer' | 'agent' | 'assistant'
+  sourceKind: MemorySourceKind
+  profileEligible: boolean
+  text: string
+  conversation?: string | null
+  at: number
+  timezone: string
+}
+
+export type AdvanceIntakeCursorInput = {
+  sessionId: string
+  expectedNextSeq: number | null
+  nextSeq: number
+  inheritedSeq?: number
+  sessionKind?: SessionKind
+  conversation?: string | null
+  cwd?: string | null
+}
+
+export type BeginTurnInput = {
+  sessionId: string
+  turn: number
+  sessionKind?: SessionKind
+  conversation?: string | null
+  cwd?: string | null
+}
+
+export type StageOpenTurnInput = {
+  sessionId: string
+  turn: number
+  sessionKind: SessionKind
+  conversation?: string | null
+  cwd?: string | null
+  sources: readonly TurnSourceCandidate[]
+}
+
+export type SettleTurnInput = {
+  sessionId: string
+  cwd?: string | null
+  sessionKind: SessionKind
+  conversation?: string | null
+  inheritedSeq: number
+  expectedNextSeq: number | null
+  fromSeq: number
+  toSeq: number
+  turn: number
+  reasonKind: string
+  sources: readonly TurnSourceCandidate[]
+  assistantText: string
+  at: number
+  timezone: string
+  flushNotes?: boolean
+}
+
+export type CursorResult = { status: 'ok' | 'duplicate' | 'cas_mismatch' | 'scope_unavailable', nextSeq: number }
+
+type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'readSessionRange'> & {
   diagnostics?: DiagnosticPort
   now?: () => number
-  root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], embedding?: { modelRoot: string, runtimeRoot?: string },
-  onChange?: NodeMemoryRuntimeOptions['changed'],
-  onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void,
+  root: string
+  hostNamespace?: string
+  dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes']
+  embedding?: { modelRoot: string, runtimeRoot?: string }
+  onChange?: NodeMemoryRuntimeOptions['changed']
+  onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void
 }
-type StoredAlias = Omit<MemorySourceAlias, 'text' | 'wireText' | 'wireSpans' | 'cwd'> & { textHash: string, spans: TextSpan[] }
-type Session = { conversation: string, context: string | null, project: string | null }
+type SessionRow = { conversation: string, context: string | null, project: string | null }
+type CursorRow = { session: string, next_seq: number, inherited_seq: number, session_kind: string, conversation: string | null, created_at: number, updated_at: number }
 type Operation = { id: string, fingerprint: string, state: MemoryOperationOutcome['state'], payload: string | null }
 
 /** Protocol operations only. This classification has no role in facts, conflicts or admission. */
@@ -46,7 +102,6 @@ function hostDiagnosticOperation(method: HostMemoryCommand['method']): Diagnosti
     case 'createFile': case 'editFile': case 'setFileEnabled': case 'getOperation': return 'memory.write'
     case 'undoFile': return 'memory.undo'
     case 'rebuildIndexes': return 'memory.index'
-    case 'sourceAlias': return 'memory.intake'
   }
 }
 
@@ -61,6 +116,7 @@ export function openMemoryOwner(options: Options) {
 function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>, store: ReturnType<typeof openMemoryStore>) {
   const diagnostics = guardDiagnosticPort(options.diagnostics)
   const db = store.db
+  const now = options.now ?? Date.now
   const boundHost = store.meta('owner.host')
   if (boundHost && boundHost !== options.hostNamespace) throw Object.assign(new Error('Memory root belongs to a different host binding'), { code: 'denied' })
   if (options.hostNamespace && !boundHost) store.setMeta('owner.host', options.hostNamespace)
@@ -69,37 +125,62 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE TABLE IF NOT EXISTS owner_active_turns(session TEXT PRIMARY KEY,turn TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_answer_sources(session TEXT NOT NULL,turn TEXT NOT NULL,source TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS owner_sessions(session TEXT PRIMARY KEY,conversation TEXT NOT NULL,context TEXT,project TEXT);
-    CREATE TABLE IF NOT EXISTS owner_aliases(
-      id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,session TEXT NOT NULL,wire_hash TEXT NOT NULL,payload TEXT NOT NULL,source TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS owner_alias_wire ON owner_aliases(session,wire_hash);
-    CREATE TABLE IF NOT EXISTS owner_messages(
-      id TEXT PRIMARY KEY,session TEXT NOT NULL,source TEXT NOT NULL,hash TEXT NOT NULL,kind TEXT NOT NULL,project TEXT,spans TEXT);
-    CREATE INDEX IF NOT EXISTS owner_messages_session_hash ON owner_messages(session,hash);
-    CREATE TABLE IF NOT EXISTS owner_turns(session TEXT NOT NULL,turn INTEGER NOT NULL,seq INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(session,turn));
+    CREATE TABLE IF NOT EXISTS owner_intake_cursors(
+      session TEXT PRIMARY KEY,
+      next_seq INTEGER NOT NULL,
+      inherited_seq INTEGER NOT NULL DEFAULT 0,
+      session_kind TEXT NOT NULL DEFAULT 'main',
+      conversation TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS owner_open_turn_sources(
+      session TEXT NOT NULL,
+      turn INTEGER NOT NULL,
+      source_id TEXT NOT NULL,
+      PRIMARY KEY(session, turn, source_id)
+    );
     CREATE TABLE IF NOT EXISTS owner_operations(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,state TEXT NOT NULL,payload TEXT);
-    CREATE TABLE IF NOT EXISTS owner_skip_assistant(session TEXT NOT NULL,turn INTEGER NOT NULL,PRIMARY KEY(session,turn));
-    CREATE TABLE IF NOT EXISTS owner_turn_sources(session TEXT NOT NULL,turn INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(session,turn,source));
   `)
   const epoch = randomUUID()
   let state: 'recovering' | 'ready' | 'unavailable' = 'recovering'
   let closed = false
   let replayingWrites = false
-  const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route, diagnostics: options.diagnostics,
+  const runtime = createMemoryRuntime({
+    store,
+    compute: options.compute,
+    route: options.route,
+    readSessionRange: options.readSessionRange
+      ? (input, signal) => {
+          const row = db.prepare('SELECT session_kind FROM owner_intake_cursors WHERE session=?').get(input.sessionId) as { session_kind?: string } | undefined
+          const cursorKind = row?.session_kind === 'main' || row?.session_kind === 'task' || row?.session_kind === 'unattended'
+            ? row.session_kind as SessionKind : undefined
+          return options.readSessionRange!({ ...input, ...(cursorKind ? { sessionKind: cursorKind } : {}) }, signal)
+        }
+      : undefined,
+    diagnostics: options.diagnostics,
     ...(options.now ? { now: options.now } : {}),
     dailyNotes: options.dailyNotes ?? true,
     ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding) } : {}),
     changed: change => { options.onChange?.(change) },
-    injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
-      conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
+    injected: (session, turn, pushed) => options.onContextUsed?.({
+      session, turn, pushed, revision: store.revision(),
+      conversation: sessionContext(session).conversation ?? null, at: Date.now(),
+    }),
     canCommit: source => state === 'ready' && (!source.session || !db.prepare('SELECT 1 FROM owner_active_turns WHERE session=?').get(source.session)),
   })
+
   function sessionContext(session: string) {
-    const saved = db.prepare('SELECT * FROM owner_sessions WHERE session=?').get(session) as Session | undefined
+    const saved = db.prepare('SELECT * FROM owner_sessions WHERE session=?').get(session) as SessionRow | undefined
     const project = saved?.project
     const turn = db.prepare('SELECT turn FROM owner_active_turns WHERE session=?').get(session)?.turn as string | undefined
-    return { conversation: saved?.conversation ?? session, session, ...(turn ? { foregroundTurn: turn } : {}),
+    return {
+      conversation: saved?.conversation ?? session,
+      session,
+      ...(turn ? { foregroundTurn: turn } : {}),
       ...(saved?.context ? { context: JSON.parse(saved.context) as MemoryScope } : {}),
-      ...(project ? { project: { kind: 'project' as const, id: project } } : {}) }
+      ...(project ? { project: { kind: 'project' as const, id: project } } : {}),
+    }
   }
   function resolveIntakeScope(cwd?: string | null): MemoryProjectResolution {
     return options.hostNamespace === 'viva' ? { status: 'user' } : resolveMemoryProject(cwd)
@@ -109,20 +190,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const current = sessionContext(session)
     return !current.context || current.project?.id === (scope.status === 'project' ? scope.project.id : undefined)
   }
-  function bindSession(session: string, scope: Exclude<MemoryProjectResolution, { status: 'unknown' }>, task: boolean, conversation?: string) {
+  function bindSession(session: string, scope: Exclude<MemoryProjectResolution, { status: 'unknown' }>, conversation?: string | null) {
     const existing = sessionContext(session)
     const project = scope.status === 'project' ? scope.project : undefined
-    const context: MemoryScope = task || existing.context?.kind === 'task' ? { kind: 'task', id: session } : project ?? { kind: 'user' }
+    // Global userWorkspace for Viva main & background-task sessions (§5.4 item 4); project isolation for standalone DSH.
+    const context: MemoryScope = project ?? { kind: 'user' }
+    const effectiveConversation = conversation && conversation.length > 0 ? conversation : existing.conversation
     db.prepare(`INSERT INTO owner_sessions VALUES (?,?,?,?) ON CONFLICT(session) DO UPDATE
       SET conversation=excluded.conversation,context=excluded.context,project=excluded.project`)
-      .run(session, conversation ?? existing.conversation, JSON.stringify(context), project?.id ?? null)
+      .run(session, effectiveConversation, JSON.stringify(context), project?.id ?? null)
     return { ...sessionContext(session), project, context }
   }
-  function bindIntakeSession(session: string, cwd?: string | null, task = false) {
+  function bindIntakeSession(session: string, cwd?: string | null) {
     requireReady()
     const scope = resolveIntakeScope(cwd)
     if (scope.status === 'unknown' || !scopeMatches(session, scope)) throw new Error('Memory project is unavailable')
-    bindSession(session, scope, task)
+    bindSession(session, scope)
   }
   function requireReady() { if (state !== 'ready') throw new Error('Memory owner is unavailable') }
 
@@ -131,189 +214,250 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const receipt = item.payload ? JSON.parse(item.payload) as { result?: MemoryFileMutationResult } : null
     const cleaned = item.state === 'completed' && (receipt?.result?.action === 'FORGET'
       ? !runtime.deletedFileCleanupPending(receipt.result.identity) : true)
-    return { operationId: item.id, state: item.state, revision: store.revision(),
-      cleanup: cleaned ? 'complete' : 'pending' }
+    return { operationId: item.id, state: item.state, revision: store.revision(), cleanup: cleaned ? 'complete' : 'pending' }
   }
 
-  function originalFromWire(wire: string, spans: readonly TextSpan[]) {
-    let position = 0
-    return spans.map(({ start, end }) => {
-      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < position || start >= end || end > wire.length) {
-        throw new Error('Source alias does not identify a verbatim wire span')
-      }
-      position = end
-      return wire.slice(start, end)
-    }).join('')
-  }
-  function inferUniqueWireSpan(wire: string, text: string): TextSpan[] {
-    if (!text) return []
-    const start = wire.indexOf(text)
-    if (start < 0 || wire.indexOf(text, start + 1) !== -1) throw new Error('Source alias does not identify a unique verbatim wire span')
-    return [{ start, end: start + text.length }]
-  }
-  function verifiedWireSpans(wire: string, text: string, supplied?: TextSpan[]) {
-    const spans = supplied ?? inferUniqueWireSpan(wire, text)
-    if (originalFromWire(wire, spans) !== text) throw new Error('Source alias wire spans do not prove the canonical original')
-    return spans
-  }
-  function storeAlias(input: MemorySourceAlias): StoredAlias {
-    const { text, wireText, wireSpans, cwd: _cwd, ...metadata } = input
-    return { ...metadata, textHash: hash(text), spans: verifiedWireSpans(wireText, text, wireSpans) }
-  }
-  function restoreAlias(saved: StoredAlias, wireText: string): MemorySourceAlias & { wireSpans: TextSpan[] } {
-    const { textHash, spans, ...metadata } = saved
-    const text = originalFromWire(wireText, spans)
-    if (hash(text) !== textHash) throw new Error('Source alias wire spans changed')
-    return { ...metadata, text, wireText, wireSpans: spans }
-  }
-  function aliasForWire(session: string, wireHash: string, project?: MemoryProject) {
-    const matching = db.prepare('SELECT payload FROM owner_aliases WHERE session=? AND wire_hash=? ORDER BY rowid')
-      .all(session, wireHash).map(row => JSON.parse(String(row.payload)) as StoredAlias).filter(alias => alias.project?.id === project?.id)
-    const first = matching[0]
-    return first && matching.every(alias => alias.sourceId === first.sourceId || alias.origin === 'derived' && first.origin === 'derived') ? first : undefined
-  }
-
-  function intakeQuery(session: string, project: MemoryProject | undefined, messages: readonly { id: string, text: string }[]) {
-    return messages.flatMap(({ id, text }) => {
-      const wireHash = hash(text)
-      const known = db.prepare('SELECT source,kind,project,spans FROM owner_messages WHERE session=? AND id=? AND hash=?').get(session, id, wireHash)
-      if (known) {
-        if (known.project !== (project?.id ?? null)) return []
-        if (known.kind === 'derived' && typeof known.spans === 'string') return [originalFromWire(text, JSON.parse(known.spans) as TextSpan[])]
-        const source = known.kind === 'original' && store.readSource(String(known.source))
-        return source && source.text ? [source.text] : []
-      }
-      const saved = aliasForWire(session, wireHash, project)
-      if (saved) return [restoreAlias(saved, text).text]
-      return options.hostNamespace ? [] : [text]
-    }).filter(Boolean).join('\n').slice(0, 20_000)
-  }
-
-  function alias(input: MemorySourceAlias, assertCurrent: () => void) {
+  function intakeCursor(session: string) {
     requireReady()
-    const resolved = resolveIntakeScope(input.cwd)
-    if (resolved.status === 'unknown' || !scopeMatches(input.session, resolved)) throw new Error('Memory project is unavailable')
-    const project = resolved.status === 'project' ? resolved.project : undefined
-    const context = input.context?.kind === 'task' ? input.context : project ?? { kind: 'user' as const }
-    const normalized = { ...input, project, context }
-    const saved = storeAlias(normalized)
-    const fingerprint = hash(normalized)
-    const source = store.readSource(input.sourceId)
-    if (source && (source.conversation !== input.conversation || source.hash !== null && source.hash !== memoryHash(input.text)
-      || (source.project?.kind === 'project' ? source.project.id : undefined) !== project?.id)) throw new MemoryDomainError('operation.conflict')
-    const wireHash = hash(input.wireText)
-    let terminalStatus: 'ignored' | undefined
-    store.tx(() => {
-      assertCurrent()
-      const old = db.prepare('SELECT fingerprint FROM owner_aliases WHERE id=?').get(input.operationId)
-      if (old && old.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
-      bindSession(input.session, resolved, context.kind === 'task', input.conversation)
-      // Indexed check (owner_messages_session_hash): avoid re-inserting an orphan alias row
-      // if this wire message was already consumed or finalized as ignored after grace expiry.
-      const finalized = db.prepare("SELECT source, kind FROM owner_messages WHERE session=? AND hash=? AND (source=? OR kind='ignored')")
-        .get(input.session, wireHash, input.sourceId) as { source: string, kind: string } | undefined
-      if (finalized) {
-        if (finalized.kind === 'ignored') terminalStatus = 'ignored'
-        return
-      }
-      db.prepare('INSERT OR IGNORE INTO owner_aliases VALUES (?,?,?,?,?,?)')
-        .run(input.operationId, fingerprint, input.session, wireHash, JSON.stringify(saved), input.sourceId)
-    })
-    return terminalStatus ? { sourceId: input.sourceId, status: terminalStatus } : { sourceId: input.sourceId }
+    const row = db.prepare('SELECT * FROM owner_intake_cursors WHERE session=?').get(session) as CursorRow | undefined
+    return {
+      createdAt: Number(store.meta('created_at')),
+      nextSeq: row ? Number(row.next_seq) : null,
+      inheritedSeq: row ? Number(row.inherited_seq) : 0,
+      sessionKind: (row?.session_kind ?? 'main') as SessionKind,
+      conversation: row?.conversation ?? null,
+    }
   }
 
-  /** Native log events may be delivered again after a crash. Keep their identity and original scope. */
-  function receiveSource(input: ReceivedSource) {
+  function advanceIntakeCursor(input: AdvanceIntakeCursorInput): CursorResult {
     requireReady()
-    const { sessionId: session, messageId: message, text } = input
-    const resolved = resolveIntakeScope(input.cwd)
+    const { sessionId: session, expectedNextSeq, nextSeq, inheritedSeq = 0, sessionKind = 'main', conversation = null, cwd } = input
+    if (!Number.isSafeInteger(nextSeq) || nextSeq < 0) throw new Error('Invalid intake cursor offset')
     return store.tx(() => {
-      if (input.turn > 0 && input.live !== false && !db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND turn=?').get(session, input.turn)) {
-        db.prepare('INSERT INTO owner_active_turns VALUES (?,?) ON CONFLICT(session) DO UPDATE SET turn=excluded.turn').run(session, String(input.turn))
-      }
-      const wireHash = hash(text)
-      const project = resolved.status === 'project' ? resolved.project : undefined
-      const known = db.prepare('SELECT session,source,hash,kind,project FROM owner_messages WHERE id=?').get(message)
-      if (known && (known.session !== session || known.hash !== wireHash)) throw new Error('Native original identity conflicts')
-      const scoped = scopeMatches(session, resolved)
-      const saved = !known && scoped ? aliasForWire(session, wireHash, project) : undefined
-      const mapped = saved ? restoreAlias(saved, text) : undefined
-      const sourceId = known ? String(known.source) : mapped?.sourceId ?? message
-      const ignored = !scoped || Boolean(options.hostNamespace && !mapped)
-      const kind = known?.kind ?? (ignored ? 'ignored' : mapped?.origin === 'derived' || input.derived ? 'derived' : 'original')
-      // The durable session replay gets a second chance to match an authenticated host mapping.
-      if ((input.live === true || input.deferMissingAlias === true) && !known && scoped && options.hostNamespace && !mapped) {
-        return { sourceId, text: '', handledIntent: true, ...(input.deferMissingAlias ? { awaitingAlias: true } : {}) }
-      }
-      if ((!scoped || kind !== 'original') && input.turn > 0) {
-        db.prepare('INSERT OR IGNORE INTO owner_skip_assistant VALUES (?,?)').run(session, input.turn)
-      }
-      if (!known) {
-        if (kind === 'original' && resolved.status !== 'unknown') {
-          const origin = bindSession(session, resolved, input.task === true || mapped?.context?.kind === 'task', mapped?.conversation)
-          const words = mapped?.text ?? text
-          const existing = store.readSource(sourceId)
-          if (existing && (existing.conversation !== origin.conversation || existing.hash !== null && existing.hash !== memoryHash(words)
-            || (existing.project?.kind === 'project' ? existing.project.id : undefined) !== origin.project?.id)) throw new MemoryDomainError('operation.conflict')
-          if (!existing && words.trim()) runtime.accept(words, origin, sourceId, undefined, { deferAutomatic: true, at: input.at, timezone: input.timezone })
+      const existing = db.prepare('SELECT * FROM owner_intake_cursors WHERE session=?').get(session) as CursorRow | undefined
+      if (existing) {
+        if (expectedNextSeq !== existing.next_seq) {
+          return { status: nextSeq <= existing.next_seq ? 'duplicate' as const : 'cas_mismatch' as const, nextSeq: existing.next_seq }
         }
-        const spans = kind === 'derived' ? mapped?.wireSpans ?? inferUniqueWireSpan(text, text) : undefined
-        db.prepare('INSERT INTO owner_messages VALUES (?,?,?,?,?,?,?)')
-          .run(message, session, sourceId, wireHash, String(kind), project?.id ?? null, spans ? JSON.stringify(spans) : null)
-        if (saved) db.prepare('DELETE FROM owner_aliases WHERE id=?').run(saved.operationId)
+        if (nextSeq < existing.next_seq) return { status: 'duplicate' as const, nextSeq: existing.next_seq }
+      } else {
+        if (expectedNextSeq !== null) {
+          return { status: 'cas_mismatch' as const, nextSeq: 0 }
+        }
       }
-      const source = kind === 'original' && scoped && (!known || known.project === (project?.id ?? null))
-        ? store.readSource(sourceId) : null
-      if (source?.text && input.turn > 0) {
-        db.prepare('INSERT OR IGNORE INTO owner_turn_sources VALUES (?,?,?)').run(session, input.turn, sourceId)
+      const ts = now()
+      const finalKind = existing && sessionKind === 'main' && existing.session_kind !== 'main'
+        ? existing.session_kind : sessionKind
+      const finalConv = conversation ?? existing?.conversation ?? null
+      db.prepare(`INSERT INTO owner_intake_cursors(session, next_seq, inherited_seq, session_kind, conversation, created_at, updated_at)
+        VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(session) DO UPDATE SET
+          next_seq=excluded.next_seq,
+          inherited_seq=MAX(owner_intake_cursors.inherited_seq, excluded.inherited_seq),
+          session_kind=excluded.session_kind,
+          conversation=COALESCE(excluded.conversation, owner_intake_cursors.conversation),
+          updated_at=excluded.updated_at`).run(
+        session, nextSeq, inheritedSeq, finalKind, finalConv, existing?.created_at ?? ts, ts,
+      )
+      if (finalKind !== 'unattended' && finalConv) {
+        const resolved = resolveIntakeScope(cwd)
+        if (resolved.status !== 'unknown' && scopeMatches(session, resolved)) {
+          bindSession(session, resolved, finalConv)
+        }
       }
-      return { sourceId, text: source?.text ?? '', handledIntent: !source?.text }
+      return { status: 'ok' as const, nextSeq }
     })
   }
-  function intakeWatermark(session: string) {
+
+  function beginTurn(input: BeginTurnInput) {
     requireReady()
-    const cursor = db.prepare('SELECT next_seq FROM memory_session_cursors WHERE session=?').get(session)
-    return { createdAt: Number(store.meta('created_at')), nextSeq: cursor ? Number(cursor.next_seq) : null }
+    const { sessionId: session, turn, sessionKind = 'main', conversation = null, cwd } = input
+    store.tx(() => {
+      if (turn > 0) {
+        db.prepare('INSERT INTO owner_active_turns VALUES (?,?) ON CONFLICT(session) DO UPDATE SET turn=excluded.turn')
+          .run(session, String(turn))
+      }
+      if (sessionKind !== 'unattended') {
+        const resolved = resolveIntakeScope(cwd)
+        if (resolved.status !== 'unknown' && scopeMatches(session, resolved)) {
+          bindSession(session, resolved, conversation)
+        }
+      }
+    })
   }
-  function advanceIntake(session: string, nextSeq: number) {
+
+  function resolveCandidateOrigin(
+    session: string,
+    bound: ReturnType<typeof bindSession>,
+    candidate: TurnSourceCandidate,
+  ) {
+    const project = bound.project
+    const isStandaloneProject = !options.hostNamespace && project !== undefined
+    const sourceKind: MemorySourceKind = isStandaloneProject && candidate.author === 'user'
+      ? 'project-user'
+      : candidate.sourceKind
+    const profileEligible = isStandaloneProject
+      ? false
+      : (candidate.author === 'user' || candidate.author === 'answer') && candidate.profileEligible
+    return {
+      conversation: candidate.conversation ?? bound.conversation,
+      session,
+      scope: { kind: 'user' as const },
+      context: project ?? { kind: 'user' as const },
+      ...(project ? { project } : {}),
+      author: candidate.author,
+      sourceKind,
+      profileEligible,
+    }
+  }
+
+  function stageOpenTurnSources(input: StageOpenTurnInput): { staged: string[] } {
     requireReady()
-    db.prepare(`INSERT INTO memory_session_cursors VALUES (?,?)
-      ON CONFLICT(session) DO UPDATE SET next_seq=MAX(next_seq,excluded.next_seq)`).run(session, nextSeq)
+    const { sessionId: session, turn, sessionKind, conversation, cwd, sources } = input
+    if (sessionKind === 'unattended' || turn <= 0) return { staged: [] }
+    const resolved = resolveIntakeScope(cwd)
+    if (resolved.status === 'unknown' || !scopeMatches(session, resolved)) return { staged: [] }
+    return store.tx(() => {
+      db.prepare('INSERT INTO owner_active_turns VALUES (?,?) ON CONFLICT(session) DO UPDATE SET turn=excluded.turn')
+        .run(session, String(turn))
+      const bound = bindSession(session, resolved, conversation)
+      const staged: string[] = []
+      for (const candidate of sources) {
+        // Only verified persisted human user/answer sources may enter open-turn staging (§5.6).
+        if (candidate.author !== 'user' && candidate.author !== 'answer') continue
+        if (!candidate.text.trim()) continue
+        const origin = resolveCandidateOrigin(session, bound, candidate)
+        const expectedHash = memoryHash(candidate.text)
+        const existing = store.readSource(candidate.sourceId)
+        if (existing) {
+          if (existing.session !== session
+            || existing.conversation !== origin.conversation
+            || existing.author !== origin.author
+            || existing.hash !== expectedHash
+            || existing.text !== candidate.text) {
+            continue
+          }
+        } else {
+          runtime.accept(candidate.text, origin, candidate.sourceId, undefined, {
+            deferAutomatic: true, at: candidate.at, timezone: candidate.timezone,
+          })
+        }
+        const saved = store.readSource(candidate.sourceId)
+        if (saved?.text
+          && saved.session === session
+          && saved.conversation === origin.conversation
+          && saved.author === origin.author
+          && saved.hash === expectedHash
+          && saved.text === candidate.text) {
+          db.prepare('INSERT OR IGNORE INTO owner_open_turn_sources(session, turn, source_id) VALUES (?,?,?)')
+            .run(session, turn, saved.id)
+          staged.push(saved.id)
+        }
+      }
+      return { staged }
+    })
   }
-  function completeTurn(input: CompletedTurn, signal?: AbortSignal) {
+
+  function settleTurn(input: SettleTurnInput, signal?: AbortSignal): CursorResult {
     requireReady()
     signal?.throwIfAborted()
-    const { sessionId: session, turn } = input
-    if (!db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND turn=?').get(session, turn)) {
-      const answers = db.prepare('SELECT source FROM owner_answer_sources WHERE session=? AND turn=?').all(session, String(turn)).map(row => String(row.source))
-      const sourceIds = [...new Set([...input.sourceIds, ...answers])]
-      if (input.completed) {
-        store.tx(() => {
-          for (const id of sourceIds) {
-            const wasReceived = db.prepare('SELECT 1 FROM owner_turn_sources WHERE session=? AND turn=? AND source=?').get(session, turn, id)
-            if (!wasReceived && !answers.includes(id)) throw new Error('Turn source is unavailable')
-            const source = store.readSource(id)
-            if (source?.outcome === 'received' && source.text) runtime.accept(source.text,
-              { conversation: source.conversation, session: source.session, context: source.context ?? undefined, scope: source.scope,
-                ...(source.project?.kind === 'project' ? { project: { kind: 'project' as const, id: source.project.id } } : {}) }, source.id,
-              source.author === 'answer' && source.question && source.requestId && source.questionId
-                ? { question: source.question, requestId: source.requestId, questionId: source.questionId, custom: true } : undefined)
-          }
-        })
-        const skipped = db.prepare('SELECT 1 FROM owner_skip_assistant WHERE session=? AND turn=?').get(session, turn)
-        runtime.recordNoteTurn?.(session, sourceIds, skipped ? '' : input.assistant)
-      }
-      store.tx(() => {
-        db.prepare('INSERT INTO owner_turns VALUES (?,?,?,?)').run(session, turn, input.eventSeq, input.completed ? 'completed' : 'cancelled')
-        advanceIntake(session, input.eventSeq + 1)
-        db.prepare('DELETE FROM owner_skip_assistant WHERE session=? AND turn=?').run(session, turn)
-        db.prepare('DELETE FROM owner_turn_sources WHERE session=? AND turn=?').run(session, turn)
-        db.prepare('DELETE FROM owner_answer_sources WHERE session=? AND turn=?').run(session, String(turn))
-      })
+    const { sessionId: session, cwd, sessionKind, conversation, inheritedSeq, expectedNextSeq, fromSeq, toSeq, turn, reasonKind, sources, assistantText, flushNotes } = input
+    if (!Number.isSafeInteger(fromSeq) || !Number.isSafeInteger(toSeq) || fromSeq < 0 || toSeq <= fromSeq) {
+      throw new Error('Invalid turn range')
     }
-    db.prepare('DELETE FROM owner_active_turns WHERE session=? AND turn=?').run(session, String(turn))
-    runtime.finishTurn(session, input.completed)
+    const result = store.tx(() => {
+      const existingCursor = db.prepare('SELECT * FROM owner_intake_cursors WHERE session=?').get(session) as CursorRow | undefined
+      if (runtime.hasNoteRange?.(session, fromSeq, toSeq)) {
+        return { status: 'duplicate' as const, nextSeq: existingCursor?.next_seq ?? toSeq }
+      }
+      if (existingCursor) {
+        if (expectedNextSeq === null || existingCursor.next_seq !== expectedNextSeq || fromSeq !== existingCursor.next_seq) {
+          return { status: 'cas_mismatch' as const, nextSeq: existingCursor.next_seq }
+        }
+      } else {
+        if (expectedNextSeq !== null || fromSeq !== inheritedSeq) {
+          return { status: 'cas_mismatch' as const, nextSeq: 0 }
+        }
+      }
+      const answers = db.prepare('SELECT source FROM owner_answer_sources WHERE session=? AND turn=?')
+        .all(session, String(turn)).map(row => String(row.source))
+      const effectiveKind: SessionKind = existingCursor && sessionKind === 'main' && existingCursor.session_kind !== 'main'
+        ? existingCursor.session_kind as SessionKind : sessionKind
+      const effectiveConv = conversation ?? existingCursor?.conversation ?? null
+
+      // Terminal-reason gating (§5.2 item 2): ONLY 'completed' turns upsert canonical sources & note ranges.
+      if (reasonKind === 'completed' && effectiveKind !== 'unattended') {
+        const resolved = resolveIntakeScope(cwd)
+        if (resolved.status === 'unknown') {
+          // Temporarily unavailable project directory: leave cursor untouched so replay retries cleanly.
+          return { status: 'scope_unavailable' as const, nextSeq: existingCursor?.next_seq ?? fromSeq }
+        }
+        if (scopeMatches(session, resolved)) {
+          const bound = bindSession(session, resolved, effectiveConv)
+          const admittedIds: string[] = []
+          for (const candidate of sources) {
+            if (!candidate.text.trim()) continue
+            const origin = resolveCandidateOrigin(session, bound, candidate)
+            const receipt = runtime.accept(candidate.text, origin, candidate.sourceId, undefined, {
+              deferAutomatic: false, at: candidate.at, timezone: candidate.timezone,
+            })
+            const saved = store.readSource(receipt.sourceId)
+            if (saved?.text) admittedIds.push(saved.id)
+          }
+          for (const answerId of answers) {
+            const saved = store.readSource(answerId)
+            if (saved?.text) {
+              if (saved.outcome === 'received') {
+                runtime.accept(saved.text, {
+                  conversation: saved.conversation,
+                  session: saved.session,
+                  context: saved.context ?? undefined,
+                  scope: saved.scope,
+                  ...(saved.project?.kind === 'project' ? { project: { kind: 'project' as const, id: saved.project.id } } : {}),
+                  author: 'answer',
+                  sourceKind: saved.sourceKind,
+                  profileEligible: saved.profileEligible,
+                }, saved.id, saved.question && saved.requestId && saved.questionId
+                  ? { question: saved.question, requestId: saved.requestId, questionId: saved.questionId, custom: true,
+                    ...(saved.questionAt != null ? { questionAt: saved.questionAt } : {}),
+                    ...(saved.questionProfileGen != null ? { questionProfileGen: saved.questionProfileGen } : {}) }
+                  : undefined)
+              }
+              admittedIds.push(saved.id)
+            }
+          }
+          const uniqueAdmitted = [...new Set(admittedIds)]
+          if (uniqueAdmitted.length > 0) {
+            runtime.recordNoteRangeInTx?.({
+              session, fromSeq, toSeq, turn, ids: uniqueAdmitted,
+              assistant: assistantText,
+              flush: flushNotes === true || effectiveKind === 'task',
+            })
+          }
+        }
+      }
+
+      // On ANY terminal turn/end (completed, aborted, interrupted, error): clear open-turn staging & advance cursor.
+      db.prepare('DELETE FROM owner_open_turn_sources WHERE session=? AND turn=?').run(session, turn)
+      db.prepare('DELETE FROM owner_answer_sources WHERE session=? AND turn=?').run(session, String(turn))
+      db.prepare('DELETE FROM owner_active_turns WHERE session=? AND turn=?').run(session, String(turn))
+      const ts = now()
+      db.prepare(`INSERT INTO owner_intake_cursors(session, next_seq, inherited_seq, session_kind, conversation, created_at, updated_at)
+        VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(session) DO UPDATE SET
+          next_seq=excluded.next_seq,
+          inherited_seq=MAX(owner_intake_cursors.inherited_seq, excluded.inherited_seq),
+          session_kind=excluded.session_kind,
+          conversation=COALESCE(excluded.conversation, owner_intake_cursors.conversation),
+          updated_at=excluded.updated_at`).run(
+        session, toSeq, inheritedSeq, effectiveKind, effectiveConv, existingCursor?.created_at ?? ts, ts,
+      )
+      return { status: 'ok' as const, nextSeq: toSeq }
+    })
+    if (result.status === 'ok') runtime.finishTurn(session, reasonKind === 'completed')
+    return result
   }
+
   function reconcileActiveTurns(turns: readonly { sessionId: string, turn: number }[]) {
     const live = new Map(turns.map(({ sessionId, turn }) => [sessionId, String(turn)]))
     store.tx(() => {
@@ -368,8 +512,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const origin = sessionContext(session)
     if (!origin.foregroundTurn) return null
     const current = () => !signal.aborted && !closed && sessionContext(session).foregroundTurn === origin.foregroundTurn
-    const sources = db.prepare(`SELECT source FROM owner_turn_sources WHERE session=? AND turn=?
-      UNION ALL SELECT source FROM owner_answer_sources WHERE session=? AND turn=?`).all(session, Number(origin.foregroundTurn), session, origin.foregroundTurn).map(row => String(row.source))
+    const sources = db.prepare(`SELECT source_id AS source FROM owner_open_turn_sources WHERE session=? AND turn=?
+      UNION ALL SELECT source FROM owner_answer_sources WHERE session=? AND turn=?`)
+      .all(session, Number(origin.foregroundTurn), session, origin.foregroundTurn)
+      .map(row => String(row.source))
     const source = runtime.explicitFileSource(text, origin, sources)
     if (!source) return null
     const digest = hash(['remember', session, origin.foregroundTurn, source.id, source.spans])
@@ -422,7 +568,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const plan = previous?.payload ? (JSON.parse(previous.payload) as ManualFilePending).manual : 'identity' in request
       ? { workspace: request.identity.workspace }
       : { workspace: runtime.manualFileWorkspace(project, context), context, ...(project ? { project } : {}) }
-    // Keep the draft in the file journal so recovery can validate the expected revision.
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?)")
       .run(id, fingerprint, JSON.stringify({ manual: plan } satisfies ManualFilePending))
     const receipt = await completeManualFile(id, plan, request)
@@ -430,7 +575,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return receipt
   }
 
-  /** The durable intent lets a retry recover the file journal result after a process exit. */
   async function durableFileWrite(command: FileWriteCommand, standaloneSession?: string): Promise<MemoryFileMutationResult> {
     requireReady()
     const request = command.input.args[0], id = request.operationId, fingerprint = hash(standaloneSession ? { command, standaloneSession } : command)
@@ -465,7 +609,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (error instanceof MemoryDomainError && error.code !== 'change.pending' && operation(id)?.state !== 'completed') {
         db.prepare("UPDATE owner_operations SET state='failed',payload=? WHERE id=?").run(JSON.stringify({ code: error.code }), id)
       }
-      // Storage/flush failures keep the intent for recovery, including a committed document receipt.
       throw error
     }
   }
@@ -496,7 +639,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     } else {
       const target = await runtime.fileForSession(id, origin, signal)
       signal?.throwIfAborted()
-      // An identical concurrent forget can finish while this caller verifies the file.
       if (!target && ['running', 'completed'].includes(operation(operationId)?.state ?? '')) return forgetStandaloneFile(session, id, operationId, signal)
       if (!target) throw new MemoryDomainError('not.found')
       const request = memoryFileForgetRequest.parse({ ...target, operationId })
@@ -507,15 +649,15 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   function handleHost(method: unknown, input: unknown, signal?: AbortSignal, deadlineAt?: number): Promise<unknown> {
     try {
-    const command = parseHostMemoryCommand(method, input)
-    const kind = hostDiagnosticOperation(command.method)
-    if (!kind) return executeHost(command, signal, deadlineAt)
-    const raw = 'args' in command.input ? command.input.args[0] : command.input
-    const requestId = raw !== null && typeof raw === 'object' && 'operationId' in raw && typeof raw.operationId === 'string'
-      ? raw.operationId : undefined
-    return observeDiagnosticAsync(options.diagnostics, kind, () => executeHost(command, signal, deadlineAt), {
-      identities: { methodId: command.method, ownerEpoch: epoch, ...(requestId ? { requestId } : {}) },
-    })
+      const command = parseHostMemoryCommand(method, input)
+      const kind = hostDiagnosticOperation(command.method)
+      if (!kind) return executeHost(command, signal, deadlineAt)
+      const raw = 'args' in command.input ? command.input.args[0] : command.input
+      const requestId = raw !== null && typeof raw === 'object' && 'operationId' in raw && typeof raw.operationId === 'string'
+        ? raw.operationId : undefined
+      return observeDiagnosticAsync(options.diagnostics, kind, () => executeHost(command, signal, deadlineAt), {
+        identities: { methodId: command.method, ownerEpoch: epoch, ...(requestId ? { requestId } : {}) },
+      })
     } catch (error) { return Promise.reject(error) }
   }
   async function executeHost(command: HostMemoryCommand, signal?: AbortSignal, deadlineAt?: number): Promise<unknown> {
@@ -525,7 +667,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     switch (command.method) {
       case 'getOperation': { const item = operation(command.input.operationId); return item ? outcome(item) : null }
-      case 'sourceAlias': return alias(command.input, assertIntakeCurrent)
     }
     requireReady()
     switch (command.method) {
@@ -541,8 +682,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
         const { session, turn } = input
         const context = sessionContext(session)
+        const activeTurn = db.prepare('SELECT turn FROM owner_active_turns WHERE session=?').get(session) as { turn: string } | undefined
         if (context.conversation !== input.conversation || context.project?.id !== input.project?.id
-          || db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND turn=?').get(session, turn)) {
+          || !activeTurn || activeTurn.turn !== String(turn)
+          || db.prepare('SELECT 1 FROM memory_note_ranges WHERE session=? AND turn=?').get(session, turn)) {
           throw new MemoryDomainError('not.found', 'Answer context is unavailable')
         }
         const question = input.cards.find(card => card.id === input.questionId)
@@ -552,11 +695,15 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
         store.tx(() => {
           assertIntakeCurrent()
-          runtime.accept(input.text, { ...context, context: input.context }, sourceId,
+          const isHostTaskAnswer = Boolean(options.hostNamespace) && input.context?.kind === 'task'
+          const answerOrigin = isHostTaskAnswer
+            ? { ...context, context: { kind: 'user' as const }, sourceKind: 'task-question-answer' as const, profileEligible: true }
+            : { ...context, context: input.context }
+          runtime.accept(input.text, answerOrigin, sourceId,
             { question: question.question, requestId: input.requestId, questionId: input.questionId, custom: true,
               ...(input.questionAt !== undefined ? { questionAt: input.questionAt } : {}),
               ...(input.questionProfileGen !== undefined ? { questionProfileGen: input.questionProfileGen } : {}) },
-            { deferAutomatic: true, at: (options.now ?? Date.now)(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
+            { deferAutomatic: true, at: now(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
           if (!runtime.sourceCurrent(sourceId)) throw new MemoryDomainError('credentials', 'Answer cannot be retained')
           db.prepare('INSERT INTO owner_answer_sources VALUES (?,?,?)').run(session, String(turn), sourceId)
         })
@@ -597,18 +744,34 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   const tempCleanup = new AbortController()
   void removeAbandonedMemoryTemps(store.fileRoot, tempCleanup.signal)
-  return { runtime, bindIntakeSession, resolveIntakeScope, scopeMatches, intakeWatermark, advanceIntake, rememberSidecarFile, epoch, ready: () => state === 'ready' && !replayingWrites, status: () => state === 'ready' && replayingWrites ? 'recovering' as const : state,
-    reportContextUsed, profileSnapshot,
+  return {
+    runtime,
+    bindIntakeSession,
+    resolveIntakeScope,
+    scopeMatches,
+    intakeCursor,
+    advanceIntakeCursor,
+    beginTurn,
+    stageOpenTurnSources,
+    rememberSidecarFile,
+    epoch,
+    ready: () => state === 'ready' && !replayingWrites,
+    status: () => state === 'ready' && replayingWrites ? 'recovering' as const : state,
+    reportContextUsed,
+    profileSnapshot,
     recover: (preserveActiveTurns = false) => observeDiagnosticAsync(options.diagnostics, 'memory.recover', () => recover(preserveActiveTurns), { stage: 'recovering', identities: { ownerEpoch: epoch } }),
-    receiveSource: (input: ReceivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', async () => receiveSource(input), {
-      stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId, generation: input.turn }, metrics: { count: 1, ok: true } }),
-    completeTurn: (input: CompletedTurn, signal?: AbortSignal) => observeDiagnosticAsync(options.diagnostics, 'memory.daily', async () => completeTurn(input, signal), {
-      stage: 'checkpoint', identities: { sessionId: input.sessionId, generation: input.turn }, metrics: { eventCursor: input.eventSeq, count: input.sourceIds.length, ok: input.completed } }),
-    sessionContext, handleHost, reconcileActiveTurns, intakeQuery,
+    settleTurn: (input: SettleTurnInput, signal?: AbortSignal) => observeDiagnosticAsync(options.diagnostics, 'memory.daily', async () => settleTurn(input, signal), {
+      stage: 'checkpoint', identities: { sessionId: input.sessionId, generation: input.turn }, metrics: { eventCursor: input.toSeq, count: input.sources.length, ok: input.reasonKind === 'completed' },
+    }),
+    sessionContext,
+    handleHost,
+    reconcileActiveTurns,
     rememberStandaloneFile: (...args: Parameters<typeof rememberStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberStandaloneFile(...args), {
-      identities: { sessionId: args[0], requestId: args[1].operationId } }),
+      identities: { sessionId: args[0], requestId: args[1].operationId },
+    }),
     forgetStandaloneFile: (...args: Parameters<typeof forgetStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.forget', () => forgetStandaloneFile(...args), {
-      identities: { sessionId: args[0], resourceId: args[1], requestId: args[2] } }),
+      identities: { sessionId: args[0], resourceId: args[1], requestId: args[2] },
+    }),
     async close() {
       if (closed) return
       closed = true; state = 'unavailable'

@@ -151,10 +151,6 @@ async function runSession({ questions, key, env, dshHome, workspace }: {
     overlay: vivaLayerFile(dshHome),
     cwd: workspace,
     memoryContextUsed: ({ session, turn, pushed }) => { injected.push({ session, turn, pushed }) },
-    recordSource: ({ session, sourceId, text, wireText, wireSpans }) => {
-      if (sourceId && bridge.memory.ready()) void bridge.memory.callIntake('sourceAlias', { operationId: sourceId, sourceId, session,
-        conversation: session, text, wireText, wireSpans, cwd: workspace }).catch(() => {})
-    },
     env: dshEnv({ base: env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: key } }),
     emit: (event) => {
       events.push(event)

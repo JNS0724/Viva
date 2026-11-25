@@ -12,3 +12,15 @@ export function closeStreams<V extends Pick<ConversationView, 'messages' | 'thou
   const thoughts = closeLast(state.thoughts)
   return messages === state.messages && thoughts === state.thoughts ? state : { ...state, messages, thoughts }
 }
+
+/** Next monotonic `m<n>` numeric suffix for appending messages without colliding after mid-list retraction. */
+export function nextMessageSeq(messages: readonly { readonly id: string }[], offset = 0): number {
+  let max = offset + messages.length - 1
+  for (const message of messages) {
+    if (message.id.startsWith('m')) {
+      const num = Number(message.id.slice(1))
+      if (Number.isInteger(num) && num > max) max = num
+    }
+  }
+  return max + 1
+}

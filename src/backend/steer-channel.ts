@@ -11,7 +11,9 @@ const STEER_TIMEOUT_MS = 5_000
 export const NO_PLUGIN = 'unavailable'
 
 import type { SteerResult } from '../shared/agent-info.ts'
+import type { SteerMessageSource } from '../shared/request-routing/provenance.ts'
 export type { SteerResult } from '../shared/agent-info.ts'
+export type { SteerMessageSource } from '../shared/request-routing/provenance.ts'
 
 /** What marks the user's words as said mid-turn, for the model only (the window shows them as typed). */
 export const INTERJECTION_MARK = '【插话】'
@@ -27,7 +29,7 @@ const REPORT_STATES: ReadonlySet<string> = new Set(['read', 'pending', 'none', '
 
 export interface SteerDesk {
   /** @param session the turn to steer: the main conversation's, or a background task's */
-  steer: (text: string, session?: string | null, options?: { fast?: boolean }) => Promise<SteerResult>
+  steer: (text: string, session?: string | null, options?: { fast?: boolean, source?: SteerMessageSource }) => Promise<SteerResult>
   /** A report into the running turn of `session` (the main conversation's), unless it is there already. */
   report: (session: string, reportId: string, token: string, text: string) => Promise<ReportState>
   /** How a report stands in `session`. */
@@ -55,14 +57,14 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS,
     entry.resolve(result)
   }
 
-  function steer(text: string, session: string | null = sessionId(), { fast = false }: { fast?: boolean } = {}): Promise<SteerResult> {
+  function steer(text: string, session: string | null = sessionId(), { fast = false, source }: { fast?: boolean, source?: SteerMessageSource } = {}): Promise<SteerResult> {
     if (!session) return Promise.resolve({ ok: false, reason: NO_PLUGIN })
     const id = `s${++seq}-${Date.now().toString(36)}`
     return new Promise((resolve) => {
       const timer = setTimeout(() => settle(id, { ok: false, reason: NO_PLUGIN }), timeoutMs)
       timer.unref?.()
       waiting.set(id, { resolve, timer })
-      send({ type: 'steer', id, sessionId: session, text, ...(fast ? { fast: true } : {}) })
+      send({ type: 'steer', id, sessionId: session, text, ...(fast ? { fast: true } : {}), ...(source ? { source } : {}) })
     })
   }
 

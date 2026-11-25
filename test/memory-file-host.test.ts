@@ -31,8 +31,10 @@ async function fixture(t: TestContext, text = 'The report is due Friday. Tea is 
   defer(() => owner.close())
   await owner.recover()
   const session = randomUUID(), sourceId = randomUUID()
-  await owner.receiveSource({ sessionId: session, messageId: sourceId, text, at: Date.now(), timezone: 'UTC',
-    turn: 1, cwd: null })
+  owner.stageOpenTurnSources({
+    sessionId: session, turn: 1, sessionKind: 'main', cwd: null,
+    sources: [{ sourceId, author: 'user', sourceKind: 'main-human', profileEligible: true, text, at: Date.now(), timezone: 'UTC' }],
+  })
   const store = openMemoryStore(join(dir, 'memory.db'))
   defer(() => store.close())
   const source = store.readSource(sourceId)!, workspace = memorySourceWorkspace(source)

@@ -818,23 +818,21 @@ export async function runVivaChineseEval(
         for (let tIdx = 0; tIdx < phase.turns.length; tIdx++) {
           const pair = phase.turns[tIdx]!
           const at = baseMs + tIdx * 300_000
+          const fromSeq = turn * 3
           turn++
-          const receipt = await owner.receiveSource({
+          const sourceId = randomUUID()
+          await owner.settleTurn({
             sessionId,
-            messageId: randomUUID(),
-            text: pair.user,
-            at,
-            timezone: 'UTC',
-            turn,
             cwd: projectDir,
-          })
-          await owner.completeTurn({
-            sessionId,
+            sessionKind: 'main',
+            inheritedSeq: 0,
+            expectedNextSeq: fromSeq === 0 ? null : fromSeq,
+            fromSeq,
+            toSeq: fromSeq + 3,
             turn,
-            eventSeq: turn * 2 + 1,
-            sourceIds: [receipt.sourceId],
-            assistant: pair.assistant,
-            completed: true,
+            reasonKind: 'completed',
+            sources: [{ sourceId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: pair.user, at, timezone: 'UTC' }],
+            assistantText: pair.assistant,
             at,
             timezone: 'UTC',
           })
@@ -1026,24 +1024,22 @@ export async function runVivaLmeEval(
             const nextMsg = sess.messages[i + 1]
             const assistantText = nextMsg?.role === 'assistant' ? nextMsg.content : ''
             if (nextMsg?.role === 'assistant') i++
+            const fromSeq = turn * 3
             turn++
             const at = sess.timestampMs + turn * 1000
-            const receipt = await owner.receiveSource({
+            const sourceId = randomUUID()
+            await owner.settleTurn({
               sessionId,
-              messageId: randomUUID(),
-              text: msg.content,
-              at,
-              timezone: 'UTC',
-              turn,
               cwd: null,
-            })
-            await owner.completeTurn({
-              sessionId,
+              sessionKind: 'main',
+              inheritedSeq: 0,
+              expectedNextSeq: fromSeq === 0 ? null : fromSeq,
+              fromSeq,
+              toSeq: fromSeq + 3,
               turn,
-              eventSeq: turn * 2 + 1,
-              sourceIds: [receipt.sourceId],
-              assistant: assistantText,
-              completed: true,
+              reasonKind: 'completed',
+              sources: [{ sourceId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: msg.content, at, timezone: 'UTC' }],
+              assistantText,
               at,
               timezone: 'UTC',
             })

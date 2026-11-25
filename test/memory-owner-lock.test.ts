@@ -182,10 +182,15 @@ test('a daily note requests model computation across IPC while the parent can st
   await supervisor.callAdapter('setRoute', [{ provider: 'fixture', model: 'fixture' }])
   for (let turn = 1; turn <= 5; turn++) {
     const at = Date.now()
-    const received = await supervisor.callAdapter('receiveSource', [{ sessionId, messageId: randomUUID(),
-      text: `I submit my weekly report on Friday. Reference ${turn}.`, at, timezone: 'UTC', turn, cwd: null }])
-    await supervisor.callAdapter('completeTurn', [{ sessionId, turn, eventSeq: turn * 3, sourceIds: [received.sourceId],
-      assistant: 'Understood.', completed: true, at, timezone: 'UTC' }])
+    const fromSeq = (turn - 1) * 3
+    await supervisor.callAdapter('settleTurn', [{
+      sessionId, cwd: null, sessionKind: 'main', inheritedSeq: 0,
+      expectedNextSeq: fromSeq === 0 ? null : fromSeq,
+      fromSeq, toSeq: fromSeq + 3, turn, reasonKind: 'completed',
+      sources: [{ sourceId: randomUUID(), author: 'user', sourceKind: 'main-human', profileEligible: true,
+        text: `I submit my weekly report on Friday. Reference ${turn}.`, at, timezone: 'UTC' }],
+      assistantText: 'Understood.', at, timezone: 'UTC',
+    }])
   }
   await entered.promise
   assert.equal((await supervisor.callHost('listFiles', { args: [{}] })).status, 'ok')

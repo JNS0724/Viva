@@ -8,8 +8,9 @@ import { boot } from '@deepseek-ai/dsh-app-boot'
 import { createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { continueText, extractFeedContinuationSupplement } from '../src/shared/feed-continuation.ts'
-import { requestsIn } from '../src/shared/request-routing/header.ts'
+import { requestsIn, withRequestSource } from '../src/shared/request-routing/header.ts'
 import { leadingTaskRequestId, taskRequestsIn, withoutTaskHeaders, withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
+import { withProvenanceHeader } from '../src/shared/request-routing/provenance.ts'
 import { applyMemoryAdapter } from '../plugins/memory/lib/adapter.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
@@ -249,15 +250,14 @@ test('real DSH agent-loop emits 0 memory_context receipts on prepareRequest fail
 
   const runTurn = async (text: string) => {
     const sourceId = randomUUID()
-    await hostCall('sourceAlias', {
-      operationId: sourceId,
+    const routed = withRequestSource(text, randomUUID(), text)
+    const wire = withProvenanceHeader(routed.text, {
+      origin: 'human',
+      sourceKind: 'main-human',
+      sessionKind: 'main',
+      conversationId: String(sessionId),
       sourceId,
-      session: String(sessionId),
-      conversation: String(sessionId),
-      text,
-      wireText: text,
-      cwd: handle.agent.session.header.cwd ?? dir,
-      origin: 'original',
+      humanSpans: routed.spans,
     })
     const done = deferred<void>()
     const off = ctx.on('session/event', (session, event) => {
@@ -266,7 +266,7 @@ test('real DSH agent-loop emits 0 memory_context receipts on prepareRequest fail
         done.resolve()
       }
     })
-    handle.agent.send(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), 'next-turn', true)
+    handle.agent.send(createUserMessage({ content: [{ type: 'text', text: wire }], source: { kind: 'user' } }), 'next-turn', true)
     await done.promise
   }
 

@@ -6,21 +6,29 @@ import promises from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { openMemoryOwner, type TurnSourceCandidate } from '../src/memory/node/owner.ts'
 import { removeAbandonedMemoryTemps } from '../src/memory/node/memory-file-store.ts'
 import { scratch } from './fixtures/scratch.js'
 import { eventually } from './fixtures/eventually.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 import type { MemoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 
-function fixture(t: import('node:test').TestContext, hostNamespace?: string, options: Pick<Parameters<typeof openMemoryOwner>[0], 'dailyNotes' | 'diagnostics'> = {}) {
+function fixture(t: import('node:test').TestContext, hostNamespace?: string, options: Pick<Parameters<typeof openMemoryOwner>[0], 'dailyNotes' | 'diagnostics' | 'readSessionRange'> = {}) {
   const { dir: root, defer } = scratch(t, 'memory-owner-')
   const owner = openMemoryOwner({ root, hostNamespace, ...options, compute: () => null, route: () => null })
   defer(() => owner.close())
   return { owner, root, defer }
 }
-const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>['receiveSource']>[0]> = {}) => ({
-  sessionId: randomUUID(), messageId: randomUUID(), text: '我在深圳工作', at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, cwd: null, ...overrides,
+
+const candidate = (overrides: Partial<TurnSourceCandidate> = {}): TurnSourceCandidate => ({
+  sourceId: randomUUID(),
+  author: 'user',
+  sourceKind: 'main-human',
+  profileEligible: true,
+  text: '我在深圳工作',
+  at: Date.now(),
+  timezone: 'Asia/Shanghai',
+  ...overrides,
 })
 
 test('owner recovery and close do not wait for a stalled abandoned-temp directory read', { timeout: 15_000 }, async t => {
@@ -97,9 +105,6 @@ test('abandoned-temp cleanup only touches strict names in managed directories', 
   for (const file of preserved) assert.equal(existsSync(file), true, file)
 })
 
-
-
-
 test('owner diagnostics preserve durable write, replay, undo and local deletion receipts without copying memory text', async t => {
   const events: DiagnosticEvent[] = []
   const { owner } = fixture(t, 'viva', { diagnostics: { emit(event) { events.push(event); return undefined } } })
@@ -131,8 +136,14 @@ test('owner diagnostics preserve durable write, replay, undo and local deletion 
 test('a throwing owner observer cannot change source intake, write receipts or the real validation failure', async t => {
   const { owner } = fixture(t, undefined, { diagnostics: { emit() { throw new Error('broken observer') } } })
   await owner.recover()
-  const input = source()
-  assert.ok((await owner.receiveSource(input)).sourceId)
+  const sessionId = randomUUID()
+  const src = candidate()
+  const settled = await owner.settleTurn({
+    sessionId, cwd: null, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 3, turn: 1, reasonKind: 'completed',
+    sources: [src], assistantText: '', at: src.at, timezone: src.timezone,
+  })
+  assert.equal(settled.status, 'ok')
   const create = { operationId: randomUUID(), text: '每周五提交周报。' }
   const first = await owner.handleHost('createFile', { args: [create] }) as MemoryFileMutationResult
   assert.deepEqual(await owner.handleHost('createFile', { args: [create] }), first)
@@ -140,8 +151,6 @@ test('a throwing owner observer cannot change source intake, write receipts or t
   await assert.rejects(owner.handleHost('editFile', { args: [{ operationId: randomUUID(), identity: first.identity,
     version: { ...detail.version, contentRevision: 'stale' }, text: '改成周一。' }] }), { code: 'revision.conflict' })
 })
-
-
 
 test('owner refuses a second process-local connection and can reopen after close', async t => {
   const { owner, root, defer } = fixture(t)
@@ -151,34 +160,45 @@ test('owner refuses a second process-local connection and can reopen after close
   defer(() => next.close())
   await next.recover(); await next.close()
 })
-test('received original is durable before automatic processing, cancellation keeps it unprocessed', async t => {
+
+test('aborted turn clears open-turn staging and advances cursor without creating note ranges', async t => {
   const { owner, root, defer } = fixture(t)
   await owner.recover()
-  const input = source()
-  const receipt = await owner.receiveSource(input)
+  const sessionId = randomUUID(), src = candidate()
+  owner.stageOpenTurnSources({ sessionId, turn: 1, sessionKind: 'main', cwd: null, sources: [src] })
   const db = new DatabaseSync(join(root, 'memory.db')); defer(() => db.close())
-  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(receipt.sourceId)?.outcome, 'received')
-  await owner.completeTurn({ sessionId: input.sessionId, turn: 1, eventSeq: 3, sourceIds: [receipt.sourceId], assistant: '', completed: false, at: input.at, timezone: input.timezone })
-  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(receipt.sourceId)?.outcome, 'received')
-  assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 0)
+  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(src.sourceId)?.outcome, 'received')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_open_turn_sources WHERE session=?').get(sessionId)?.n, 1)
+  await owner.settleTurn({
+    sessionId, cwd: null, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 4, turn: 1, reasonKind: 'aborted',
+    sources: [src], assistantText: 'partial', at: src.at, timezone: src.timezone,
+  })
+  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(src.sourceId)?.outcome, 'received')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_open_turn_sources WHERE session=?').get(sessionId)?.n, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_note_ranges WHERE session=?').get(sessionId)?.n, 0)
+  assert.equal(owner.intakeCursor(sessionId).nextSeq, 4)
 })
+
 test('completion promotes source once and keeps original capture time', async t => {
   const { owner, root, defer } = fixture(t); await owner.recover()
-  const input = source({ at: 1730000000000 })
-  const receipt = await owner.receiveSource(input)
-  const complete = { sessionId: input.sessionId, turn: 1, eventSeq: 3, sourceIds: [receipt.sourceId], assistant: '收到', completed: true, at: input.at, timezone: input.timezone }
-  await owner.completeTurn(complete); await owner.completeTurn(complete)
+  const sessionId = randomUUID(), src = candidate({ at: 1730000000000 })
+  const settle = {
+    sessionId, cwd: null, sessionKind: 'main' as const, inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 4, turn: 1, reasonKind: 'completed',
+    sources: [src], assistantText: '收到', at: src.at, timezone: src.timezone,
+  }
+  assert.equal((await owner.settleTurn(settle)).status, 'ok')
+  assert.equal((await owner.settleTurn(settle)).status, 'duplicate')
   const db = new DatabaseSync(join(root, 'memory.db')); defer(() => db.close())
-  const row = db.prepare('SELECT outcome,at FROM memory_sources WHERE id=?').get(receipt.sourceId)
-  assert.equal(row?.outcome, 'note-pending'); assert.equal(row?.at, input.at)
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_turns').get()?.n, 1)
+  const row = db.prepare('SELECT outcome,at FROM memory_sources WHERE id=?').get(src.sourceId)
+  assert.equal(row?.outcome, 'note-pending'); assert.equal(row?.at, src.at)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_note_ranges').get()?.n, 1)
 })
-
-
 
 test('failed revision validation is terminal and cannot poison owner recovery', async t => {
   const { owner, root } = fixture(t); await owner.recover()
-  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
+  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as MemoryFileMutationResult
   const detail = owner.runtime.readFile(created.identity)!
   const operationId = randomUUID()
   await assert.rejects(owner.handleHost('editFile', { args: [{ operationId, identity: created.identity,
@@ -189,38 +209,51 @@ test('failed revision validation is terminal and cannot poison owner recovery', 
   try { await next.recover(); assert.equal(next.ready(), true) } finally { await next.close() }
 })
 
-
-
 test('custom question answer uses the owner native turn and joins only completed-turn processing', async t => {
   const { owner, root } = fixture(t); await owner.recover()
-  const original = source({ turn: 2 })
-  await owner.receiveSource(original)
+  const sessionId = randomUUID(), src = candidate()
+  owner.beginTurn({ sessionId, turn: 2, sessionKind: 'main', conversation: sessionId, cwd: null })
+  await owner.settleTurn({
+    sessionId, cwd: null, sessionKind: 'main', conversation: sessionId, inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 6, turn: 2, reasonKind: 'completed',
+    sources: [src], assistantText: '', at: src.at, timezone: 'Asia/Shanghai',
+  })
+  owner.beginTurn({ sessionId, turn: 3, sessionKind: 'main', conversation: sessionId, cwd: null })
   const card = { id: 'drink', question: '你喜欢什么饮品？', header: '', multiSelect: false, options: [{ label: '茶' }] }
-  const context = { kind: 'conversation' as const, id: original.sessionId }
-  // The verified question from turn 3 can be answered before the sidecar
-  // receives turn 3 or finishes replaying turn 2.
+  const context = { kind: 'user' as const }
   const operationId = randomUUID()
-  const answer = { operationId, session: original.sessionId, conversation: original.sessionId, text: '我喜欢茉莉花茶', turn: 3, cards: [card],
+  const answer = { operationId, session: sessionId, conversation: sessionId, text: '我喜欢茉莉花茶', turn: 3, cards: [card],
     requestId: 'request', questionId: card.id, context }
   assert.deepEqual(await owner.handleHost('acceptQuestionAnswer', answer), { sourceId: operationId })
   assert.deepEqual(await owner.handleHost('acceptQuestionAnswer', answer), { sourceId: operationId })
-  await owner.completeTurn({ sessionId: original.sessionId, turn: 2, eventSeq: 5, sourceIds: [original.messageId], assistant: '', completed: true,
-    at: Date.now(), timezone: 'Asia/Shanghai' })
-  await owner.completeTurn({ sessionId: original.sessionId, turn: 3, eventSeq: 10, sourceIds: [], assistant: '收到', completed: true, at: Date.now(), timezone: 'Asia/Shanghai' })
+  await owner.settleTurn({
+    sessionId, cwd: null, sessionKind: 'main', conversation: sessionId, inheritedSeq: 0,
+    expectedNextSeq: 6, fromSeq: 6, toSeq: 11, turn: 3, reasonKind: 'completed',
+    sources: [], assistantText: '收到', at: Date.now(), timezone: 'Asia/Shanghai',
+  })
+  // Fresh answer targeting already-completed turn 2 after retirement must be rejected!
+  await assert.rejects(
+    owner.handleHost('acceptQuestionAnswer', { ...answer, operationId: randomUUID(), turn: 2 }),
+    /unavailable/,
+  )
   const db = new DatabaseSync(join(root, 'memory.db'))
-  try { assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(operationId)?.outcome, 'note-pending') } finally { db.close() }
+  try {
+    const row = db.prepare('SELECT outcome, question_valid FROM memory_sources WHERE id=?').get(operationId)
+    assert.equal(row?.outcome, 'note-pending')
+    assert.equal(row?.question_valid, 1)
+  } finally { db.close() }
 })
-
 
 test('an independent owner completes file deletion without a native or host cleanup participant', async t => {
   const { owner } = fixture(t); await owner.recover()
-  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
+  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as MemoryFileMutationResult
   const detail = owner.runtime.readFile(created.identity)!, operationId = randomUUID()
   await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.identity, version: detail.version }] })
   await owner.runtime.wake()
   const result = await owner.handleHost('getOperation', { operationId }) as { cleanup: string }
   assert.equal(result.cleanup, 'complete')
 })
+
 test('a replacement owner cannot drop a persisted host binding to bypass cleanup', async t => {
   const { owner, root, defer } = fixture(t, 'viva'); await owner.recover(); await owner.close()
   assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null }), /host binding/)
@@ -229,67 +262,22 @@ test('a replacement owner cannot drop a persisted host binding to bypass cleanup
   await next.recover(); await next.close()
 })
 
-
-
-
-test('a live miss leaves the authenticated original available to durable replay', async t => {
-  const { owner, root } = fixture(t, 'viva')
-  await owner.recover()
-  const text = '我的周报每周三交', wireText = '[request]' + text
-  const input = source({ text: wireText }), session = input.sessionId, sourceId = randomUUID()
-  assert.equal((await owner.receiveSource({ ...input, live: true })).handledIntent, true)
-  assert.equal(owner.intakeQuery(session, undefined, [{ id: input.messageId, text: wireText }]), '')
-  await owner.handleHost('sourceAlias', { session, conversation: session, text, wireText, operationId: randomUUID(), sourceId })
-  assert.equal(owner.intakeQuery(session, undefined, [{ id: input.messageId, text: wireText }]), text)
-  for (let i = 0; i < 2; i++) assert.equal((await owner.receiveSource({ ...input, live: false })).sourceId, sourceId)
-  const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true })
-  try {
-    assert.equal(db.prepare('SELECT text FROM memory_sources WHERE id=?').get(sourceId)?.text, text)
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_aliases').get()?.n, 0)
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_skip_assistant').get()?.n, 0)
-    const other = source({ sessionId: session, text: 'unverified wire text', live: false })
-    assert.equal((await owner.receiveSource(other)).handledIntent, true)
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_sources').get()?.n, 1)
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_skip_assistant').get()?.n, 1)
-  } finally { db.close() }
-})
-
-test('credential-bearing originals and undelivered aliases never persist plaintext in owner receipts', async t => {
+test('credential-bearing originals never persist plaintext in memory_sources or owner_operations', async t => {
   const { owner, root } = fixture(t); await owner.recover()
   const secret = 'password: dummy-review-secret'
-  const input = source({ text: `请保存 ${secret}` })
-  const rejected = await owner.receiveSource(input)
-  assert.equal(rejected.text, '')
-  const id = randomUUID(), text = `原始凭据 ${secret}`
-  const alias = { operationId: id, sourceId: id, session: input.sessionId, conversation: input.sessionId, text, wireText: `[host]${text}[/host]`, cwd: null }
-  await owner.handleHost('sourceAlias', alias)
+  const sessionId = randomUUID()
+  const src = candidate({ text: `请保存 ${secret}` })
+  await owner.settleTurn({
+    sessionId, cwd: null, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 3, turn: 1, reasonKind: 'completed',
+    sources: [src], assistantText: '', at: src.at, timezone: src.timezone,
+  })
   const db = new DatabaseSync(join(root, 'memory.db'))
   try {
-    assert.ok(!JSON.stringify(db.prepare('SELECT * FROM owner_aliases').all()).includes(secret))
+    assert.ok(!JSON.stringify(db.prepare('SELECT * FROM memory_sources').all()).includes(secret))
     assert.ok(!JSON.stringify(db.prepare('SELECT * FROM owner_operations').all()).includes(secret))
   } finally { db.close() }
-  await owner.close()
-  const restored = openMemoryOwner({ root, compute: () => null, route: () => null })
-  try {
-    await restored.recover()
-    const delivered = await restored.receiveSource(source({ sessionId: input.sessionId, text: alias.wireText }))
-    assert.equal(delivered.sourceId, id)
-    assert.equal(delivered.text, '')
-  } finally { await restored.close() }
 })
-
-test('an alias whose original is absent from wire is rejected before persisting session or source state', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
-  const id = randomUUID()
-  await assert.rejects(owner.handleHost('sourceAlias', { operationId: id, sourceId: id, session: id, conversation: id,
-    text: 'canonical original', wireText: 'different wire', cwd: null, origin: 'derived' }), /verbatim wire span/)
-  const db = new DatabaseSync(join(root, 'memory.db'))
-  try {
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_aliases').get()?.n, 0)
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_sessions').get()?.n, 0)
-  } finally { db.close() }
-})
-
 
 test('completed daily capture resumes after restart without duplicate notes or cancelled input', async t => {
   const { dir: root, defer } = scratch(t, 'memory-owner-processing-')
@@ -297,6 +285,7 @@ test('completed daily capture resumes after restart without duplicate notes or c
   const stages: string[] = []
   const open = () => openMemoryOwner({ root, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
     route: () => online ? { provider: 'fake', model: 'fake' } : null,
+    readSessionRange: async () => ({ status: 'ok', assistant: '收到' }),
     compute: job => {
       stages.push(job.stage)
       if (job.stage === 'note') return Promise.resolve(JSON.stringify({ status: 'write', title: '周报邮箱', markdown: '周报发送到指定邮箱。' }))
@@ -306,32 +295,38 @@ test('completed daily capture resumes after restart without duplicate notes or c
   let owner = open()
   defer(() => owner.close())
   await owner.recover()
-  const input = source({ text: '我唯一的周报提交邮箱是 amber@example.com' })
-  const received = await owner.receiveSource(input)
-  await owner.receiveSource(input)
+  const sessionId = randomUUID(), src = candidate({ text: '我唯一的周报提交邮箱是 amber@example.com' })
+  owner.stageOpenTurnSources({ sessionId, turn: 1, sessionKind: 'main', cwd: null, sources: [src] })
   await owner.runtime.wake()
   assert.equal(stages.length, 0, 'a live unfinished turn is not processed')
-  const complete = { sessionId: input.sessionId, turn: 1, eventSeq: 3, sourceIds: [received.sourceId], assistant: '收到', completed: true, at: input.at, timezone: 'UTC' }
-  await owner.completeTurn(complete)
+  const complete = {
+    sessionId, cwd: null, sessionKind: 'main' as const, inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 4, turn: 1, reasonKind: 'completed',
+    sources: [src], assistantText: '收到', at: src.at, timezone: 'UTC',
+  }
+  await owner.settleTurn(complete)
   await owner.close()
   online = true; owner = open(); await owner.recover()
   await owner.runtime.wake()
-  await owner.completeTurn(complete)
+  await owner.settleTurn(complete)
   await owner.runtime.wake()
   const db = new DatabaseSync(join(root, 'memory.db'))
   try {
     assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 0)
-    assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(received.sourceId)?.outcome, 'note-ready')
-    assert.equal(db.prepare('SELECT text FROM memory_sources WHERE id=?').get(received.sourceId)?.text, input.text, 'daily source body remains available')
+    assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(src.sourceId)?.outcome, 'note-ready')
+    assert.equal(db.prepare('SELECT text FROM memory_sources WHERE id=?').get(src.sourceId)?.text, src.text, 'daily source body remains available')
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_daily_notes').get()?.n, 1)
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_note_turns').get()?.n, 1)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_note_ranges').get()?.n, 1)
   } finally { db.close() }
   assert.equal(stages.filter(stage => stage === 'extract').length, 0)
   assert.equal(stages.filter(stage => stage === 'note').length, 1)
   assert.equal(stages.includes('dream'), false, 'capturing a note does not schedule an unrelated dream run')
-  const cancelled = source({ sessionId: input.sessionId, turn: 2, text: '我下周改用其他邮箱' })
-  const receipt = await owner.receiveSource(cancelled)
-  await owner.completeTurn({ ...complete, turn: 2, eventSeq: 7, sourceIds: [receipt.sourceId], completed: false })
+  const cancelledSrc = candidate({ text: '我下周改用其他邮箱' })
+  await owner.settleTurn({
+    sessionId, cwd: null, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: 4, fromSeq: 4, toSeq: 8, turn: 2, reasonKind: 'aborted',
+    sources: [cancelledSrc], assistantText: '', at: cancelledSrc.at, timezone: 'UTC',
+  })
   await owner.runtime.wake()
   assert.equal(stages.filter(stage => stage === 'extract').length, 0)
   assert.equal(stages.filter(stage => stage === 'note').length, 1)
@@ -343,34 +338,45 @@ test('a Git identity change within a turn never mixes note scope or stalls the d
   const cwd = join(root, 'project'), git = join(cwd, '.git')
   mkdirSync(join(git, 'objects'), { recursive: true })
   writeFileSync(join(git, 'HEAD'), 'ref: refs/heads/main\n')
-  const original = source({ cwd, text: 'A verified project planning note.' })
-  const received = await owner.receiveSource(original)
+  const sessionId = randomUUID()
+  const original = candidate({ text: 'A verified project planning note.' })
+  await owner.settleTurn({
+    sessionId, cwd, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 3, turn: 1, reasonKind: 'completed',
+    sources: [original], assistantText: 'Saved.', at: original.at, timezone: original.timezone,
+  })
   rmSync(git, { recursive: true })
-  const reply = await owner.receiveSource(source({ cwd, sessionId: original.sessionId, text: 'An unverified interjection.' }))
-  assert.equal(reply.text, '')
-  await owner.completeTurn({ sessionId: original.sessionId, turn: 1, eventSeq: 4, sourceIds: [received.sourceId],
-    assistant: 'A response to the unverified interjection.', completed: true, at: original.at, timezone: original.timezone })
-  assert.equal(owner.intakeWatermark(original.sessionId).nextSeq, 5)
+  const unverified = candidate({ text: 'An unverified interjection after git removal.' })
+  await owner.settleTurn({
+    sessionId, cwd, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: 3, fromSeq: 3, toSeq: 6, turn: 2, reasonKind: 'completed',
+    sources: [unverified], assistantText: 'A response to the unverified interjection.', at: unverified.at, timezone: unverified.timezone,
+  })
+  assert.equal(owner.intakeCursor(sessionId).nextSeq, 6)
   const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true })
   try {
-    const sources = db.prepare('SELECT session, project, text FROM memory_sources').all()
+    const sources = db.prepare('SELECT session, project, text, source_kind, profile_eligible FROM memory_sources').all()
     assert.equal(sources.length, 1)
     assert.equal(sources[0]?.text, original.text)
     assert.ok(sources[0]?.project)
-    assert.equal(db.prepare('SELECT assistant_digest FROM memory_note_turns WHERE session=?').get(original.sessionId)?.assistant_digest, null)
+    assert.equal(sources[0]?.source_kind, 'project-user')
+    assert.equal(sources[0]?.profile_eligible, 0)
   } finally { db.close() }
 })
 
 test('completed ordinary input stays canonical when daily capture is disabled', async t => {
   const { owner, root, defer } = fixture(t, undefined, { dailyNotes: false })
   await owner.recover()
-  const input = source({ text: '每周五下班前提交周报' })
-  const receipt = await owner.receiveSource(input)
-  await owner.completeTurn({ sessionId: input.sessionId, turn: 1, eventSeq: 3, sourceIds: [receipt.sourceId], assistant: '', completed: true, at: input.at, timezone: 'UTC' })
+  const sessionId = randomUUID(), src = candidate({ text: '每周五下班前提交周报' })
+  await owner.settleTurn({
+    sessionId, cwd: null, sessionKind: 'main', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 4, turn: 1, reasonKind: 'completed',
+    sources: [src], assistantText: '', at: src.at, timezone: 'UTC',
+  })
   await owner.runtime.wake()
   const db = new DatabaseSync(join(root, 'memory.db')); defer(() => db.close())
-  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(receipt.sourceId)?.outcome, 'recorded')
-  assert.equal(owner.runtime.sourceCurrent(receipt.sourceId), true)
+  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(src.sourceId)?.outcome, 'recorded')
+  assert.equal(owner.runtime.sourceCurrent(src.sourceId), true)
   assert.equal(owner.runtime.listFiles({ kind: 'daily' }).items.length, 0)
   assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 0)
 })

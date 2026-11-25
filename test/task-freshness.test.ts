@@ -40,6 +40,14 @@ test('a fresh native task begins with one brief, with or without an exactly empt
   assert.equal(evidence.ok, true)
   assert.equal(evidence.humanMessages, 1)
   assert.equal(evidence.recoveryFrames, 1)
+  const liftedBrief = prefix().map(row => row.type === 'user/message'
+    ? { ...row, data: { ...(row.data as Record<string, unknown>), source: { kind: 'viva-task-brief' } } }
+    : row)
+  assert.equal(inspect(liftedBrief).ok, true)
+  const mutatedLifted = prefix().map(row => row.type === 'user/message'
+    ? { ...row, data: { ...(row.data as Record<string, unknown>), source: { kind: 'viva-task-brief' }, content: [text('mutated brief')] } }
+    : row)
+  assert.equal(inspect(mutatedLifted).ok, false)
 })
 
 test('declared runtime, skill and memory projections are context rather than parent conversational originals', () => {

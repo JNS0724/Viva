@@ -6,7 +6,7 @@ import { modelCallId } from '../shared/trace.ts'
 import { approvalTitle, optionName } from './approval.ts'
 import { assistantStream } from './assistant-stream.ts'
 import { QUESTION_ACTIONS } from './question-state.ts'
-import { closeLast, closeStreams } from './streams.ts'
+import { closeLast, closeStreams, nextMessageSeq } from './streams.ts'
 
 /**
  * One conversation as it is reduced (system-design §11.3): what was said and done in it, and where its turn is.
@@ -38,7 +38,8 @@ function appendStream<T extends { open?: boolean, text: string }>(list: readonly
 }
 
 const bumpTurn = (turn: ConversationView['turn'], key: 'tools' | 'thoughts') => (turn ? { ...turn, [key]: turn[key] + 1 } : turn)
-const messageId = (view: Pick<ConversationView, 'historyOffset'>, index: number) => `m${(view.historyOffset ?? 0) + index}`
+const messageId = (view: Pick<ConversationView, 'historyOffset' | 'messages'>, _index?: number) =>
+  `m${nextMessageSeq(view.messages, view.historyOffset ?? 0)}`
 
 function onMessageChunk(view: ConversationView, update: Extract<AcpUpdate, { sessionUpdate: 'agent_message_chunk' }>): ConversationView {
   const chunk = contentText(update.content)
@@ -114,7 +115,7 @@ function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt, off
   const problem = turnProblem(receipt.stopReason)
   if (!problem && receipt.stopReason !== 'cancelled' && last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
   const text = problem ?? (receipt.stopReason === 'cancelled' ? t("state.this.turn.was.stopped") : t("state.no.text.response.this.turn"))
-  return [...messages, { id: `m${offset + messages.length}`, role: 'note', text, open: false, receipt }]
+  return [...messages, { id: `m${nextMessageSeq(messages, offset)}`, role: 'note', text, open: false, receipt }]
 }
 
 /** The conversation's own actions: what is said, asked and done in it, and how its turns go. */
@@ -165,10 +166,14 @@ export const CONVERSATION_ACTIONS = {
    * Said while the agent works (viva-steer): into the thread at once, the turn going on. What the agent was
    * writing closes, so its reply to these words starts below them.
    */
-  user_steer: (view, { text, via = null, sourceId }) => {
+  user_steer: (view, { text, via = null, sourceId, streamKey }) => {
     const closed = closeStreams(view)
-    const message = { id: messageId(closed, closed.messages.length), role: 'user', text, ...(sourceId ? { sourceId } : {}), open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
+    const message = { id: messageId(closed, closed.messages.length), role: 'user', text, ...(sourceId ? { sourceId } : {}), ...(streamKey ? { streamKey } : {}), open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
     return { ...closed, messages: [...closed.messages, message] }
+  },
+  user_steer_retracted: (view, { streamKey }) => {
+    const messages = view.messages.filter((message) => !(message.role === 'user' && message.streamKey === streamKey))
+    return messages.length === view.messages.length ? view : { ...view, messages }
   },
 
   /** The words could not reach the agent: they stay in the thread, marked as not sent. */

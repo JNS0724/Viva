@@ -1,12 +1,14 @@
 import { isReportId, isToken } from './reports.ts'
+import { validateHumanSpans, type HumanSpan, type SteerMessageSource } from '../../../src/shared/request-routing/provenance.ts'
+import { stripLeadingTaskHeader } from '../../../src/shared/request-routing/task-header.ts'
 
 /**
  * The steer contract (version 2) between this plugin, inside dsh, and the app that started dsh. The messages
  * go over Node's IPC channel (`process.send` / `process.on('message')`); the app keeps the same shapes in
  * src/backend/steer-channel.ts.
  *
- *   app → plugin  { type: 'steer', id, sessionId, text }       what the user said while the agent works
- *   plugin → app  { type: 'steer_result', id, ok, reason? }    reason when not ok: see REASONS
+ *   app → plugin  { type: 'steer', id, sessionId, text, source? }  what was said while the agent works
+ *   plugin → app  { type: 'steer_result', id, ok, reason? }        reason when not ok: see REASONS
  *
  * A background task's result (lib/reports.ts), at most once and confirmed read:
  *
@@ -35,6 +37,41 @@ type Incoming = any
 
 const isText = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max
 
+function parseSteerSource(raw: unknown, wireText: string): SteerMessageSource | undefined | null {
+  if (raw === undefined) return undefined
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const obj = raw as Record<string, unknown>
+  if (obj.kind === 'viva-task-router-message') {
+    if (obj.conversationId !== undefined && !isText(obj.conversationId, MAX_ID_CHARS)) return null
+    return {
+      kind: 'viva-task-router-message',
+      ...(typeof obj.conversationId === 'string' ? { conversationId: obj.conversationId } : {}),
+    }
+  }
+  if (obj.kind === 'viva-main-human-steer' || obj.kind === 'viva-task-human-steer') {
+    if (obj.sourceId !== undefined && !isText(obj.sourceId, MAX_ID_CHARS)) return null
+    if (obj.conversationId !== undefined && !isText(obj.conversationId, MAX_ID_CHARS)) return null
+    const payload = obj.kind === 'viva-task-human-steer'
+      ? (stripLeadingTaskHeader(wireText)?.payload ?? wireText)
+      : wireText
+    let humanSpans: HumanSpan[] | undefined
+    if (obj.humanSpans !== undefined) {
+      const validated = validateHumanSpans(obj.humanSpans, payload.length)
+      if (!validated) return null
+      humanSpans = validated
+    }
+    const base = {
+      ...(typeof obj.sourceId === 'string' ? { sourceId: obj.sourceId } : {}),
+      ...(typeof obj.conversationId === 'string' ? { conversationId: obj.conversationId } : {}),
+      ...(humanSpans !== undefined ? { humanSpans } : {}),
+    }
+    return obj.kind === 'viva-main-human-steer'
+      ? { kind: 'viva-main-human-steer', ...base }
+      : { kind: 'viva-task-human-steer', ...base }
+  }
+  return null
+}
+
 /**
  * @param port the IPC channel to the app
  * @param steer null once dsh has the words
@@ -47,7 +84,7 @@ export interface ReportHandlers {
 
 export function createSteerChannel(
   port: { send: (message: object) => unknown, on: Function, off: Function },
-  steer: (sessionId: string, text: string) => SteerReason | null,
+  steer: (sessionId: string, text: string, source?: SteerMessageSource) => SteerReason | null,
   log: (message: string) => void,
   reports: ReportHandlers | null = null,
 ): { close: () => void } {
@@ -72,9 +109,11 @@ export function createSteerChannel(
     if (!isText(message.id, MAX_ID_CHARS)) return log('ignored a steer without an id')
     const reply = (reason: SteerReason | null) => port.send({ type: 'steer_result', id: message.id, ok: !reason, ...(reason ? { reason } : {}) })
     if (!isText(message.sessionId, MAX_ID_CHARS) || !isText(message.text, MAX_STEER_WIRE_CHARS)) return reply(REASONS.failed)
+    const source = parseSteerSource(message.source, message.text)
+    if (source === null) return reply(REASONS.failed)
     let reason: SteerReason | null
     try {
-      reason = steer(message.sessionId, message.text)
+      reason = steer(message.sessionId, message.text, source)
     } catch (err: any) {
       log(`could not steer: ${err.message}`)
       reason = REASONS.failed

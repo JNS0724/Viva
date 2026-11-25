@@ -215,7 +215,8 @@ function eventOf(item: ObjectValue): AgentEvent | null {
       ...(natural(item.requestedAt) ? { requestedAt: item.requestedAt } : {}) } : null
   }
   if (type === 'task_question_closed') return task && string(item.questionId) ? { type, ...task, questionId: item.questionId } : null
-  if (type === 'task_steered') return task && string(item.text) ? { type, ...task, text: item.text } : null
+  if (type === 'task_steered') return task && string(item.text) && optional(item.key, string) ? { type, ...task, text: item.text, ...(string(item.key) ? { key: item.key } : {}) } : null
+  if (type === 'task_steer_retracted') return task && string(item.key) ? { type, ...task, key: item.key } : null
   if (type === 'task_end') return task && optional(item.stopReason, string) && optional(item.message, nullableText) ? { type, ...task, stopReason: item.stopReason, message: item.message } : null
   // Every remaining foreground payload must prove its original history segment and runtime session.
   if (!context || item.taskId !== undefined) return null
@@ -246,7 +247,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_stopping: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, prompt_persisted: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_closed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_stopping: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, prompt_persisted: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_closed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_steer_retracted: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

@@ -1,8 +1,9 @@
 import { homedir } from 'node:os'
 import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, freezeMessage, isAgentLoopRequest, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-log-deepseek'
 import type { AutomaticRecallResult } from '../../../src/memory/contracts/memory-contract.ts'
@@ -20,8 +21,7 @@ import { dateLine, formatAutomaticRecallMessage, formatMemoryRulesSection, forma
 import { looksSecret } from '../../../src/memory/core/memory-sensitive.ts'
 import { resolveMemoryProject } from '../../../src/memory/node/project-scope.ts'
 import { createRequestBudget, APP_WRITE_TIMEOUT_MS, MEMORY_READ_BUDGET_MS } from '../../../src/shared/request-budget.ts'
-import { requestsIn, withoutHeaders } from '../../../src/shared/request-routing/header.ts'
-import { leadingTaskRequestId, withoutTaskHeaders } from '../../../src/shared/request-routing/task-header.ts'
+import { liftProvenanceDraft } from '../../../src/shared/request-routing/provenance.ts'
 import { createManagedDiagnostics } from '../../../src/diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../../../src/diagnostics/node/hub.ts'
 import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort } from '../../../src/diagnostics/node/context.ts'
@@ -29,23 +29,16 @@ import type { MemoryPluginConfig } from './config.ts'
 import { attachHostMemoryRelay } from './host-relay.ts'
 import { openPluginOwner } from './standalone-owner.ts'
 import { createRemoteMemoryOwner } from './remote-owner.ts'
-import { createSessionIngestion, humanMessages } from './ingestion.ts'
+import { createSessionIngestion, extractRecallQueries, readPersistedSessionRange } from './ingestion.ts'
 import { completeMemoryModel, memoryProviderFailure } from './model.ts'
 import { registerMemoryTools } from './tools.ts'
 import { registerMemoryFileCommands } from './file-commands.ts'
 import { observeDshDiagnostics } from './diagnostics.ts'
 import type {} from './source.ts'
+import type {} from '@deepseek-ai/dsh-session-persistence'
 
 const MAX_SOFT_YIELD_MS = 30_000
 const SOFT_YIELD_DEFER_MS = 3_000
-
-function extractCorrelationRequestId(text: string): string | undefined {
-  const leadingTask = leadingTaskRequestId(text)
-  if (leadingTask) return leadingTask
-  const routed = requestsIn(text)
-  if (routed.length > 0) return routed[routed.length - 1]!.id
-  return undefined
-}
 
 export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}, port = process) {
   const lifetime = new AbortController()
@@ -91,6 +84,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     })()
   })
 
+  let sessionPersistence: Context['sessionPersistence'] | undefined
   const connection = openPluginOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true,
     callbacks: {
       async compute({ job, tools }, signal) {
@@ -114,11 +108,18 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
           throw memoryProviderFailure(error) ?? new MemoryComputeError('call-failed')
         }
       },
+      async readSessionRange({ sessionId, fromSeq, toSeq, sessionKind }) {
+        if (lifetime.signal.aborted || !sessionPersistence) return { status: 'unavailable' as const }
+        return readPersistedSessionRange(sessionPersistence, sessionId, fromSeq, toSeq, {
+          host: Boolean(config.host),
+          ...(sessionKind ? { initialSessionKind: sessionKind } : {}),
+        })
+      },
     },
   }, port)
   const owner = createRemoteMemoryOwner(connection)
   const available = () => !lifetime.signal.aborted && owner.ready()
-  const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session), { host: Boolean(config.host), onError: report })
+  const intake = createSessionIngestion(owner, ctx.sessions, () => sessionPersistence, { host: Boolean(config.host), onError: report })
   let cachedProfile: MemoryProfileSnapshot | undefined
   let currentRevision: number | undefined
   let observedEpoch: string | undefined
@@ -132,11 +133,6 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     signal: lifetime.signal,
     getEpoch: () => owner.epoch,
     enabled: Boolean(config.host),
-    onHostSuccess(method, input) {
-      if (method !== 'sourceAlias' || !input || typeof input !== 'object' || !('session' in input)) return
-      const targetId = (input as { session?: unknown }).session
-      if (typeof targetId === 'string') intake.wakeIfAwaiting(targetId)
-    },
   })
   const sendParent = hostRelay.sendParent
 
@@ -217,9 +213,11 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     readyEpoch = epoch
     publishRoute()
     for (const session of ctx.sessions.list()) observe(session)
+    intake.startColdCatchup()
   })
 
   ctx.on('session/created', observe)
+  ctx.on('agent/created', ({ agent }) => { observe(agent.session); return undefined })
   ctx.on('session/disposed', session => {
     const id = String(session.id)
     clearPendingForSession(id)
@@ -243,6 +241,17 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     }
   })
 
+  ctx.inject(['sessionPersistence'], scoped => {
+    sessionPersistence = scoped.sessionPersistence
+    if (available()) {
+      for (const session of ctx.sessions.list()) observe(session)
+      intake.startColdCatchup()
+    }
+    scoped.effect(() => () => {
+      if (sessionPersistence === scoped.sessionPersistence) sessionPersistence = undefined
+    })
+  })
+
   // L1 static rules (0ms, KV-cache stable) and L2 cached resident profile (0ms, independent of L3).
   ctx.inject(['systemPrompt'], scoped => {
     scoped.systemPrompt.section({ name: 'viva-memory-rules', order: 20, interpolate: false, text: formatMemoryRulesSection() })
@@ -251,8 +260,9 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     })
   })
 
+  type RecallQueryMessage = { id: string, text: string, requestId?: string }
   type RecallAttempt = {
-    msg: { id: string, text: string }
+    msg: RecallQueryMessage
     requestId: string | undefined
     result: AutomaticRecallResult
     epoch?: string
@@ -264,14 +274,14 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     sessionId: string,
     cwd: string | null | undefined,
     turn: number,
-    msg: { id: string, text: string },
+    msg: RecallQueryMessage,
     requestId: string | undefined,
     stepDeadlineAt: number,
     signal: AbortSignal,
   ): Promise<RecallAttempt> {
     if (!available()) return { msg, requestId, result: { status: 'unavailable' } }
-    const cleanQuery = withoutTaskHeaders(withoutHeaders(msg.text))
-    if (!config.host && (!cleanQuery.trim() || looksSecret(cleanQuery))) {
+    const cleanQuery = msg.text.slice(0, 20_000)
+    if (!cleanQuery.trim() || looksSecret(cleanQuery)) {
       return { msg, requestId, result: { status: 'skipped' } }
     }
     const left = Math.max(0, stepDeadlineAt - Date.now())
@@ -279,9 +289,8 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const budget = createRequestBudget(left, signal)
     try {
       const reply = await budget.run(() => owner.call('automaticRecall', [
-        { session: sessionId, turn, question: config.host ? '' : cleanQuery },
+        { session: sessionId, turn, question: cleanQuery },
         cwd,
-        config.host ? [msg] : undefined,
       ], { signal: budget.signal, budgetMs: budget.remainingMs() }))
       return { msg, requestId, result: reply.result, epoch: reply.epoch, revision: reply.revision, stale: reply.stale }
     } catch (error) {
@@ -296,11 +305,11 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     sessionId: string,
     cwd: string | null | undefined,
     turn: number,
-    messages: ReadonlyArray<{ id: string, text: string }>,
+    messages: ReadonlyArray<RecallQueryMessage>,
     stepDeadlineAt: number,
     signal: AbortSignal,
-  ): Promise<Array<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult }>> {
-    const items = messages.map(msg => ({ msg, requestId: extractCorrelationRequestId(msg.text) }))
+  ): Promise<Array<{ msg: RecallQueryMessage, requestId: string | undefined, result: AutomaticRecallResult }>> {
+    const items = messages.map(msg => ({ msg, requestId: msg.requestId }))
     const initial = await Promise.all(items.map(({ msg, requestId }) =>
       querySingleHop(sessionId, cwd, turn, msg, requestId, stepDeadlineAt, signal),
     ))
@@ -336,24 +345,48 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     })
   }
 
+  function liftHostMessage(message: UserMessage): UserMessage {
+    const lifted = liftProvenanceDraft(message.content, message.source as Readonly<Record<string, unknown>>)
+    if (!lifted) return message
+    return freezeMessage({
+      ...message,
+      content: lifted.content,
+      source: lifted.source as UserMessage['source'],
+    })
+  }
+
   ctx.on('agent/pre-step', async ({ agent, turn, signal, modelSelection }, next) => {
     const sessionId = String(agent.session.id)
     const decision = await next()
     if (decision.kind === 'reject' || signal.aborted) return decision
+    let baseDecision = decision
+    // Defensive idempotent provenance unwrapping under `config.host === true` only
+    // (never in standalone `host: false` mode) so plugin registration order cannot leak headers.
+    if (config.host && decision.messages.length > 0) {
+      let changed = false
+      const liftedMessages = decision.messages.map(msg => {
+        const lifted = liftHostMessage(msg)
+        if (lifted !== msg) changed = true
+        return lifted
+      })
+      if (changed) baseDecision = { ...decision, messages: liftedMessages }
+    }
     route = { provider: modelSelection.provider, model: modelSelection.model }
     publishRoute()
-    const messages = humanMessages(decision.messages)
+    if (available() && baseDecision.messages.length > 0) {
+      void intake.beginTurn(agent.session, turn, baseDecision.messages).catch(report)
+    }
+    const messages = extractRecallQueries(baseDecision.messages, { host: Boolean(config.host), sessionId })
     // Ordinary tool continuation steps keep the adopted snapshot frozen (no re-query, no deletion).
-    if (!messages.length) return decision
-    if (available()) void intake.receive(agent.session, decision.messages, turn).catch(report)
-    if (process.env.VIVA_MEMORY_BENCHMARK_BYPASS_AUTO === '1') return decision
+    if (!messages.length) return baseDecision
+    if (process.env.VIVA_MEMORY_BENCHMARK_BYPASS_AUTO === '1') return baseDecision
 
     const stepDeadlineAt = Date.now() + DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs
     const resolved = await resolveRecallForMessages(sessionId, agent.session.header.cwd, turn, messages, stepDeadlineAt, signal)
-    if (signal.aborted) return decision
+    if (signal.aborted) return baseDecision
 
     // Append L3 recall messages in original message order [A, B, ...] without modifying prior turns' nodes.
-    const appended = [...decision.messages]
+    const appended = [...baseDecision.messages]
     for (const { msg, requestId, result } of resolved) {
       const recallText = formatAutomaticRecallMessage({ turn, ref: requestId ?? msg.id, result })
       if (!recallText) continue
@@ -366,7 +399,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
         pendingContextConfirmations.set(String(recallMessage.id), { session: sessionId, turn, pushed: result.hits })
       }
     }
-    return appended.length === decision.messages.length ? decision : { ...decision, messages: appended }
+    return appended.length === baseDecision.messages.length ? baseDecision : { ...baseDecision, messages: appended }
   })
 
   registerMemoryTools(ctx, async (request, agent, signal) => {
@@ -374,7 +407,13 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const budget = createRequestBudget(request.op === 'remember' ? APP_WRITE_TIMEOUT_MS : MEMORY_READ_BUDGET_MS, signal)
     try {
       return await budget.run(async () => {
-        if (request.op === 'remember') await intake.synchronize(agent.session)
+        if (request.op === 'remember') {
+          try {
+            await intake.stageOpenTurn(agent.session)
+          } catch {
+            return '{"status":"unavailable"}'
+          }
+        }
         budget.signal.throwIfAborted()
         return owner.call('sidecarRequest', [request, agent.session.header.cwd], { signal: budget.signal, budgetMs: budget.remainingMs() })
       })

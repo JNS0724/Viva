@@ -1,5 +1,5 @@
 import type { QuestionAnswer } from '../shared/question-answer.ts'
-import { answered, ended, fromSaved, said, saved, updated, type SavedMessage, type Transcript } from './task-transcript.ts'
+import { answered, ended, fromSaved, said, saved, unsaid, updated, type SavedMessage, type Transcript } from './task-transcript.ts'
 
 /**
  * What each background task says, kept by the backend as it comes (task-transcript.ts) and saved into its segment
@@ -89,9 +89,21 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
   }
 
   /** The user said something to the task: its first words, words into its turn, its next question. */
-  function userSaid(taskId: string, words: string, key?: string) {
+  function userSaid(taskId: string, words: string, key?: string, sourceId?: string) {
     const transcript = transcripts.get(taskId)
-    if (transcript) change(taskId, said(transcript, words, key))
+    if (!transcript) return
+    change(taskId, said(transcript, words, key, sourceId))
+    if (sourceId) save(taskId)
+  }
+
+  /** Retract a steered user message after dsh explicitly rejects delivery, persisting the clean history. */
+  function undoUserSaid(taskId: string, key: string) {
+    const transcript = transcripts.get(taskId)
+    if (!transcript) return
+    const next = unsaid(transcript, key)
+    if (next === transcript) return
+    transcripts.set(taskId, next)
+    save(taskId)
   }
 
   /**
@@ -167,6 +179,6 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
     })) : null
   }
 
-  return { track, userSaid, receive, answer, holdQuestion, flush, drop, current, checkpoint, has: (taskId: string) => transcripts.has(taskId) }
+  return { track, userSaid, undoUserSaid, receive, answer, holdQuestion, flush, drop, current, checkpoint, has: (taskId: string) => transcripts.has(taskId) }
 }
 export type TaskWords = ReturnType<typeof createTaskWords>

@@ -1,5 +1,6 @@
 // Domain storage port. Implementations live in memory/node; no database handle crosses this boundary.
 import type { DocumentSourceRef, MemoryPhysicalFile } from './documents.ts'
+import type { MemorySessionKind } from '../../contracts/records.ts'
 import type { MemorySource } from './store.ts'
 type SourceRef = DocumentSourceRef
 export interface NoteRow {
@@ -39,6 +40,34 @@ export type NoteDbRegistration = {
     enabled: boolean;
     deleted: boolean;
 }
+export type ReadSessionRangeResult =
+    | { status: 'ok'; assistant: string }
+    | { status: 'deleted' }
+    | { status: 'unavailable' }
+
+export type ReadSessionRange = (
+    input: { sessionId: string; fromSeq: number; toSeq: number; sessionKind?: MemorySessionKind },
+    signal?: AbortSignal,
+) => Promise<ReadSessionRangeResult>
+
+export interface NoteRangeTurn {
+    id: string;
+    note: string;
+    session: string;
+    day: string;
+    workspace: string;
+    fromSeq: number;
+    toSeq: number;
+    turn: number;
+    sourceIds: string[];
+    assistantSourceIds: string[];
+    assistantDigest: string | null;
+    assistantValid: boolean;
+    questionSourceIds: string[];
+    questionCurrent: boolean;
+    assistant: string;
+}
+
 export interface MemoryNotes {
     allocations(): DailyAllocation[];
     fileRegistry(): DailyFileRegistration[];
@@ -58,7 +87,21 @@ export interface MemoryNotes {
     snapshot: (ids: readonly string[]) => SourceRef[];
     jobState: (key: string, generation: number) => string | undefined;
     blocked: (key: string) => boolean;
-    contextSources(session: string, source: MemorySource): string[];
+    contextSources(session: string, source: MemorySource, excludeIds?: ReadonlySet<string>): string[] | null;
+    hasRange(session: string, fromSeq: number, toSeq: number): boolean;
+    addRange(input: {
+        session: string;
+        day: string;
+        fromSeq: number;
+        toSeq: number;
+        turn: number;
+        sources: MemorySource[];
+        assistantDigest: string | null;
+        assistantSources?: readonly string[];
+        questionSources?: readonly string[];
+        questionCurrent?: boolean;
+        ephemeralAssistant?: string;
+    }): string | null;
     add(session: string, day: string, sources: MemorySource[], assistant: string, requestId?: string, assistantSources?: readonly string[], inputAssistant?: string, options?: { questionSources?: readonly string[], questionCurrent?: boolean }): string | null;
     list(from: string | null, through: string | null): Note[];
     changedFiles(from: string, through: string): Array<Pick<NoteRow, 'key' | 'workspace' | 'path'>>;
@@ -68,44 +111,8 @@ export interface MemoryNotes {
         day: string;
         count: number;
     }>;
-    pending: (key: string, limit?: number) => {
-        sourceIds: string[];
-        assistantSourceIds: string[];
-        questionSourceIds: string[];
-        questionCurrent: boolean;
-        assistant: string;
-        id: string;
-        note: string;
-        session: string;
-        day: string;
-        workspace: string;
-        sources: string;
-        source_tokens: string;
-        assistant_sources: string;
-        assistant_valid: number;
-        question_sources: string;
-        question_valid: number;
-        written: number;
-    }[];
-    previous(_key: string, id: string): {
-        sourceIds: string[];
-        assistantSourceIds: string[];
-        questionSourceIds: string[];
-        questionCurrent: boolean;
-        assistant: string;
-        id: string;
-        note: string;
-        session: string;
-        day: string;
-        workspace: string;
-        sources: string;
-        source_tokens: string;
-        assistant_sources: string;
-        assistant_valid: number;
-        question_sources: string;
-        question_valid: number;
-        written: number;
-    } | undefined;
+    pending: (key: string, limit?: number) => NoteRangeTurn[];
+    previous(_key: string, id: string): NoteRangeTurn | undefined;
     sourceQuestionContext(sourceId: string): { current: boolean, refs: DocumentSourceRef[] };
     sources(key: string): string[];
     references(key: string): DocumentSourceRef[];

@@ -30,7 +30,7 @@ function setup(t: TestContext) {
   return { dir, store, notes, source, key, commit }
 }
 
-test('deleting a daily file survives interrupted cleanup and preserves dialog, source and sibling files', t => {
+test('deleting a daily file survives interrupted cleanup and preserves source and sibling files without writing session/dialog', t => {
   const { store, notes, source, key, commit } = setup(t)
   assert.ok(commit())
   const note = notes.read(key)!
@@ -42,8 +42,7 @@ test('deleting a daily file survives interrupted cleanup and preserves dialog, s
   assert.deepEqual({ ...notes.registeredAt(note.workspace, note.path) }, { key, file_revision: note.fileRevision })
   assert.deepEqual(notes.registeredForSources([source.id, source.id]), [{ workspace: note.workspace, path: note.path }])
   const workspaceRoot = join(store.fileRoot, note.workspace)
-  const dialog = join(workspaceRoot, 'session/dialog', memoryFileRevision('session') + '.jsonl')
-  const originalDialog = readFileSync(dialog, 'utf8')
+  assert.equal(existsSync(join(workspaceRoot, 'session/dialog')), false, 'Phase 4A never writes session/dialog/*.jsonl')
   const originalSource = store.readSource(source.id)
   assert.throws(() => notes.deleteFile(note.workspace, key, note.revision + 1), /version/)
   assert.equal(notes.deleteFile(note.workspace, key, note.revision), note.revision + 1)
@@ -61,7 +60,6 @@ test('deleting a daily file survives interrupted cleanup and preserves dialog, s
   const recovered = openMemoryNotes(store, () => true)
   assert.equal(existsSync(join(workspaceRoot, note.path)), false)
   assert.equal(recovered.deletedFileCleanupPending(note.workspace, id), false)
-  assert.equal(readFileSync(dialog, 'utf8'), originalDialog)
   assert.deepEqual(store.readSource(source.id), originalSource)
   assert.deepEqual(recovered.read(siblingKey), kept)
   const index = readFileSync(join(workspaceRoot, `daily/${note.day}.md`), 'utf8')
@@ -96,38 +94,17 @@ test('existing three-part daily identities keep their path and turn history when
   assert.equal(restored.pendingGroups().length, 0)
   assert.equal(existsSync(join(store.fileRoot, saved.workspace, saved.path)), false)
 })
-test('session JSONL owns role-separated source versions; request replay is idempotent and rejects changed input', t => {
+test('memory_note_ranges stores range metadata without duplicating transcripts or assistant text in SQLite', t => {
   const { store, notes, source, key } = setup(t)
   assert.equal(notes.add('session', '2026-11-14', [source], '先检查版本'), null)
-  assert.throws(() => notes.add('session', '2026-11-14', [source], '另一条答案'), /input-mismatch/u)
   assert.equal(notes.pending(key).length, 1)
-  const [workspace] = readdirSync(store.fileRoot)
-  const [file] = readdirSync(join(store.fileRoot, workspace!, 'session/dialog'))
-  const rows = readFileSync(join(store.fileRoot, workspace!, 'session/dialog', file!), 'utf8').trim().split('\n').map(line => JSON.parse(line))
-  assert.equal(rows.length, 1)
-  assert.deepEqual(rows[0].messages.map((item: { role: string }) => item.role), ['user', 'assistant'])
-  assert.equal(rows[0].messages[0].version, 1)
-  assert.equal(rows[0].messages[0].sourceId, source.id)
-  assert.equal(rows[0].messages[0].at, source.at)
-  assert.equal(dbColumns(store, 'memory_note_turns').includes('assistant'), false)
+  assert.equal(dbColumns(store, 'memory_note_ranges').includes('assistant'), false)
+  assert.equal(existsSync(join(store.fileRoot, memorySourceWorkspace(source), 'session/dialog')), false)
 })
 const dbColumns = (store: ReturnType<typeof openMemoryStore>, table: string) =>
   (store.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(row => row.name)
 
-
-test('independent user evidence survives a third-party replacement of generated transcript text', t => {
-  const { store, notes, source, key } = setup(t)
-  const [workspace] = readdirSync(store.fileRoot)
-  const path = join(store.fileRoot, workspace!, 'session/dialog', memoryFileRevision('session') + '.jsonl')
-  assert.equal(notes.pending(key)[0]?.assistant, '先检查版本')
-  writeFileSync(path, readFileSync(path, 'utf8').replace('先检查版本', 'Previously removed original'))
-  const [turn] = notes.pending(key)
-  assert.deepEqual(turn?.sourceIds, [source.id])
-  assert.equal(turn?.assistant, '')
-  assert.deepEqual(turn?.assistantSourceIds, [])
-})
-
-test('daily content is a file, its index and receipt commit together, and source metadata cannot come from model frontmatter', t => {
+test('daily content is a file, its index and receipt commit together, and source_conversation is omitted from new Daily Notes', t => {
   const { store, notes, key, commit } = setup(t)
   assert.equal(commit(), true)
   const note = notes.read(key)!
@@ -135,10 +112,11 @@ test('daily content is a file, its index and receipt commit together, and source
   const path = join(store.fileRoot, note.workspace, note.path)
   const document = parseMemoryDocument(readFileSync(path, 'utf8'))
   assert.equal(document.metadata.session_id, 'session')
+  assert.equal(document.metadata.source_conversation, undefined, 'new Daily Notes omit source_conversation')
   assert.equal(dbColumns(store, 'memory_daily_notes').includes('markdown'), false)
   assert.match(readFileSync(join(store.fileRoot, note.workspace, 'daily/2026-11-14.md'), 'utf8'), new RegExp(note.path.replaceAll('.', '\\.')))
   assert.equal(notes.pending(key).length, 0)
-  assert.equal(store.db.prepare("SELECT count(*) AS n FROM memory_file_intents WHERE state='done' AND plan IS NULL").get()?.n, 2)
+  assert.equal(store.db.prepare("SELECT count(*) AS n FROM memory_file_intents WHERE state='done' AND plan IS NULL").get()?.n, 1)
   writeFileSync(path, readFileSync(path, 'utf8').replace('先核对版本，再发布。', '外部修改了文件正文。'))
   assert.equal(notes.read(key), undefined, 'external changes remain unavailable until independently verified')
 })
@@ -272,39 +250,6 @@ test('daily locators contain no title and collisions are resolved without adopti
 })
 
 
-test('a session append intent survives process death before its transcript write and replays once', async t => {
-  const { dir, store } = setup(t)
-  const source = noteSource(store, { session: 'new-session' })
-  await runToCrash(new URL('./fixtures/memory-session-crash.ts', import.meta.url), 'intent', dir, source.id)
-  const notes = openMemoryNotes(store, () => true)
-  const group = notes.pendingGroups().find(row => row.session === 'new-session')!
-  assert.equal(notes.pending(group.note)[0]?.assistant, '已完成这个回合')
-  assert.equal(notes.add('new-session', '2026-11-14', [source], '已完成这个回合'), null)
-  assert.equal(notes.pending(group.note).length, 1)
-})
-
-test('a prepared append retains just the new line and rolls back without restoring a transcript copy', t => {
-  const { store, notes, key, source } = setup(t)
-  const oldMarker = source.text!
-  const newMarker = 'Independent second turn'
-  assert.equal(notes.pending(key).length, 1)
-  const second = noteSource(store, { text: newMarker, length: newMarker.length, hash: memoryFileRevision(newMarker) })
-  const partial = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text), at => {
-    if (at === 'replace') throw new Error('crash after append')
-  })
-  assert.throws(() => partial.add('session', '2026-11-14', [second], ''), /crash after append/)
-  const plan = String(store.db.prepare('SELECT plan FROM memory_file_intents WHERE id=?').get(`notes:turn:${second.id}`)?.plan)
-  assert.match(plan, /Independent second turn/)
-  assert(!plan.includes(oldMarker))
-  store.db.prepare('UPDATE memory_sources SET version=version+1 WHERE id=?').run(second.id)
-  const restarted = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text))
-  assert.deepEqual(restarted.pending(key).map(row => row.sourceIds), [[source.id]])
-  const [workspace] = readdirSync(store.fileRoot)
-  const path = join(store.fileRoot, workspace!, 'session/dialog', memoryFileRevision('session') + '.jsonl')
-  assert.equal(readFileSync(path, 'utf8').includes(newMarker), false)
-  assert(readFileSync(path, 'utf8').includes(oldMarker))
-})
-
 test('a crashed title update recovers one stable card and preserves incoming links and index', async t => {
   const { dir, store, notes, key, commit } = setup(t)
   commit('旧标题')
@@ -331,7 +276,9 @@ test('in-memory stores get isolated temporary file roots which are removed with 
   try {
     assert.notEqual(firstRoot, secondRoot)
     const notes = openMemoryNotes(first, () => true)
-    notes.add('session', '2026-11-14', [noteSource(first)], 'test-only answer')
+    const src = noteSource(first)
+    const noteKey = notes.add('session', '2026-11-14', [src], 'test-only answer')!
+    notes.commit(noteKey, notes.pending(noteKey), { status: 'write', title: 'Temp', markdown: 'Temp note' }, 1, Date.now(), notes.snapshot([src.id]), undefined)
     assert(existsSync(firstRoot))
     assert.deepEqual(readdirSync(secondRoot), [])
   } finally { first.close(); second.close() }

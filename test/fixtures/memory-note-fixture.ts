@@ -6,8 +6,19 @@ import type { MemorySource, MemoryStore } from '../../src/memory/node/memory-sto
 
 export function noteSource(store: MemoryStore, overrides: Partial<MemorySource> = {}): MemorySource {
   const id = randomUUID()
+  const author = overrides.author ?? 'user'
+  const scope = overrides.scope ?? { kind: 'user' as const }
+  const context = overrides.context !== undefined ? overrides.context : null
+  const project = overrides.project ?? null
+  const profileEligible = overrides.profileEligible ?? (
+    (author === 'user' || author === 'answer')
+    && scope.kind === 'user'
+    && (context === null || context.kind === 'user')
+    && project === null
+  )
   const source: MemorySource = { id, operation: id, version: 1, conversation: 'conversation', session: 'session',
-    scope: { kind: 'user' }, context: null, project: null, author: 'user', text: '我在核对发布流程', hash: memoryHash('我在核对发布流程'),
+    scope, context, project, author, sourceKind: overrides.sourceKind ?? (project ? 'project-user' : 'main-human'),
+    profileEligible, text: '我在核对发布流程', hash: memoryHash('我在核对发布流程'),
     length: 9, question: null, requestId: null, questionId: null, at: Date.parse('2026-11-14T15:59:00Z'),
     timezone: 'Asia/Shanghai', outcome: 'note-pending', ...overrides }
   store.insertSource(source)

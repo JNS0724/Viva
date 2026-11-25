@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { MAX_MESSAGE_CHARS } from './text-limits.ts'
 
-export const MEMORY_CONTRACT = 13
+export const MEMORY_CONTRACT = 14
 export const operationId = z.uuid()
 export const memoryScope = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('user') }),

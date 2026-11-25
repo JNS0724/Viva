@@ -1,291 +1,1097 @@
-import { SessionLogOffset, type Session } from '@deepseek-ai/dsh-session'
+import { createHash } from 'node:crypto'
+import { SessionId, type Session, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
+import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { ReadSessionRangeResult } from '../../../src/memory/core/ports/notes.ts'
+import type { TurnSourceCandidate } from '../../../src/memory/node/owner.ts'
+import { looksSecret } from '../../../src/memory/core/memory-sensitive.ts'
+import { requestsIn } from '../../../src/shared/request-routing/header.ts'
+import { leadingTaskRequestId, stripLeadingTaskHeader, withoutTaskHeaders } from '../../../src/shared/request-routing/task-header.ts'
+import {
+  extractHumanSpans,
+  parseProvenanceHeader,
+  readLiftedProvenance,
+  validateHumanSpans,
+  type SessionKind,
+  type VivaProvenanceHeader,
+} from '../../../src/shared/request-routing/provenance.ts'
 import type { createRemoteMemoryOwner } from './remote-owner.ts'
+import type {} from './source.ts'
 
-type Owner = Pick<ReturnType<typeof createRemoteMemoryOwner>, 'epoch' | 'inEpoch' | 'receiveSource' | 'completeTurn'
-  | 'intakeWatermark' | 'advanceIntake'>
-type SnapshotEvents = ReturnType<Session['snapshotEvents']>
-const DEFAULT_ALIAS_GRACE_MS = 1_500
-const ALIAS_RETRY_INTERVAL_MS = 100
+type Owner = Pick<
+  ReturnType<typeof createRemoteMemoryOwner>,
+  'epoch' | 'inEpoch' | 'intakeCursor' | 'advanceIntakeCursor' | 'beginTurn' | 'stageOpenTurnSources' | 'settleTurn'
+>
 
-type Replay = {
-  epoch: string | undefined
-  session: Session
-  nextSeq: number | null
-  turn: number
-  sources: Set<string>
-  assistant: string[]
-  receivedReport: boolean
-  work: Promise<void>
-  awaitingSince: Map<string, number>
-  retryTimer: ReturnType<typeof setTimeout> | null
-  released: boolean
-  releaseDeadline: number | null
-  inFlight: number
-  pendingEvents: SnapshotEvents | null
+type PersistenceLike = Pick<SessionPersistence, 'open' | 'list'>
+type SessionsLike = {
+  flush(session: Session): Promise<boolean>
+  get?(id: SessionId): Session | undefined
+  list?(): readonly Session[]
 }
+
+const READ_CHUNK_SIZE = 512
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+const COLD_RETRY_BASE_MS = 100
+const COLD_RETRY_MAX_MS = 5_000
+
 const textOf = (message: { content: readonly { type: string, text?: string }[] }) =>
   message.content.flatMap(part => part.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('\n')
 const timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
-export function humanMessages(messages: readonly UserMessage[]) {
-  return messages.filter(message => message.source.kind === 'user').map(message => ({ id: message.id, text: textOf(message) }))
+export function isNotFoundError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'SessionPersistenceNotFoundError'
 }
 
-/** The owner remembers committed turn boundaries. An interrupted scan can replay
- * incomplete work, with the native message ID identifying the same original. */
-export function createSessionIngestion(
-  owner: Owner,
-  flush: (session: Session) => Promise<unknown>,
-  { host = false, aliasGraceMs = DEFAULT_ALIAS_GRACE_MS, onError }: { host?: boolean, aliasGraceMs?: number, onError?: (error: unknown) => void } = {},
-) {
-  const sessions = new Map<string, Replay>()
-  let closed = false
+export function deterministicSourceUuid(namespace: string, ...parts: readonly (string | number)[]): string {
+  const digest = createHash('sha256').update(JSON.stringify([namespace, ...parts])).digest('hex')
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
+}
 
-  function clearRetry(state: Replay) {
-    if (state.retryTimer !== null) {
-      clearTimeout(state.retryTimer)
-      state.retryTimer = null
+function normalizeSourceId(raw: string | undefined, sessionId: string, fallbackKey: string): string {
+  if (raw && UUID_RE.test(raw)) return raw
+  return deterministicSourceUuid('msg', sessionId, raw ?? fallbackKey)
+}
+
+function extractCorrelationRequestId(text: string): string | undefined {
+  const leadingTask = leadingTaskRequestId(text)
+  if (leadingTask) return leadingTask
+  const routed = requestsIn(text)
+  if (routed.length > 0) return routed[routed.length - 1]!.id
+  return undefined
+}
+
+export type ExtractedHumanMessage = {
+  id: string
+  text: string
+  sourceId: string
+  conversationId?: string
+  sourceKind: 'main-human' | 'task-human-steer'
+  sessionKind: 'main' | 'task'
+  profileEligible: boolean
+  requestId?: string
+}
+
+function resolveHostedProvenance(
+  message: UserMessage,
+  raw: string,
+): { provenance: VivaProvenanceHeader, payload: string } | null {
+  const src = message.source as Readonly<Record<string, unknown>>
+  if ('vivaProvenance' in src) {
+    const provenance = readLiftedProvenance(src, raw.length)
+    return provenance ? { provenance, payload: raw } : null
+  }
+  if (src.kind === 'user') {
+    return parseProvenanceHeader(raw)
+  }
+  return null
+}
+
+/**
+ * Unified human-message extractor shared by `agent/pre-step` L3 automatic recall and session ingestion
+ * (docs/memory-runtime-decoupling.md §5.4 item 1-2).
+ *
+ * Accepts:
+ * - `'user'` (reading structured `source.vivaProvenance` after `liftProvenance`, with un-lifted header fallback
+ *   in hosted mode, or raw text verbatim in standalone DSH when `host === false`),
+ * - `'viva-main-human-steer'` (slicing payload-relative `humanSpans` without `unquote()`),
+ * - `'viva-task-human-steer'` (stripping leading task header and slicing payload-relative `humanSpans`).
+ *
+ * Excludes `'viva-task-router-message'`, `'viva-task-brief'`, `'viva-report'`, `'viva-report-batch'`,
+ * `'viva-memory'`, `'viva-unattended'`, and empty `humanSpans: []` (e.g. feed-only continuations).
+ */
+export function extractHumanMessages(
+  messages: readonly UserMessage[],
+  { host = false, sessionId = '' }: { host?: boolean, sessionId?: string } = {},
+): ExtractedHumanMessage[] {
+  const extracted: ExtractedHumanMessage[] = []
+  for (const message of messages) {
+    const raw = textOf(message)
+    const kind = message.source.kind as string
+    if (!host) {
+      // Standalone DSH preserves user text verbatim and never interprets Viva provenance headers (§5.4).
+      if (kind !== 'user' || !raw.trim()) continue
+      extracted.push({
+        id: String(message.id),
+        text: raw,
+        sourceId: normalizeSourceId(String(message.id), sessionId, String(message.id)),
+        sourceKind: 'main-human',
+        sessionKind: 'main',
+        profileEligible: true,
+        requestId: extractCorrelationRequestId(raw),
+      })
+      continue
+    }
+    if (kind === 'viva-main-human-steer') {
+      const src = message.source as { sourceId?: string, conversationId?: string, humanSpans?: Array<{ start: number, end: number }> }
+      const spans = src.humanSpans ? validateHumanSpans(src.humanSpans, raw.length) : null
+      if (!spans) continue
+      const text = extractHumanSpans(raw, spans)
+      if (!text || !text.trim()) continue
+      extracted.push({
+        id: String(message.id),
+        text,
+        sourceId: normalizeSourceId(src.sourceId, sessionId, String(message.id)),
+        ...(src.conversationId ? { conversationId: src.conversationId } : {}),
+        sourceKind: 'main-human',
+        sessionKind: 'main',
+        profileEligible: true,
+        requestId: extractCorrelationRequestId(raw),
+      })
+      continue
+    }
+    if (kind === 'viva-task-human-steer') {
+      const src = message.source as { sourceId?: string, conversationId?: string, humanSpans?: Array<{ start: number, end: number }> }
+      const stripped = stripLeadingTaskHeader(raw)
+      const payload = stripped ? stripped.payload : raw
+      const spans = src.humanSpans ? validateHumanSpans(src.humanSpans, payload.length) : null
+      if (!spans) continue
+      const text = extractHumanSpans(payload, spans)
+      if (!text || !text.trim()) continue
+      extracted.push({
+        id: String(message.id),
+        text,
+        sourceId: normalizeSourceId(src.sourceId, sessionId, String(message.id)),
+        ...(src.conversationId ? { conversationId: src.conversationId } : {}),
+        sourceKind: 'task-human-steer',
+        sessionKind: 'task',
+        profileEligible: true,
+        requestId: stripped?.requestId ?? leadingTaskRequestId(raw),
+      })
+      continue
+    }
+    if (kind !== 'user') continue
+
+    const resolved = resolveHostedProvenance(message, raw)
+    if (!resolved) continue
+    const { provenance, payload } = resolved
+    if (provenance.origin !== 'human') continue
+    if (provenance.sourceKind === 'viva-report' || provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'unattended') continue
+    if (!provenance.humanSpans) continue
+    const text = extractHumanSpans(payload, provenance.humanSpans)
+    if (!text || !text.trim()) continue
+    const isTask = provenance.sourceKind === 'task-human-steer' || provenance.sessionKind === 'task'
+    extracted.push({
+      id: String(message.id),
+      text,
+      sourceId: normalizeSourceId(provenance.sourceId, sessionId, String(message.id)),
+      ...(provenance.conversationId ? { conversationId: provenance.conversationId } : {}),
+      sourceKind: isTask ? 'task-human-steer' : 'main-human',
+      sessionKind: isTask ? 'task' : 'main',
+      profileEligible: true,
+      requestId: extractCorrelationRequestId(payload),
+    })
+  }
+  return extracted
+}
+
+/**
+ * Read-only L3 automatic recall query extractor used by `agent/pre-step` in `adapter.ts`.
+ * Uses `extractHumanMessages` as the single source of truth for human messages, and additionally
+ * permits read-only L3 lookups for hosted ACP `viva-task-brief` prompts so background tasks can consult
+ * global user memory without ever entering human `memory_sources`.
+ * Unattended prompts (`viva-unattended`, `origin: 'unattended'`, empty `humanSpans`) NEVER trigger L3 recall (§5.4).
+ */
+export function extractRecallQueries(
+  messages: readonly UserMessage[],
+  options: { host?: boolean, sessionId?: string } = {},
+): Array<{ id: string, text: string, requestId?: string }> {
+  const queries: Array<{ id: string, text: string, requestId?: string }> = []
+  for (const message of messages) {
+    const human = extractHumanMessages([message], options)
+    if (human.length > 0) {
+      const item = human[0]!
+      queries.push({ id: item.id, text: item.text, ...(item.requestId ? { requestId: item.requestId } : {}) })
+      continue
+    }
+    if (!options.host) continue
+    const kind = message.source.kind as string
+    if (kind !== 'viva-task-brief' && kind !== 'user') continue
+    const raw = textOf(message)
+    const resolved = resolveHostedProvenance(message, raw)
+    if (!resolved) continue
+    const { provenance, payload } = resolved
+    if (provenance.origin === 'router' && provenance.sourceKind === 'task-brief') {
+      const queryText = provenance.humanSpans && provenance.humanSpans.length > 0
+        ? extractHumanSpans(payload, provenance.humanSpans)
+        : withoutTaskHeaders(payload)
+      if (!queryText || !queryText.trim()) continue
+      const requestId = extractCorrelationRequestId(payload)
+      queries.push({ id: String(message.id), text: queryText, ...(requestId ? { requestId } : {}) })
     }
   }
+  return queries
+}
 
-  const hasPendingWork = (state: Replay) => state.awaitingSince.size > 0 || Boolean(state.pendingEvents?.length)
+/**
+ * Backward-compatible alias for tests/callers inspecting extracted human messages.
+ */
+export const humanMessages = (messages: readonly UserMessage[], options?: { host?: boolean, sessionId?: string }) =>
+  extractHumanMessages(messages, options)
 
-  function settleReleased(state: Replay) {
-    const sessionId = String(state.session.id)
-    if (!state.released || state.inFlight > 0 || sessions.get(sessionId) !== state) return
-    if (!hasPendingWork(state) || state.epoch !== owner.epoch) {
-      clearRetry(state)
-      state.releaseDeadline = null
-      sessions.delete(sessionId)
+export type DurableSliceResult =
+  | { ok: true, events: readonly SessionEvent[] }
+  | { ok: false, reason: 'flush-failed' | 'not-found' | 'short-read' | 'io-error' }
+
+/**
+ * Single verified persistence boundary (§5.2 item 1):
+ * Await `sessions.flush(session) === true`, open a short-lived read handle (closed in `finally`),
+ * and read the actual persisted `[fromSeq, endSeq)` events directly from disk.
+ * Closes the pinned-DSH no-writer loophole where `flush()` returns `true` while `open('read')` throws
+ * `SessionPersistenceNotFoundError`.
+ */
+export async function readVerifiedDurableSlice(
+  sessions: Pick<SessionsLike, 'flush'>,
+  sessionPersistence: Pick<PersistenceLike, 'open'>,
+  session: Session,
+  fromSeq: number,
+  endSeq: number,
+): Promise<DurableSliceResult> {
+  if (endSeq <= fromSeq) return { ok: true, events: [] }
+  let flushed = false
+  try {
+    flushed = (await sessions.flush(session)) === true
+  } catch {
+    return { ok: false, reason: 'flush-failed' }
+  }
+  if (!flushed) return { ok: false, reason: 'flush-failed' }
+
+  let handle
+  try {
+    handle = await sessionPersistence.open(session.id, 'read')
+  } catch (error) {
+    if (isNotFoundError(error)) return { ok: false, reason: 'not-found' }
+    return { ok: false, reason: 'io-error' }
+  }
+  try {
+    const events: SessionEvent[] = []
+    let offset = fromSeq
+    while (offset < endSeq) {
+      const limit = Math.min(READ_CHUNK_SIZE, endSeq - offset)
+      const batch = await handle.read(offset, limit)
+      if (!batch.events.length) break
+      for (const event of batch.events) events.push(event)
+      offset += batch.events.length
+    }
+    if (events.length < endSeq - fromSeq) return { ok: false, reason: 'short-read' }
+    return { ok: true, events }
+  } catch (error) {
+    if (isNotFoundError(error)) return { ok: false, reason: 'not-found' }
+    return { ok: false, reason: 'io-error' }
+  } finally {
+    await handle.close().catch(() => {})
+  }
+}
+
+async function readHandleRange(
+  sessionPersistence: Pick<PersistenceLike, 'open'>,
+  sessionId: string,
+  fromSeq: number,
+  toSeq: number,
+): Promise<{ status: 'ok', events: SessionEvent[] } | { status: 'deleted' } | { status: 'unavailable' }> {
+  let handle
+  try {
+    handle = await sessionPersistence.open(SessionId(sessionId), 'read')
+  } catch (error) {
+    return isNotFoundError(error) ? { status: 'deleted' } : { status: 'unavailable' }
+  }
+  try {
+    const events: SessionEvent[] = []
+    let offset = fromSeq
+    while (offset < toSeq) {
+      const limit = Math.min(READ_CHUNK_SIZE, toSeq - offset)
+      const batch = await handle.read(offset, limit)
+      if (!batch.events.length) break
+      for (const event of batch.events) events.push(event)
+      offset += batch.events.length
+    }
+    if (events.length < toSeq - fromSeq) return { status: 'unavailable' }
+    return { status: 'ok', events }
+  } catch (error) {
+    return isNotFoundError(error) ? { status: 'deleted' } : { status: 'unavailable' }
+  } finally {
+    await handle.close().catch(() => {})
+  }
+}
+
+/**
+ * Shared host-aware assistant text selection for both turn settlement and on-demand
+ * `readPersistedSessionRange` reads (ensuring stored `assistant_digest` and range reads
+ * always interpret persisted events identically).
+ */
+export function selectTurnAssistantText(
+  events: readonly SessionEvent[],
+  host: boolean,
+  initialSessionKind: SessionKind = 'main',
+): string {
+  let sessionKind: SessionKind = initialSessionKind
+  let hasReport = false
+  const assistantParts: string[] = []
+  for (const event of events) {
+    if (event.type === 'user/message') {
+      if (host) {
+        const kind = event.data.source.kind as string
+        if (kind === 'viva-report' || kind === 'viva-report-batch') {
+          hasReport = true
+        } else if (kind === 'viva-unattended') {
+          sessionKind = 'unattended'
+        } else if (kind === 'viva-task-brief' || kind === 'viva-task-human-steer' || kind === 'viva-task-router-message') {
+          sessionKind = 'task'
+        } else if (kind === 'user') {
+          const resolved = resolveHostedProvenance(event.data, textOf(event.data))
+          if (resolved) {
+            const { provenance } = resolved
+            if (provenance.origin === 'unattended' || provenance.sourceKind === 'unattended' || provenance.sessionKind === 'unattended') {
+              sessionKind = 'unattended'
+            } else if (provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'viva-report') {
+              hasReport = true
+            } else if (provenance.sessionKind === 'task' || provenance.sourceKind === 'task-brief' || provenance.sourceKind === 'task-human-steer') {
+              sessionKind = 'task'
+            }
+          }
+        }
+      }
+    } else if (event.type === 'assistant/message' && !event.data.interrupted) {
+      assistantParts.push(textOf(event.data.message))
+    }
+  }
+  if (hasReport || sessionKind === 'unattended') return ''
+  if (sessionKind === 'task') {
+    return [...assistantParts].reverse().find(part => part.trim().length > 0) ?? ''
+  }
+  return assistantParts.join('\n')
+}
+
+/**
+ * On-demand range read for `WRITE_NOTE` (§5.2 item 4):
+ * Distinguishes confirmed deletion (`SessionPersistenceNotFoundError` from `open()` or `read()`)
+ * from transient I/O errors or short reads (rechecking once with a fresh handle before returning `unavailable`).
+ */
+export async function readPersistedSessionRange(
+  sessionPersistence: Pick<PersistenceLike, 'open'>,
+  sessionId: string,
+  fromSeq: number,
+  toSeq: number,
+  { host = false, initialSessionKind = 'main' }: { host?: boolean, initialSessionKind?: SessionKind } = {},
+): Promise<ReadSessionRangeResult> {
+  if (toSeq <= fromSeq) return { status: 'ok', assistant: '' }
+  let attempt = await readHandleRange(sessionPersistence, sessionId, fromSeq, toSeq)
+  if (attempt.status === 'unavailable') {
+    attempt = await readHandleRange(sessionPersistence, sessionId, fromSeq, toSeq)
+  }
+  if (attempt.status !== 'ok') return attempt
+  const assistant = selectTurnAssistantText(attempt.events, host, initialSessionKind)
+  return { status: 'ok', assistant: looksSecret(assistant) ? '' : assistant }
+}
+
+type TurnClassification = {
+  sessionKind: SessionKind
+  conversation?: string
+  hasReport: boolean
+  sources: TurnSourceCandidate[]
+  assistantParts: string[]
+}
+
+function classifyUserMessageForTurn(
+  message: UserMessage,
+  at: number,
+  tz: string,
+  sessionId: string,
+  host: boolean,
+  acc: TurnClassification,
+) {
+  const raw = textOf(message)
+  const kind = message.source.kind as string
+  if (host && (kind === 'viva-report' || kind === 'viva-report-batch')) {
+    acc.hasReport = true
+    const resolved = resolveHostedProvenance(message, raw)
+    if (resolved?.provenance.conversationId) acc.conversation = resolved.provenance.conversationId
+    return
+  }
+  if (host && kind === 'viva-unattended') {
+    acc.sessionKind = 'unattended'
+    return
+  }
+  if (host && kind === 'viva-task-brief') {
+    acc.sessionKind = 'task'
+    const resolved = resolveHostedProvenance(message, raw)
+    const provenance = resolved?.provenance
+    const payload = resolved?.payload ?? raw
+    if (provenance?.conversationId) acc.conversation = provenance.conversationId
+    const briefText = provenance?.humanSpans
+      ? extractHumanSpans(payload, provenance.humanSpans)
+      : withoutTaskHeaders(payload)
+    if (briefText && briefText.trim()) {
+      acc.sources.push({
+        sourceId: normalizeSourceId(provenance?.sourceId, sessionId, String(message.id)),
+        author: 'agent',
+        sourceKind: 'task-brief',
+        profileEligible: false,
+        text: briefText,
+        conversation: provenance?.conversationId ?? acc.conversation,
+        at,
+        timezone: tz,
+      })
+    }
+    return
+  }
+  if (host && kind === 'viva-task-router-message') {
+    const src = message.source as { conversationId?: string }
+    acc.sessionKind = 'task'
+    if (src.conversationId) acc.conversation = src.conversationId
+    const body = withoutTaskHeaders(raw)
+    if (body.trim()) {
+      acc.sources.push({
+        sourceId: normalizeSourceId(String(message.id), sessionId, String(message.id)),
+        author: 'agent',
+        sourceKind: 'task-brief',
+        profileEligible: false,
+        text: body,
+        conversation: src.conversationId ?? acc.conversation,
+        at,
+        timezone: tz,
+      })
+    }
+    return
+  }
+  const human = extractHumanMessages([message], { host, sessionId })
+  if (human.length > 0) {
+    const item = human[0]!
+    if (item.sessionKind === 'task') acc.sessionKind = 'task'
+    if (item.conversationId) acc.conversation = item.conversationId
+    acc.sources.push({
+      sourceId: item.sourceId,
+      author: 'user',
+      sourceKind: item.sourceKind,
+      profileEligible: item.profileEligible,
+      text: item.text,
+      conversation: item.conversationId ?? acc.conversation,
+      at,
+      timezone: tz,
+    })
+    return
+  }
+  if (!host) return
+  if (kind === 'user') {
+    const resolved = resolveHostedProvenance(message, raw)
+    if (!resolved) return
+    const { provenance, payload } = resolved
+    if (provenance.origin === 'unattended' || provenance.sourceKind === 'unattended' || provenance.sessionKind === 'unattended') {
+      acc.sessionKind = 'unattended'
       return
     }
-    if (!closed && state.retryTimer === null && state.pendingEvents?.length) {
-      const deadline = state.releaseDeadline ?? (Date.now() + aliasGraceMs)
-      state.releaseDeadline = deadline
-      scheduleResume(state, Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, deadline - Date.now())))
+    if (provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'viva-report') {
+      acc.hasReport = true
+      if (provenance.conversationId) acc.conversation = provenance.conversationId
+      return
+    }
+    if (provenance.origin === 'router' && provenance.sourceKind === 'task-brief') {
+      acc.sessionKind = 'task'
+      if (provenance.conversationId) acc.conversation = provenance.conversationId
+      const briefText = provenance.humanSpans
+        ? extractHumanSpans(payload, provenance.humanSpans)
+        : withoutTaskHeaders(payload)
+      if (briefText && briefText.trim()) {
+        acc.sources.push({
+          sourceId: normalizeSourceId(provenance.sourceId, sessionId, String(message.id)),
+          author: 'agent',
+          sourceKind: 'task-brief',
+          profileEligible: false,
+          text: briefText,
+          conversation: provenance.conversationId ?? acc.conversation,
+          at,
+          timezone: tz,
+        })
+      }
+    }
+  }
+}
+
+function detectTurnMetaFromMessages(messages: readonly UserMessage[], host: boolean): { sessionKind: SessionKind, conversation?: string } {
+  if (!host) return { sessionKind: 'main' }
+  let sessionKind: SessionKind = 'main'
+  let conversation: string | undefined
+  for (const message of messages) {
+    const kind = message.source.kind as string
+    if (kind === 'viva-main-human-steer') {
+      const src = message.source as { conversationId?: string }
+      if (src.conversationId) conversation = src.conversationId
+    } else if (kind === 'viva-task-human-steer' || kind === 'viva-task-router-message') {
+      sessionKind = 'task'
+      const src = message.source as { conversationId?: string }
+      if (src.conversationId) conversation = src.conversationId
+    } else if (kind === 'viva-task-brief') {
+      sessionKind = 'task'
+      const resolved = resolveHostedProvenance(message, textOf(message))
+      if (resolved?.provenance.conversationId) conversation = resolved.provenance.conversationId
+    } else if (kind === 'viva-unattended') {
+      sessionKind = 'unattended'
+    } else if (kind === 'viva-report-batch') {
+      const resolved = resolveHostedProvenance(message, textOf(message))
+      if (resolved?.provenance.conversationId) conversation = resolved.provenance.conversationId
+    } else if (kind === 'user') {
+      const resolved = resolveHostedProvenance(message, textOf(message))
+      if (resolved) {
+        sessionKind = resolved.provenance.sessionKind
+        if (resolved.provenance.conversationId) conversation = resolved.provenance.conversationId
+      }
+    }
+  }
+  return { sessionKind, conversation }
+}
+
+type SessionQueue = {
+  epoch: string | undefined
+  work: Promise<void>
+  coldRetryTimer: ReturnType<typeof setTimeout> | null
+  coldFailures: number
+  liveRetryTimer: ReturnType<typeof setTimeout> | null
+  liveFailures: number
+  needsCatchup: boolean
+  lastSyncedSeq: number
+}
+
+/**
+ * Single-source-of-truth DSH session-persistence ingestion (§5.2-§5.4, §5.6):
+ * - All live turns and mid-turn `memory_remember` staging consume ONLY `readVerifiedDurableSlice`.
+ * - Read-only cold catch-up enumerates `sessionPersistence.list()` with backoff and reads closed
+ *   turns strictly via `open(id, 'read')` (never acquiring write leases).
+ * - Live and cold paths share one per-sessionId serialization queue.
+ */
+export function createSessionIngestion(
+  owner: Owner,
+  sessions: SessionsLike,
+  sessionPersistence: PersistenceLike | (() => PersistenceLike | undefined) | undefined,
+  { host = false, onError }: { host?: boolean, onError?: (error: unknown) => void } = {},
+) {
+  const getPersistence = (): PersistenceLike | undefined =>
+    typeof sessionPersistence === 'function' ? sessionPersistence() : sessionPersistence
+  const queues = new Map<string, SessionQueue>()
+  let closed = false
+  let listRetryTimer: ReturnType<typeof setTimeout> | null = null
+  let listEpoch: string | undefined
+  let listFailures = 0
+
+  function clearListRetry() {
+    if (listRetryTimer !== null) {
+      clearTimeout(listRetryTimer)
+      listRetryTimer = null
     }
   }
 
-  function handleReleasedError(state: Replay, error: unknown) {
-    const sessionId = String(state.session.id)
-    const nowMs = Date.now()
-    if (state.releaseDeadline === null) state.releaseDeadline = nowMs + aliasGraceMs
-    const remaining = state.releaseDeadline - nowMs
-    if (!closed && remaining > 0 && state.pendingEvents?.length && sessions.get(sessionId) === state) {
-      scheduleResume(state, Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, remaining)))
-    } else {
-      state.awaitingSince.clear()
-      state.pendingEvents = null
-      onError?.(error)
+  function clearColdRetry(entry: SessionQueue) {
+    if (entry.coldRetryTimer !== null) {
+      clearTimeout(entry.coldRetryTimer)
+      entry.coldRetryTimer = null
     }
   }
 
-  function enqueue(session: Session, action: (state: Replay) => Promise<void>) {
-    const sessionId = String(session.id)
-    let state = sessions.get(sessionId)
-    if (!state || state.session !== session || state.epoch !== owner.epoch) {
-      if (state) clearRetry(state)
-      state = { epoch: owner.epoch, session, nextSeq: null, turn: 0, sources: new Set(),
-        assistant: [], receivedReport: false, work: state?.work.catch(() => {}) ?? Promise.resolve(),
-        awaitingSince: new Map(), retryTimer: null, released: false, releaseDeadline: null, inFlight: 0, pendingEvents: null }
-      sessions.set(sessionId, state)
+  function clearLiveRetry(entry: SessionQueue) {
+    if (entry.liveRetryTimer !== null) {
+      clearTimeout(entry.liveRetryTimer)
+      entry.liveRetryTimer = null
     }
-    const entry = state
-    entry.inFlight++
-    entry.work = entry.work.catch(() => {}).then(() => owner.inEpoch(entry.epoch, () => action(entry)))
-      .finally(() => {
-        entry.inFlight = Math.max(0, entry.inFlight - 1)
-        settleReleased(entry)
-      })
+  }
+
+  function enqueue(sessionId: string, action: () => Promise<void>) {
+    let entry = queues.get(sessionId)
+    if (!entry || entry.epoch !== owner.epoch) {
+      if (entry) {
+        clearColdRetry(entry)
+        clearLiveRetry(entry)
+      }
+      entry = {
+        epoch: owner.epoch,
+        work: entry?.work.catch(() => {}) ?? Promise.resolve(),
+        coldRetryTimer: null,
+        coldFailures: 0,
+        liveRetryTimer: null,
+        liveFailures: 0,
+        needsCatchup: false,
+        lastSyncedSeq: 0,
+      }
+      queues.set(sessionId, entry)
+    }
+    const targetEpoch = entry.epoch
+    entry.work = entry.work.catch(() => {}).then(() => owner.inEpoch(targetEpoch, action))
     return entry.work
   }
 
-  async function original(state: Replay, turn: number, message: UserMessage, at: number, live: boolean, deferMissingAlias = false) {
-    if (message.source.kind !== 'user') return
-    const text = textOf(message)
-    if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) return
-    return owner.receiveSource({ sessionId: String(state.session.id), messageId: message.id, text, at, timezone: timezone(),
-      turn, live, cwd: state.session.header.cwd, task: state.session.header.origin === 'subagent',
-      derived: state.session.header.origin === 'subagent'
-        && !('rpcId' in message.source && typeof message.source.rpcId === 'string'),
-      ...(deferMissingAlias ? { deferMissingAlias: true } : {}) })
-  }
+  /**
+   * Process a contiguous persisted event slice `[fromSeq, endSeq)` using gap-free CAS settlement.
+   * Only closed turns (`turn/start ... turn/end`) advance `next_seq` past the turn; any unclosed
+   * trailing turn leaves `next_seq` right at its `turn/start.seq`.
+   * Returns any open trailing turn's verified human sources if `collectOpenTurn` is true.
+   */
+  async function ingestPersistedEvents(input: {
+    sessionId: string
+    cwd?: string | null
+    inheritedSeq: number
+    createdAt: number
+    cursorNextSeq: number | null
+    sessionKind: SessionKind
+    conversation: string | null
+    events: readonly SessionEvent[]
+    sliceFromSeq: number
+    sliceEndSeq: number
+    collectOpenTurn?: boolean
+  }): Promise<{
+    openTurn?: { turn: number, sessionKind: SessionKind, conversation: string | null, sources: TurnSourceCandidate[] }
+    casRetry?: boolean
+  }> {
+    const { sessionId, cwd, inheritedSeq, createdAt, events, sliceFromSeq, sliceEndSeq, collectOpenTurn = false } = input
+    let expectedNextSeq = input.cursorNextSeq
+    let currentSeq = sliceFromSeq
+    let sessionKind: SessionKind = input.sessionKind
+    let conversation: string | null = input.conversation
+    const tz = timezone()
 
-  function scheduleResume(state: Replay, waitMs: number) {
-    const sessionId = String(state.session.id)
-    if (closed || sessions.get(sessionId) !== state) return
-    state.retryTimer = setTimeout(() => {
-      state.retryTimer = null
-      if (closed || sessions.get(sessionId) !== state) return
-      if (state.released) void resumeReleased(state).catch(() => {})
-      else void synchronize(state.session).catch(() => {})
-    }, waitMs)
-    state.retryTimer.unref?.()
-  }
-
-  async function processEvents(state: Replay, events: SnapshotEvents) {
-    const session = String(state.session.id)
-    for (let idx = 0; idx < events.length; idx++) {
-      const event = events[idx]!
-      try {
-        if (event.type === 'turn/start') {
-          state.turn = event.data.turn
-          state.sources.clear()
-          state.assistant = []
-          state.receivedReport = false
+    // Skip events strictly before memory.db `created_at` when initializing a brand-new cursor.
+    let idx = 0
+    if (expectedNextSeq === null) {
+      let skipToSeq: number | null = null
+      let openStartSeq: number | null = null
+      for (let i = 0; i < events.length; i++) {
+        const ev = events[i]!
+        if (ev.type === 'turn/start') openStartSeq = ev.seq
+        if (ev.time >= createdAt) {
+          const target = openStartSeq !== null ? openStartSeq : ev.seq
+          if (target > sliceFromSeq) skipToSeq = target
+          idx = events.findIndex(item => item.seq === target)
+          if (idx < 0) idx = i
+          break
         }
-        if (event.type === 'user/message') {
-          const kind: string = event.data.source.kind
-          if (kind === 'viva-report') state.receivedReport = true
-          const msgId = String(event.data.id)
-          const nowMs = Date.now()
-          let firstSeen = state.awaitingSince.get(msgId)
-          const remaining = state.released && state.releaseDeadline !== null
-            ? state.releaseDeadline - nowMs
-            : firstSeen === undefined ? aliasGraceMs : aliasGraceMs - (nowMs - firstSeen)
-          const canDefer = host && remaining > 0
-          const receipt = await original(state, state.turn, event.data, event.time, false, canDefer)
-          if (receipt?.awaitingAlias) {
-            if (firstSeen === undefined) {
-              firstSeen = nowMs
-              state.awaitingSince.set(msgId, firstSeen)
-            }
-            // Stop right at this event, preserving previously folded turn state (sources, assistant, receivedReport).
-            state.nextSeq = event.seq
-            state.pendingEvents = events.slice(idx)
-            const waitMs = Math.min(ALIAS_RETRY_INTERVAL_MS, Math.max(10, remaining))
-            scheduleResume(state, waitMs)
-            return
+        if (ev.type === 'turn/end') {
+          openStartSeq = null
+          if (i === events.length - 1) {
+            skipToSeq = ev.seq + 1
+            idx = events.length
           }
-          state.awaitingSince.delete(msgId)
-          if (receipt && !receipt.handledIntent) state.sources.add(receipt.sourceId)
+        } else if (i === events.length - 1) {
+          skipToSeq = openStartSeq !== null ? openStartSeq : sliceEndSeq
+          idx = openStartSeq !== null ? events.findIndex(item => item.seq === openStartSeq) : events.length
+          if (idx < 0) idx = events.length
         }
-        if (event.type === 'assistant/message' && !event.data.interrupted) state.assistant.push(textOf(event.data.message))
-        if (event.type === 'turn/end') {
-          await owner.completeTurn({ sessionId: session, turn: event.data.turn, eventSeq: event.seq,
-            sourceIds: [...state.sources], assistant: state.receivedReport ? '' : state.assistant.join('\n'), completed: event.data.reason.kind === 'completed',
-            at: event.time, timezone: timezone() })
+      }
+      if (skipToSeq !== null && skipToSeq > sliceFromSeq) {
+        const res = await owner.advanceIntakeCursor({
+          sessionId, expectedNextSeq: null, nextSeq: skipToSeq, inheritedSeq, sessionKind, conversation, cwd,
+        })
+        if (res.status === 'cas_mismatch') return { casRetry: true }
+        expectedNextSeq = res.nextSeq
+        currentSeq = res.nextSeq
+      }
+    }
+
+    let inTurn = false
+    let turnNumber = 0
+    let turnStartSeq = currentSeq
+    let turnStartSessionKind: SessionKind = sessionKind
+    let turnEvents: SessionEvent[] = []
+    let acc: TurnClassification = { sessionKind, conversation: conversation ?? undefined, hasReport: false, sources: [], assistantParts: [] }
+
+    for (; idx < events.length; idx++) {
+      const event = events[idx]!
+      if (event.seq < currentSeq) continue
+
+      if (event.type === 'turn/start') {
+        inTurn = true
+        turnNumber = event.data.turn
+        turnStartSeq = currentSeq
+        turnStartSessionKind = sessionKind
+        turnEvents = [event]
+        acc = { sessionKind, conversation: conversation ?? undefined, hasReport: false, sources: [], assistantParts: [] }
+        continue
+      }
+      turnEvents.push(event)
+      if (event.type === 'user/message') {
+        classifyUserMessageForTurn(event.data, event.time, tz, sessionId, host, acc)
+        if (acc.sessionKind !== 'main') sessionKind = acc.sessionKind
+        if (acc.conversation) conversation = acc.conversation
+        continue
+      }
+      if (event.type === 'assistant/message' && !event.data.interrupted) {
+        acc.assistantParts.push(textOf(event.data.message))
+        continue
+      }
+      if (event.type === 'turn/end') {
+        const toSeq = event.seq + 1
+        const reasonKind = event.data.reason.kind
+        // Share the exact same host + sessionKind assistant selector as readPersistedSessionRange
+        // so stored assistant_digest and on-demand range reads always agree (including task goal turns).
+        const assistantText = selectTurnAssistantText(turnEvents, host, turnStartSessionKind)
+        const turnSources = [...acc.sources]
+        if (reasonKind === 'completed' && acc.sessionKind === 'task' && assistantText.trim() && !looksSecret(assistantText)) {
+          turnSources.push({
+            sourceId: deterministicSourceUuid('task-assistant', sessionId, event.seq),
+            author: 'assistant',
+            sourceKind: 'task-assistant',
+            profileEligible: false,
+            text: assistantText,
+            conversation: acc.conversation ?? conversation,
+            at: event.time,
+            timezone: tz,
+          })
         }
-        state.nextSeq = event.seq + 1
+        const res = await owner.settleTurn({
+          sessionId,
+          cwd,
+          sessionKind: acc.sessionKind,
+          conversation: acc.conversation ?? conversation,
+          inheritedSeq,
+          expectedNextSeq,
+          fromSeq: inTurn ? turnStartSeq : currentSeq,
+          toSeq,
+          turn: event.data.turn,
+          reasonKind,
+          sources: turnSources,
+          assistantText: reasonKind === 'completed' ? assistantText : '',
+          at: event.time,
+          timezone: tz,
+          flushNotes: acc.sessionKind === 'task',
+        })
+        if (res.status === 'cas_mismatch') return { casRetry: true }
+        if (res.status === 'scope_unavailable') throw new Error('Memory intake project scope temporarily unavailable')
+        expectedNextSeq = res.nextSeq
+        currentSeq = res.nextSeq
+        inTurn = false
+        turnNumber = 0
+        continue
+      }
+    }
+
+    if (inTurn) {
+      // Unclosed trailing turn: NEVER advance next_seq past turn/start.
+      if (collectOpenTurn && turnNumber > 0) {
+        return {
+          openTurn: {
+            turn: turnNumber,
+            sessionKind: acc.sessionKind,
+            conversation: acc.conversation ?? conversation,
+            sources: acc.sources.filter(src => src.author === 'user' || src.author === 'answer'),
+          },
+        }
+      }
+      return {}
+    }
+
+    // Leave trailing post-turn non-turn events (e.g. model/selection on session reopen)
+    // for the next turn's gap-free [fromSeq, toSeq) settlement rather than issuing an extra RPC.
+    return {}
+  }
+
+  function scheduleLiveSessionRetry(session: Session) {
+    if (closed) return
+    const sessionId = String(session.id)
+    const entry = queues.get(sessionId)
+    if (!entry || entry.epoch !== owner.epoch) return
+    if (sessions.get && sessions.get(session.id) !== session) return
+    entry.needsCatchup = true
+    clearLiveRetry(entry)
+    entry.liveFailures++
+    const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(entry.liveFailures - 1, 6))
+    entry.liveRetryTimer = setTimeout(() => {
+      entry.liveRetryTimer = null
+      if (closed || entry.epoch !== owner.epoch) return
+      if (sessions.get && sessions.get(session.id) !== session) return
+      void enqueue(sessionId, () => scanLive(session, false)).catch(err => {
+        onError?.(err)
+        scheduleLiveSessionRetry(session)
+      })
+    }, delayMs)
+    entry.liveRetryTimer.unref?.()
+  }
+
+  async function scanLive(session: Session, stageOpenTurn: boolean): Promise<void> {
+    const sessionId = String(session.id)
+    const inherited = session.inheritedEventCount
+    const end = session.seq
+    const entry = queues.get(sessionId)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let cursor
+      try {
+        cursor = await owner.intakeCursor(sessionId)
       } catch (error) {
-        state.nextSeq = event.seq
-        state.pendingEvents = events.slice(idx)
+        if (!stageOpenTurn) scheduleLiveSessionRetry(session)
         throw error
       }
-    }
-    state.pendingEvents = null
-  }
-
-  async function scan(state: Replay, end: SessionLogOffset, persisted: Promise<unknown>) {
-    if (!state.released) {
-      if (await persisted !== true) return
-    } else {
-      let ok = false
-      try { ok = await persisted === true } catch { ok = false }
-      if (!ok) {
-        if (hasPendingWork(state) && state.pendingEvents?.length) {
-          clearRetry(state)
-          try { await processEvents(state, state.pendingEvents) }
-          catch (error) { handleReleasedError(state, error) }
+      const fromSeq = cursor.nextSeq === null ? inherited : Math.max(inherited, cursor.nextSeq)
+      if (fromSeq >= end) {
+        if (entry) {
+          entry.needsCatchup = false
+          entry.liveFailures = 0
+          entry.lastSyncedSeq = Math.max(entry.lastSyncedSeq, end)
+          clearLiveRetry(entry)
         }
         return
       }
-    }
-    clearRetry(state)
-    const session = String(state.session.id)
-    const inherited = state.session.inheritedEventCount
-    if (state.nextSeq === null) {
-      const { createdAt, nextSeq } = await owner.intakeWatermark(session)
-      if (nextSeq === null) {
-        const first = state.session.snapshotEvents(inherited, end).find(event => event.time >= createdAt)
-        const start = first?.seq ?? end
-        await owner.advanceIntake(session, start)
-        state.nextSeq = start
-      } else state.nextSeq = nextSeq
-    }
-    const from = Math.max(inherited, state.nextSeq)
-    if (from >= end) return
-    const events = state.session.snapshotEvents(SessionLogOffset(from), end)
-    try {
-      await processEvents(state, events)
-    } catch (error) {
-      if (state.released) handleReleasedError(state, error)
-      else throw error
-    }
-  }
-
-  function resumeReleased(state: Replay) {
-    const sessionId = String(state.session.id)
-    if (state.epoch !== owner.epoch) {
-      clearRetry(state)
-      if (sessions.get(sessionId) === state) sessions.delete(sessionId)
-      return Promise.resolve()
-    }
-    state.inFlight++
-    state.work = state.work.catch(() => {}).then(() => owner.inEpoch(state.epoch, async () => {
-      if (sessions.get(sessionId) !== state) return
-      clearRetry(state)
-      const pending = state.pendingEvents
-      if (!pending || pending.length === 0) {
-        state.awaitingSince.clear()
-        state.releaseDeadline = null
+      const persistence = getPersistence()
+      if (!persistence) {
+        if (stageOpenTurn) throw new Error('Memory durability verification failed: persistence-unavailable')
+        if (entry) entry.needsCatchup = true
         return
       }
-      try {
-        await processEvents(state, pending)
-      } catch (error) {
-        handleReleasedError(state, error)
+      const slice = await readVerifiedDurableSlice(sessions, persistence, session, fromSeq, end)
+      if (!slice.ok) {
+        if (stageOpenTurn) {
+          throw new Error(`Memory durability verification failed: ${slice.reason}`)
+        }
+        if (slice.reason !== 'not-found') {
+          scheduleLiveSessionRetry(session)
+        }
+        return
       }
-    })).finally(() => {
-      state.inFlight = Math.max(0, state.inFlight - 1)
-      settleReleased(state)
-    })
-    return state.work
+      let outcome
+      try {
+        outcome = await ingestPersistedEvents({
+          sessionId,
+          cwd: session.header.cwd,
+          inheritedSeq: inherited,
+          createdAt: cursor.createdAt,
+          cursorNextSeq: cursor.nextSeq,
+          sessionKind: cursor.sessionKind,
+          conversation: cursor.conversation,
+          events: slice.events,
+          sliceFromSeq: fromSeq,
+          sliceEndSeq: end,
+          collectOpenTurn: stageOpenTurn,
+        })
+      } catch (error) {
+        if (!stageOpenTurn) scheduleLiveSessionRetry(session)
+        throw error
+      }
+      if (outcome.casRetry) continue
+      if (stageOpenTurn && outcome.openTurn) {
+        await owner.stageOpenTurnSources({
+          sessionId,
+          turn: outcome.openTurn.turn,
+          sessionKind: outcome.openTurn.sessionKind,
+          conversation: outcome.openTurn.conversation,
+          cwd: session.header.cwd,
+          sources: outcome.openTurn.sources,
+        })
+      }
+      if (entry) {
+        entry.needsCatchup = false
+        entry.liveFailures = 0
+        entry.lastSyncedSeq = Math.max(entry.lastSyncedSeq, end)
+        clearLiveRetry(entry)
+      }
+      return
+    }
   }
 
-  function synchronize(session: Session, current?: { messages: readonly UserMessage[], turn: number }) {
-    const end = session.seq
-    const persisted = flush(session)
-    void persisted.catch(() => {})
-    return enqueue(session, async state => {
-      await scan(state, end, persisted)
-      if (!current) return
-      for (const message of current.messages) await original(state, current.turn, message, Date.now(), true)
-    })
+  function scheduleColdSessionRetry(sessionId: string, header: SessionHeader) {
+    if (closed) return
+    const entry = queues.get(sessionId)
+    if (!entry || entry.epoch !== owner.epoch) return
+    if (sessions.get?.(SessionId(sessionId))) return
+    clearColdRetry(entry)
+    entry.coldFailures++
+    const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(entry.coldFailures - 1, 6))
+    entry.coldRetryTimer = setTimeout(() => {
+      entry.coldRetryTimer = null
+      if (closed || entry.epoch !== owner.epoch) return
+      if (sessions.get?.(SessionId(sessionId))) return
+      void scanCold(sessionId, header).catch(err => {
+        onError?.(err)
+        scheduleColdSessionRetry(sessionId, header)
+      })
+    }, delayMs)
+    entry.coldRetryTimer.unref?.()
   }
-  return {
-    synchronize,
-    receive(session: Session, messages: readonly UserMessage[], turn: number) {
-      return synchronize(session, { messages, turn })
-    },
-    wakeIfAwaiting(sessionId: string) {
+
+  async function readAllPersistedFrom(sessionId: string, cursorNextSeq: number | null): Promise<
+    | { status: 'ok', events: SessionEvent[], inheritedSeq: number, fromSeq: number, endSeq: number }
+    | { status: 'not-found' }
+    | { status: 'error', error: unknown }
+  > {
+    const persistence = getPersistence()
+    if (!persistence) return { status: 'not-found' }
+    let handle
+    try {
+      handle = await persistence.open(SessionId(sessionId), 'read')
+    } catch (error) {
+      if (isNotFoundError(error)) return { status: 'not-found' }
+      return { status: 'error', error }
+    }
+    try {
+      const inheritedSeq = Number(handle.inheritedEventCount ?? 0)
+      const fromSeq = cursorNextSeq === null ? inheritedSeq : Math.max(inheritedSeq, cursorNextSeq)
+      const events: SessionEvent[] = []
+      let offset = fromSeq
+      for (;;) {
+        const batch = await handle.read(offset, READ_CHUNK_SIZE)
+        if (!batch.events.length) break
+        for (const ev of batch.events) events.push(ev)
+        offset += batch.events.length
+      }
+      return { status: 'ok', events, inheritedSeq, fromSeq, endSeq: offset }
+    } catch (error) {
+      if (isNotFoundError(error)) return { status: 'not-found' }
+      return { status: 'error', error }
+    } finally {
+      await handle.close().catch(() => {})
+    }
+  }
+
+  function scanCold(sessionId: string, header: SessionHeader): Promise<void> {
+    const work = enqueue(sessionId, async () => {
       if (closed) return
-      const state = sessions.get(sessionId)
-      if (!state || !hasPendingWork(state)) return
-      if (state.released) void resumeReleased(state).catch(() => {})
-      else void synchronize(state.session).catch(() => {})
+      // Yield immediately to live session if it opened while queued.
+      if (sessions.get?.(SessionId(sessionId))) return
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (closed || sessions.get?.(SessionId(sessionId))) return
+        const cursor = await owner.intakeCursor(sessionId)
+        const read = await readAllPersistedFrom(sessionId, cursor.nextSeq)
+        if (read.status === 'not-found') return
+        if (read.status === 'error') {
+          onError?.(read.error)
+          scheduleColdSessionRetry(sessionId, header)
+          return
+        }
+        if (read.events.length === 0) return
+        const outcome = await ingestPersistedEvents({
+          sessionId,
+          cwd: header.cwd,
+          inheritedSeq: read.inheritedSeq,
+          createdAt: cursor.createdAt,
+          cursorNextSeq: cursor.nextSeq,
+          sessionKind: cursor.sessionKind,
+          conversation: cursor.conversation,
+          events: read.events,
+          sliceFromSeq: read.fromSeq,
+          sliceEndSeq: read.endSeq,
+          collectOpenTurn: false,
+        })
+        if (outcome.casRetry) continue
+        const entry = queues.get(sessionId)
+        if (entry) {
+          entry.coldFailures = 0
+          entry.needsCatchup = false
+          entry.lastSyncedSeq = Math.max(entry.lastSyncedSeq, read.endSeq)
+        }
+        return
+      }
+    })
+    void work.then(() => {
+      const entry = queues.get(sessionId)
+      if (entry && entry.work === work && entry.coldRetryTimer === null && entry.liveRetryTimer === null
+        && !sessions.get?.(SessionId(sessionId))) {
+        queues.delete(sessionId)
+      }
+    }).catch(() => {})
+    return work
+  }
+
+  function startColdCatchup() {
+    const persistence = getPersistence()
+    if (closed || !owner.epoch || !persistence) return
+    clearListRetry()
+    const targetEpoch = owner.epoch
+    listEpoch = targetEpoch
+    listFailures = 0
+
+    const runList = async () => {
+      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+      let snapshots
+      try {
+        snapshots = await persistence.list()
+      } catch (error) {
+        onError?.(error)
+        if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+        listFailures++
+        const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(listFailures - 1, 6))
+        listRetryTimer = setTimeout(() => {
+          listRetryTimer = null
+          void runList()
+        }, delayMs)
+        listRetryTimer.unref?.()
+        return
+      }
+      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+      const activeIds = new Set((sessions.list?.() ?? []).map(session => String(session.id)))
+      for (const snap of snapshots) {
+        const sid = String(snap.header.id)
+        if (activeIds.has(sid) || sessions.get?.(snap.header.id)) continue
+        void scanCold(sid, snap.header).catch(err => {
+          onError?.(err)
+          scheduleColdSessionRetry(sid, snap.header)
+        })
+      }
+    }
+    void runList()
+  }
+
+  return {
+    synchronize(session: Session) {
+      const sessionId = String(session.id)
+      const entry = queues.get(sessionId)
+      if (entry) {
+        clearColdRetry(entry)
+        clearLiveRetry(entry)
+      }
+      return enqueue(sessionId, () => scanLive(session, false))
     },
+    stageOpenTurn(session: Session) {
+      const sessionId = String(session.id)
+      const entry = queues.get(sessionId)
+      if (entry) clearColdRetry(entry)
+      return enqueue(sessionId, () => scanLive(session, true))
+    },
+    beginTurn(session: Session, turn: number, messages: readonly UserMessage[]) {
+      const sessionId = String(session.id)
+      const { sessionKind, conversation } = detectTurnMetaFromMessages(messages, host)
+      return enqueue(sessionId, () => owner.beginTurn({
+        sessionId,
+        turn,
+        sessionKind,
+        conversation: conversation ?? null,
+        cwd: session.header.cwd,
+      }))
+    },
+    scanCold,
+    startColdCatchup,
     release(session: Session) {
       const sessionId = String(session.id)
-      const state = sessions.get(sessionId)
-      if (state?.session !== session) return
-      if (hasPendingWork(state) || state.inFlight > 0) {
-        state.released = true
-        if (state.releaseDeadline === null) {
-          const anchor = state.awaitingSince.size > 0 ? Math.min(...state.awaitingSince.values()) : Date.now()
-          state.releaseDeadline = anchor + aliasGraceMs
-        }
-        settleReleased(state)
-        return
+      const entry = queues.get(sessionId)
+      const header = session.header
+      const targetSeq = session.seq
+      const targetEpoch = entry?.epoch ?? owner.epoch
+      if (entry) {
+        clearColdRetry(entry)
+        clearLiveRetry(entry)
       }
-      clearRetry(state)
-      sessions.delete(sessionId)
+      const currentWork = entry?.work ?? Promise.resolve()
+      void currentWork.finally(() => {
+        // Recompute unresolved state AFTER the in-flight live scan finishes so a turn
+        // that settled cleanly during disposal never triggers a redundant cold scan.
+        const stillUnresolved = !closed
+          && Boolean(targetEpoch)
+          && owner.epoch === targetEpoch
+          && !sessions.get?.(session.id)
+          && Boolean(getPersistence())
+          && (Boolean(entry?.needsCatchup) || (entry ? targetSeq > entry.lastSyncedSeq : targetSeq > 0))
+        if (stillUnresolved) {
+          void scanCold(sessionId, header).catch(err => {
+            onError?.(err)
+            scheduleColdSessionRetry(sessionId, header)
+          })
+          return
+        }
+        if (entry && queues.get(sessionId) === entry && entry.work === currentWork) {
+          queues.delete(sessionId)
+        }
+      }).catch(() => {})
     },
     async drain() {
       closed = true
-      for (const state of sessions.values()) clearRetry(state)
-      await Promise.allSettled([...sessions.values()].map(state => state.work))
+      clearListRetry()
+      for (const entry of queues.values()) {
+        clearColdRetry(entry)
+        clearLiveRetry(entry)
+      }
+      await Promise.allSettled([...queues.values()].map(entry => entry.work))
     },
   }
 }

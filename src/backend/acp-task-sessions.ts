@@ -1,7 +1,10 @@
 import type { ClientSideConnection, NewSessionResponse, ResumeSessionResponse, SessionConfigOption } from '@agentclientprotocol/sdk'
 import type { AcpOperations } from './acp-operations.ts'
 import type { SteerResult } from '../shared/agent-info.ts'
+import type { DispatchOrigin } from '../shared/request-routing/provenance.ts'
 import { emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
+
+export type TaskDispatchMeta = { origin: DispatchOrigin, conversationId?: string, sourceId?: string }
 
 type Choice = { id: string } & ({ type: 'select', currentValue: string } | { type: 'boolean', currentValue: boolean })
 interface Attachment { attached: boolean, unattended: boolean, config: readonly Choice[] | null }
@@ -14,7 +17,7 @@ const resultOf = (result: Acquired): Started => result.ok ? { ok: true, taskId: 
 
 /** Native attachment/request identities only. TaskRuntime owns admission, application runs, status and storage. */
 export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, emit, describeError, goneMessage, stoppedMessage, preparePrompt = async (_id, text) => text }: {
-  preparePrompt?: (id: string, text: string) => Promise<string>
+  preparePrompt?: (id: string, text: string, meta?: TaskDispatchMeta) => Promise<string>
   connection: () => Pick<ClientSideConnection, 'setSessionConfigOption' | 'closeSession'>
   acquire: { resume: (id: string, cwd: string) => Promise<ResumeSessionResponse>, fresh: (cwd: string) => Promise<NewSessionResponse> }
   foreground: () => { sessionId: string | null, cwd: string, config: readonly SessionConfigOption[] | null }
@@ -22,7 +25,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
   operations: Pick<AcpOperations, 'run' | 'cancelInTime' | 'count'>
   permissions: { pendingFor: (id: string) => readonly unknown[], waitingSessions: () => Set<string> }
   questions: { declineTask: (id: string) => void, pendingOf: (id: string) => readonly unknown[] }
-  steer: (id: string, text: string) => Promise<SteerResult>
+  steer: (id: string, text: string, meta?: TaskDispatchMeta) => Promise<SteerResult>
   emit: (event: { type: string, [field: string]: unknown }) => void
   describeError: (error: unknown) => string, goneMessage: () => string, stoppedMessage: () => string
 }) {
@@ -130,11 +133,14 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     return { ok: true, taskId }
   }
 
-  async function promptTask(taskId: string, text: string) {
+  async function promptTask(taskId: string, text: string, meta?: TaskDispatchMeta) {
     if (disposed) return
     const attachment = sessions.get(taskId)
     if (!attachment?.attached) { emit({ type: 'task_end', taskId, stopReason: 'error', message: goneMessage() }); return }
-    try { text = await preparePrompt(taskId, text) } catch (error) { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(error) }); return }
+    const effectiveMeta: TaskDispatchMeta | undefined = attachment.unattended
+      ? { ...meta, origin: 'unattended' }
+      : meta
+    try { text = await preparePrompt(taskId, text, effectiveMeta) } catch (error) { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(error) }); return }
     if (!current(taskId, attachment)) return
     await operations.run({
       sessionId: taskId, prompt: [{ type: 'text', text }],
@@ -148,11 +154,17 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     startTask: async (): Promise<Started> => resultOf(await start()),
     taskOf: (id: string) => has(id) ? id : null,
     isUnattended: (id: string) => sessions.get(id)?.unattended === true,
-    async steerTask(id: string, text: string): Promise<SteerResult> {
+    async steerTask(id: string, text: string, meta?: TaskDispatchMeta): Promise<SteerResult> {
       const attachment = sessions.get(id)
-      if (!attachment?.attached) return { ok: false, reason: 'missing' }
-      const result = await steer(id, text)
-      return current(id, attachment) ? result : { ok: false, reason: 'missing' }
+      if (!attachment?.attached) return { ok: false, reason: 'missing', delivery: 'not-sent' }
+      const effectiveMeta: TaskDispatchMeta | undefined = attachment.unattended
+        ? { ...meta, origin: 'unattended' }
+        : meta
+      const result = await steer(id, text, effectiveMeta)
+      if (!current(id, attachment)) {
+        return result.delivery === 'not-sent' ? result : { ok: false, reason: 'unavailable' }
+      }
+      return result
     },
     waits: (id: string) => has(id) ? { permissions: permissions.pendingFor(id), questions: questions.pendingOf(id) } : { permissions: [], questions: [] },
     workingCount() { const waiting = permissions.waitingSessions(); return operations.count(id => has(id) && !waiting.has(id)) },

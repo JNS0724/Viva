@@ -1,3 +1,5 @@
+import { stripLeadingProvenanceHeader } from './request-routing/provenance.ts'
+
 /**
  * What the model replies, in a turn started by a background task's end (backend/task-reports.ts), when it has nothing
  * to add to what the task's line already says: the window then shows nothing for that turn (renderer/state.ts).
@@ -38,8 +40,9 @@ export interface ReportRecord { tasks: Array<{ title: string, taskId: string }>,
 
 /** A note read back, or null for text that is no task's result. */
 export function reportRecordOf(text: string): ReportRecord | null {
-  if (!text.startsWith(REPORT_HEAD)) return null
-  const own = ownLines(text)
+  const body = stripLeadingProvenanceHeader(text)
+  if (!body.startsWith(REPORT_HEAD)) return null
+  const own = ownLines(body)
   const tasks = [...own.matchAll(TASK_LINE)].map(([, title, taskId]) => ({ title, taskId }))
   return tasks.length ? { tasks, inTurn: own.includes(IN_TURN_MARK) } : null
 }

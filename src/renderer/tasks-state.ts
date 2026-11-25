@@ -41,7 +41,7 @@ const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = nu
     // A stream's message keeps its key, open or not, settled or not, so what comes next for it lands on it rather than
     // starting another: more of it (with its blocks, until it settles), or the turn's fallback withdrawing it.
     const open = at !== null && message.open === true
-    const stream = at !== null && message.streamKey ? { streamKey: message.streamKey, ...(message.blocks ? { streamBlocks: message.blocks } : {}) } : {}
+    const stream = message.streamKey ? { streamKey: message.streamKey, ...(at !== null && message.blocks ? { streamBlocks: message.blocks } : {}) } : {}
     return { id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open, receipt: message.receipt ?? null, ...stream }
   }),
   thoughts: [], tools: {}, modelCalls: {}, timeline: [], permission: null, question: null, secret: null,
@@ -349,7 +349,16 @@ export function taskActions() {
      * Words the agent said into that task's turn (task-runtime.ts `said`), shown in its part of the conversation; a
      * piece of its stream, taken once (a read that has them already leaves them out by its number).
      */
-    task_steer: (state, action) => takePiece(state, action, (taken) => inView(taken, action.taskId, { type: 'user_steer', text: action.text, via: null })),
+    task_steer: (state, action) => takePiece(state, action, (taken) => inView(taken, action.taskId, { type: 'user_steer', text: action.text, ...(action.streamKey ? { streamKey: action.streamKey } : {}), via: null })),
+    task_steer_retracted: (state, action) => {
+      const task = state.tasks.list.find((entry) => entry.id === action.taskId)
+      if (!task) return state
+      const retracted = inView(state, action.taskId, { type: 'user_steer_retracted', streamKey: action.streamKey })
+      if (typeof action.seq === 'number' && (!task.runId || action.runId === task.runId) && action.seq > (task.seq ?? 0)) {
+        return mapTask(retracted, action.taskId, (entry) => ({ ...entry, seq: action.seq }))
+      }
+      return retracted
+    },
 
     task_closed: (state, { taskId }) => {
       const closed = {
