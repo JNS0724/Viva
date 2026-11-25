@@ -213,6 +213,12 @@ test('custom question answer uses the owner native turn and joins only completed
   const { owner, root } = fixture(t); await owner.recover()
   const sessionId = randomUUID(), src = candidate()
   owner.beginTurn({ sessionId, turn: 2, sessionKind: 'main', conversation: sessionId, cwd: null })
+  await owner.settleTurn({
+    sessionId, cwd: null, sessionKind: 'main', conversation: sessionId, inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 6, turn: 2, reasonKind: 'completed',
+    sources: [src], assistantText: '', at: src.at, timezone: 'Asia/Shanghai',
+  })
+  owner.beginTurn({ sessionId, turn: 3, sessionKind: 'main', conversation: sessionId, cwd: null })
   const card = { id: 'drink', question: '你喜欢什么饮品？', header: '', multiSelect: false, options: [{ label: '茶' }] }
   const context = { kind: 'user' as const }
   const operationId = randomUUID()
@@ -222,14 +228,14 @@ test('custom question answer uses the owner native turn and joins only completed
   assert.deepEqual(await owner.handleHost('acceptQuestionAnswer', answer), { sourceId: operationId })
   await owner.settleTurn({
     sessionId, cwd: null, sessionKind: 'main', conversation: sessionId, inheritedSeq: 0,
-    expectedNextSeq: null, fromSeq: 0, toSeq: 6, turn: 2, reasonKind: 'completed',
-    sources: [src], assistantText: '', at: src.at, timezone: 'Asia/Shanghai',
-  })
-  await owner.settleTurn({
-    sessionId, cwd: null, sessionKind: 'main', conversation: sessionId, inheritedSeq: 0,
     expectedNextSeq: 6, fromSeq: 6, toSeq: 11, turn: 3, reasonKind: 'completed',
     sources: [], assistantText: '收到', at: Date.now(), timezone: 'Asia/Shanghai',
   })
+  // Fresh answer targeting already-completed turn 2 after retirement must be rejected!
+  await assert.rejects(
+    owner.handleHost('acceptQuestionAnswer', { ...answer, operationId: randomUUID(), turn: 2 }),
+    /unavailable/,
+  )
   const db = new DatabaseSync(join(root, 'memory.db'))
   try {
     const row = db.prepare('SELECT outcome, question_valid FROM memory_sources WHERE id=?').get(operationId)

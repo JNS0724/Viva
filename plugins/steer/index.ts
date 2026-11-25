@@ -10,12 +10,16 @@
  */
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, freezeMessage, MessageId, type ContextFormed } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, freezeMessage, MessageId, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { createSteerChannel, REASONS } from './lib/channel.ts'
 import { createReportDesk, REPORT_SOURCE, reportMessageId, type ReportAgent, type ReportMessage } from './lib/reports.ts'
-import type { SteerMessageSource } from '../../src/shared/request-routing/provenance.ts'
+import {
+  liftProvenanceDraft,
+  type SteerMessageSource,
+  type VivaProvenanceHeader,
+} from '../../src/shared/request-routing/provenance.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -24,7 +28,26 @@ declare module '@deepseek-ai/dsh-llm' {
     'viva-main-human-steer': Extract<SteerMessageSource, { kind: 'viva-main-human-steer' }>
     'viva-task-human-steer': Extract<SteerMessageSource, { kind: 'viva-task-human-steer' }>
     'viva-task-router-message': Extract<SteerMessageSource, { kind: 'viva-task-router-message' }>
+    'viva-user-provenance': { kind: 'user', vivaProvenance: VivaProvenanceHeader }
+    'viva-report-batch': { kind: 'viva-report-batch', vivaProvenance: VivaProvenanceHeader }
+    'viva-unattended': { kind: 'viva-unattended', vivaProvenance: VivaProvenanceHeader }
+    'viva-task-brief': { kind: 'viva-task-brief', vivaProvenance: VivaProvenanceHeader }
   }
+}
+
+/**
+ * Unwrap a leading Viva transport provenance header (`【Viva 元数据：...】\n`) out of `UserMessage.content`
+ * into `UserMessage.source`, preserving original `message.id` and returning `freezeMessage(...)`.
+ * Strictly idempotent via `'vivaProvenance' in message.source` and `source.kind === 'user'` guard.
+ */
+export function liftProvenance(message: UserMessage): UserMessage {
+  const lifted = liftProvenanceDraft(message.content, message.source as Readonly<Record<string, unknown>>)
+  if (!lifted) return message
+  return freezeMessage({
+    ...message,
+    content: lifted.content,
+    source: lifted.source as UserMessage['source'],
+  })
 }
 
 export const name = 'viva-steer'
@@ -35,6 +58,20 @@ const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
 
 /** @param port the channel to the app (tests pass their own) */
 export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
+  // Unwrap Viva transport provenance headers before commit and LLM send (docs/memory-runtime-decoupling.md §5.4).
+  // Deliberately registered WITHOUT `{ prepend: true }` to respect Cordis waterfall onion ordering.
+  ctx.on('agent/pre-step', async (_payload, next) => {
+    const decision = await next()
+    if (decision.kind === 'reject' || decision.messages.length === 0) return decision
+    let changed = false
+    const messages = decision.messages.map(msg => {
+      const lifted = liftProvenance(msg)
+      if (lifted !== msg) changed = true
+      return lifted
+    })
+    return changed ? { ...decision, messages } : decision
+  })
+
   if (typeof port.send !== 'function') {
     log('dsh was not started by the app: nothing to steer from')
     return

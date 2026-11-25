@@ -10,8 +10,10 @@ import { leadingTaskRequestId, stripLeadingTaskHeader, withoutTaskHeaders } from
 import {
   extractHumanSpans,
   parseProvenanceHeader,
+  readLiftedProvenance,
   validateHumanSpans,
   type SessionKind,
+  type VivaProvenanceHeader,
 } from '../../../src/shared/request-routing/provenance.ts'
 import type { createRemoteMemoryOwner } from './remote-owner.ts'
 import type {} from './source.ts'
@@ -70,18 +72,33 @@ export type ExtractedHumanMessage = {
   requestId?: string
 }
 
+function resolveHostedProvenance(
+  message: UserMessage,
+  raw: string,
+): { provenance: VivaProvenanceHeader, payload: string } | null {
+  const src = message.source as Readonly<Record<string, unknown>>
+  if ('vivaProvenance' in src) {
+    const provenance = readLiftedProvenance(src, raw.length)
+    return provenance ? { provenance, payload: raw } : null
+  }
+  if (src.kind === 'user') {
+    return parseProvenanceHeader(raw)
+  }
+  return null
+}
+
 /**
  * Unified human-message extractor shared by `agent/pre-step` L3 automatic recall and session ingestion
  * (docs/memory-runtime-decoupling.md §5.4 item 1-2).
  *
  * Accepts:
- * - `'user'` (stripping any Viva top-level provenance header and slicing payload-relative `humanSpans`,
- *   or raw text directly in standalone DSH when `host === false`),
+ * - `'user'` (reading structured `source.vivaProvenance` after `liftProvenance`, with un-lifted header fallback
+ *   in hosted mode, or raw text verbatim in standalone DSH when `host === false`),
  * - `'viva-main-human-steer'` (slicing payload-relative `humanSpans` without `unquote()`),
  * - `'viva-task-human-steer'` (stripping leading task header and slicing payload-relative `humanSpans`).
  *
- * Excludes `'viva-task-router-message'`, `'viva-report'`, `'viva-report-batch'`, `'viva-memory'`,
- * `'unattended'`, and empty `humanSpans: []` (e.g. feed-only continuations).
+ * Excludes `'viva-task-router-message'`, `'viva-task-brief'`, `'viva-report'`, `'viva-report-batch'`,
+ * `'viva-memory'`, `'viva-unattended'`, and empty `humanSpans: []` (e.g. feed-only continuations).
  */
 export function extractHumanMessages(
   messages: readonly UserMessage[],
@@ -145,9 +162,9 @@ export function extractHumanMessages(
     }
     if (kind !== 'user') continue
 
-    const parsed = parseProvenanceHeader(raw)
-    if (!parsed) continue
-    const { provenance, payload } = parsed
+    const resolved = resolveHostedProvenance(message, raw)
+    if (!resolved) continue
+    const { provenance, payload } = resolved
     if (provenance.origin !== 'human') continue
     if (provenance.sourceKind === 'viva-report' || provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'unattended') continue
     if (!provenance.humanSpans) continue
@@ -171,9 +188,9 @@ export function extractHumanMessages(
 /**
  * Read-only L3 automatic recall query extractor used by `agent/pre-step` in `adapter.ts`.
  * Uses `extractHumanMessages` as the single source of truth for human messages, and additionally
- * permits read-only L3 lookups for hosted ACP `task-brief` prompts so background tasks can consult
+ * permits read-only L3 lookups for hosted ACP `viva-task-brief` prompts so background tasks can consult
  * global user memory without ever entering human `memory_sources`.
- * Unattended prompts (`origin: 'unattended'`, empty `humanSpans`) NEVER trigger L3 recall (§5.4).
+ * Unattended prompts (`viva-unattended`, `origin: 'unattended'`, empty `humanSpans`) NEVER trigger L3 recall (§5.4).
  */
 export function extractRecallQueries(
   messages: readonly UserMessage[],
@@ -188,10 +205,12 @@ export function extractRecallQueries(
       continue
     }
     if (!options.host) continue
-    if ((message.source.kind as string) !== 'user') continue
-    const parsed = parseProvenanceHeader(textOf(message))
-    if (!parsed) continue
-    const { provenance, payload } = parsed
+    const kind = message.source.kind as string
+    if (kind !== 'viva-task-brief' && kind !== 'user') continue
+    const raw = textOf(message)
+    const resolved = resolveHostedProvenance(message, raw)
+    if (!resolved) continue
+    const { provenance, payload } = resolved
     if (provenance.origin === 'router' && provenance.sourceKind === 'task-brief') {
       const queryText = provenance.humanSpans && provenance.humanSpans.length > 0
         ? extractHumanSpans(payload, provenance.humanSpans)
@@ -296,6 +315,54 @@ async function readHandleRange(
 }
 
 /**
+ * Shared host-aware assistant text selection for both turn settlement and on-demand
+ * `readPersistedSessionRange` reads (ensuring stored `assistant_digest` and range reads
+ * always interpret persisted events identically).
+ */
+export function selectTurnAssistantText(
+  events: readonly SessionEvent[],
+  host: boolean,
+  initialSessionKind: SessionKind = 'main',
+): string {
+  let sessionKind: SessionKind = initialSessionKind
+  let hasReport = false
+  const assistantParts: string[] = []
+  for (const event of events) {
+    if (event.type === 'user/message') {
+      if (host) {
+        const kind = event.data.source.kind as string
+        if (kind === 'viva-report' || kind === 'viva-report-batch') {
+          hasReport = true
+        } else if (kind === 'viva-unattended') {
+          sessionKind = 'unattended'
+        } else if (kind === 'viva-task-brief' || kind === 'viva-task-human-steer' || kind === 'viva-task-router-message') {
+          sessionKind = 'task'
+        } else if (kind === 'user') {
+          const resolved = resolveHostedProvenance(event.data, textOf(event.data))
+          if (resolved) {
+            const { provenance } = resolved
+            if (provenance.origin === 'unattended' || provenance.sourceKind === 'unattended' || provenance.sessionKind === 'unattended') {
+              sessionKind = 'unattended'
+            } else if (provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'viva-report') {
+              hasReport = true
+            } else if (provenance.sessionKind === 'task' || provenance.sourceKind === 'task-brief' || provenance.sourceKind === 'task-human-steer') {
+              sessionKind = 'task'
+            }
+          }
+        }
+      }
+    } else if (event.type === 'assistant/message' && !event.data.interrupted) {
+      assistantParts.push(textOf(event.data.message))
+    }
+  }
+  if (hasReport || sessionKind === 'unattended') return ''
+  if (sessionKind === 'task') {
+    return [...assistantParts].reverse().find(part => part.trim().length > 0) ?? ''
+  }
+  return assistantParts.join('\n')
+}
+
+/**
  * On-demand range read for `WRITE_NOTE` (§5.2 item 4):
  * Distinguishes confirmed deletion (`SessionPersistenceNotFoundError` from `open()` or `read()`)
  * from transient I/O errors or short reads (rechecking once with a fresh handle before returning `unavailable`).
@@ -305,6 +372,7 @@ export async function readPersistedSessionRange(
   sessionId: string,
   fromSeq: number,
   toSeq: number,
+  { host = false }: { host?: boolean } = {},
 ): Promise<ReadSessionRangeResult> {
   if (toSeq <= fromSeq) return { status: 'ok', assistant: '' }
   let attempt = await readHandleRange(sessionPersistence, sessionId, fromSeq, toSeq)
@@ -312,24 +380,7 @@ export async function readPersistedSessionRange(
     attempt = await readHandleRange(sessionPersistence, sessionId, fromSeq, toSeq)
   }
   if (attempt.status !== 'ok') return attempt
-  const assistantParts: string[] = []
-  let hasReport = false
-  for (const event of attempt.events) {
-    if (event.type === 'user/message') {
-      const kind = event.data.source.kind as string
-      if (kind === 'viva-report') hasReport = true
-      else if (kind === 'user') {
-        const parsed = parseProvenanceHeader(textOf(event.data))
-        if (parsed?.provenance.sourceKind === 'viva-report-batch' || parsed?.provenance.origin === 'unattended') {
-          hasReport = true
-        }
-      }
-    } else if (event.type === 'assistant/message' && !event.data.interrupted) {
-      assistantParts.push(textOf(event.data.message))
-    }
-  }
-  if (hasReport) return { status: 'ok', assistant: '' }
-  const assistant = assistantParts.join('\n')
+  const assistant = selectTurnAssistantText(attempt.events, host)
   return { status: 'ok', assistant: looksSecret(assistant) ? '' : assistant }
 }
 
@@ -351,8 +402,37 @@ function classifyUserMessageForTurn(
 ) {
   const raw = textOf(message)
   const kind = message.source.kind as string
-  if (host && kind === 'viva-report') {
+  if (host && (kind === 'viva-report' || kind === 'viva-report-batch')) {
     acc.hasReport = true
+    const resolved = resolveHostedProvenance(message, raw)
+    if (resolved?.provenance.conversationId) acc.conversation = resolved.provenance.conversationId
+    return
+  }
+  if (host && kind === 'viva-unattended') {
+    acc.sessionKind = 'unattended'
+    return
+  }
+  if (host && kind === 'viva-task-brief') {
+    acc.sessionKind = 'task'
+    const resolved = resolveHostedProvenance(message, raw)
+    const provenance = resolved?.provenance
+    const payload = resolved?.payload ?? raw
+    if (provenance?.conversationId) acc.conversation = provenance.conversationId
+    const briefText = provenance?.humanSpans
+      ? extractHumanSpans(payload, provenance.humanSpans)
+      : withoutTaskHeaders(payload)
+    if (briefText && briefText.trim()) {
+      acc.sources.push({
+        sourceId: normalizeSourceId(provenance?.sourceId, sessionId, String(message.id)),
+        author: 'agent',
+        sourceKind: 'task-brief',
+        profileEligible: false,
+        text: briefText,
+        conversation: provenance?.conversationId ?? acc.conversation,
+        at,
+        timezone: tz,
+      })
+    }
     return
   }
   if (host && kind === 'viva-task-router-message') {
@@ -393,9 +473,9 @@ function classifyUserMessageForTurn(
   }
   if (!host) return
   if (kind === 'user') {
-    const parsed = parseProvenanceHeader(raw)
-    if (!parsed) return
-    const { provenance, payload } = parsed
+    const resolved = resolveHostedProvenance(message, raw)
+    if (!resolved) return
+    const { provenance, payload } = resolved
     if (provenance.origin === 'unattended' || provenance.sourceKind === 'unattended' || provenance.sessionKind === 'unattended') {
       acc.sessionKind = 'unattended'
       return
@@ -440,11 +520,20 @@ function detectTurnMetaFromMessages(messages: readonly UserMessage[], host: bool
       sessionKind = 'task'
       const src = message.source as { conversationId?: string }
       if (src.conversationId) conversation = src.conversationId
+    } else if (kind === 'viva-task-brief') {
+      sessionKind = 'task'
+      const resolved = resolveHostedProvenance(message, textOf(message))
+      if (resolved?.provenance.conversationId) conversation = resolved.provenance.conversationId
+    } else if (kind === 'viva-unattended') {
+      sessionKind = 'unattended'
+    } else if (kind === 'viva-report-batch') {
+      const resolved = resolveHostedProvenance(message, textOf(message))
+      if (resolved?.provenance.conversationId) conversation = resolved.provenance.conversationId
     } else if (kind === 'user') {
-      const parsed = parseProvenanceHeader(textOf(message))
-      if (parsed) {
-        sessionKind = parsed.provenance.sessionKind
-        if (parsed.provenance.conversationId) conversation = parsed.provenance.conversationId
+      const resolved = resolveHostedProvenance(message, textOf(message))
+      if (resolved) {
+        sessionKind = resolved.provenance.sessionKind
+        if (resolved.provenance.conversationId) conversation = resolved.provenance.conversationId
       }
     }
   }
@@ -847,7 +936,7 @@ export function createSessionIngestion(
   }
 
   function scanCold(sessionId: string, header: SessionHeader): Promise<void> {
-    return enqueue(sessionId, async () => {
+    const work = enqueue(sessionId, async () => {
       if (closed) return
       // Yield immediately to live session if it opened while queued.
       if (sessions.get?.(SessionId(sessionId))) return
@@ -877,10 +966,22 @@ export function createSessionIngestion(
         })
         if (outcome.casRetry) continue
         const entry = queues.get(sessionId)
-        if (entry) entry.coldFailures = 0
+        if (entry) {
+          entry.coldFailures = 0
+          entry.needsCatchup = false
+          entry.lastSyncedSeq = Math.max(entry.lastSyncedSeq, read.endSeq)
+        }
         return
       }
     })
+    void work.then(() => {
+      const entry = queues.get(sessionId)
+      if (entry && entry.work === work && entry.coldRetryTimer === null && entry.liveRetryTimer === null
+        && !sessions.get?.(SessionId(sessionId))) {
+        queues.delete(sessionId)
+      }
+    }).catch(() => {})
+    return work
   }
 
   function startColdCatchup() {
@@ -961,15 +1062,16 @@ export function createSessionIngestion(
         clearColdRetry(entry)
         clearLiveRetry(entry)
       }
-      const hadPending = Boolean(entry?.needsCatchup || (entry && targetSeq > entry.lastSyncedSeq))
       const currentWork = entry?.work ?? Promise.resolve()
       void currentWork.finally(() => {
+        // Recompute unresolved state AFTER the in-flight live scan finishes so a turn
+        // that settled cleanly during disposal never triggers a redundant cold scan.
         const stillUnresolved = !closed
           && Boolean(targetEpoch)
           && owner.epoch === targetEpoch
           && !sessions.get?.(session.id)
           && Boolean(getPersistence())
-          && (hadPending || Boolean(entry?.needsCatchup) || (entry ? targetSeq > entry.lastSyncedSeq : targetSeq > 0))
+          && (Boolean(entry?.needsCatchup) || (entry ? targetSeq > entry.lastSyncedSeq : targetSeq > 0))
         if (stillUnresolved) {
           void scanCold(sessionId, header).catch(err => {
             onError?.(err)

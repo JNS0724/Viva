@@ -37,6 +37,12 @@ export type SteerMessageSource =
   | { kind: 'viva-task-human-steer', sourceId?: string, conversationId?: string, humanSpans?: HumanSpan[] }
   | { kind: 'viva-task-router-message', conversationId?: string }
 
+export type VivaLiftedNonHumanKind = 'viva-report-batch' | 'viva-unattended' | 'viva-task-brief'
+
+export type VivaLiftedMessageSource =
+  | ({ kind: 'user', vivaProvenance: VivaProvenanceHeader } & Readonly<Record<string, unknown>>)
+  | { kind: VivaLiftedNonHumanKind, vivaProvenance: VivaProvenanceHeader }
+
 export const PROVENANCE_HEAD = '【Viva 元数据：'
 const QUOTE = '\u200B'
 export const PROVENANCE_QUOTED = `【${QUOTE}Viva 元数据：`
@@ -220,4 +226,103 @@ export function stripLeadingProvenanceHeader(text: string): string {
 
 export function unquoteProvenanceHeader(text: string): string {
   return text.replaceAll(PROVENANCE_QUOTED, PROVENANCE_HEAD)
+}
+
+/**
+ * Validate a structured `vivaProvenance` object carried on `UserMessage.source`
+ * (including after a V4 JSONL disk round-trip) against `payloadLength`.
+ */
+export function validateVivaProvenance(raw: unknown, payloadLength: number): VivaProvenanceHeader | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const obj = raw as Record<string, unknown>
+  if (typeof obj.origin !== 'string' || !ORIGINS.has(obj.origin)) return null
+  if (typeof obj.sourceKind !== 'string' || !SOURCE_KINDS.has(obj.sourceKind)) return null
+  if (typeof obj.sessionKind !== 'string' || !SESSION_KINDS.has(obj.sessionKind)) return null
+  if (obj.conversationId !== undefined && (typeof obj.conversationId !== 'string' || obj.conversationId.length === 0 || obj.conversationId.length > 256)) return null
+  if (obj.sourceId !== undefined && (typeof obj.sourceId !== 'string' || obj.sourceId.length === 0 || obj.sourceId.length > 256)) return null
+  let humanSpans: HumanSpan[] | undefined
+  if (obj.humanSpans !== undefined) {
+    const validated = validateHumanSpans(obj.humanSpans, payloadLength)
+    if (!validated) return null
+    humanSpans = validated
+  }
+  return {
+    origin: obj.origin as DispatchOrigin,
+    sourceKind: obj.sourceKind as WireSourceKind,
+    sessionKind: obj.sessionKind as SessionKind,
+    ...(typeof obj.conversationId === 'string' ? { conversationId: obj.conversationId } : {}),
+    ...(typeof obj.sourceId === 'string' ? { sourceId: obj.sourceId } : {}),
+    ...(humanSpans !== undefined ? { humanSpans } : {}),
+  }
+}
+
+/** Read and validate `source.vivaProvenance` when present on a lifted `UserMessage.source`. */
+export function readLiftedProvenance(source: unknown, payloadLength: number): VivaProvenanceHeader | null {
+  if (!source || typeof source !== 'object' || !('vivaProvenance' in source)) return null
+  return validateVivaProvenance((source as { vivaProvenance?: unknown }).vivaProvenance, payloadLength)
+}
+
+/**
+ * Map parsed transport provenance to the committed `UserMessage.source`:
+ * - Human ACP prompts keep `kind: 'user'` with `vivaProvenance` (preserving existing fields such as `rpcId`)
+ *   so built-in `dsh-base` consumers filtering `source.kind === 'user'` keep working.
+ * - Non-human ACP prompts lift to dedicated non-`'user'` kinds (`viva-report-batch`, `viva-unattended`, `viva-task-brief`).
+ */
+export function liftedSourceOf(
+  provenance: VivaProvenanceHeader,
+  existingSource?: Readonly<Record<string, unknown>>,
+): VivaLiftedMessageSource {
+  if (provenance.origin === 'human') {
+    return { ...(existingSource ?? {}), kind: 'user', vivaProvenance: provenance }
+  }
+  if (provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'viva-report') {
+    return { kind: 'viva-report-batch', vivaProvenance: provenance }
+  }
+  if (provenance.origin === 'unattended' || provenance.sourceKind === 'unattended' || provenance.sessionKind === 'unattended') {
+    return { kind: 'viva-unattended', vivaProvenance: provenance }
+  }
+  return { kind: 'viva-task-brief', vivaProvenance: provenance }
+}
+
+/**
+ * Pure, strictly idempotent transport-unwrapping core for `agent/pre-step` `liftProvenance`:
+ * - Guards on `source.kind === 'user'` and `!('vivaProvenance' in source)` so repeated calls
+ *   never strip a user-typed lookalike `【Viva 元数据：...】` line.
+ * - Strips the leading `【Viva 元数据：...】\n` transport prefix from the first text block,
+ *   removing that text block when emptied on image-only prompts (no other text blocks).
+ * - Returns `null` when no lifting is needed.
+ */
+export function liftProvenanceDraft<T extends { readonly type: string, readonly text?: string }>(
+  content: readonly T[],
+  source: Readonly<Record<string, unknown>>,
+): { content: T[], source: VivaLiftedMessageSource } | null {
+  if (source.kind !== 'user' || 'vivaProvenance' in source) return null
+  const firstTextIdx = content.findIndex(block => block.type === 'text' && typeof block.text === 'string')
+  if (firstTextIdx < 0) return null
+  const firstBlock = content[firstTextIdx]!
+  const firstText = firstBlock.text!
+  const match = LEADING_PROVENANCE_MARK.exec(firstText)
+  if (!match) return null
+  const fullWireText = content
+    .flatMap(block => block.type === 'text' && typeof block.text === 'string' ? [block.text] : [])
+    .join('\n')
+  const parsed = parseProvenanceHeader(fullWireText)
+  if (!parsed) return null
+  const strippedFirstText = firstText.slice(match[0].length)
+  const hasOtherTextBlock = content.some((block, idx) => idx !== firstTextIdx && block.type === 'text' && typeof block.text === 'string')
+  const nextContent: T[] = []
+  for (let i = 0; i < content.length; i++) {
+    if (i === firstTextIdx) {
+      if (strippedFirstText.length === 0 && !hasOtherTextBlock && content.length > 1) {
+        continue
+      }
+      nextContent.push({ ...firstBlock, text: strippedFirstText })
+    } else {
+      nextContent.push(content[i]!)
+    }
+  }
+  return {
+    content: nextContent,
+    source: liftedSourceOf(parsed.provenance, source),
+  }
 }

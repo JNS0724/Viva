@@ -96,7 +96,7 @@ export function taskFirstRequestEvidence(rows: readonly unknown[], sessionId: st
     if (event.type !== 'user/message' || event.surfaceOp !== 'append') return reject(`Unexpected prior native event: ${event.type}`)
     const source = object(data.source), parts = textParts(data.content)
     if (data.role !== 'user' || !source || !parts) return reject('Malformed task user message')
-    if (source.kind === 'user') {
+    if (source.kind === 'user' || source.kind === 'viva-task-brief') {
       if (!isBrief(data, brief) || typeof data.id !== 'string') return reject('Parent or different human original precedes the task request')
       evidence.humanMessages++
       briefIds.add(data.id)

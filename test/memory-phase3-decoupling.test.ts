@@ -870,7 +870,7 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
 })
 
 test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {
-  const { dir } = scratch(t, 'phase3-dream-race-p14-')
+  const { dir, defer } = scratch(t, 'phase3-dream-race-p14-')
   const root = path.join(dir, 'memory')
   const config = path.join(dir, 'cordis.yml')
   writeFileSync(config, JSON.stringify([
@@ -879,7 +879,7 @@ test('Dream edited in-flight preserves Retry-After cooldown on newer generation 
     { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(dir, 'sessions'), compression: 'zstd' } },
   ]))
   const ctx = await boot('phase3-p14-p24', config, [], undefined, new URL('../package.json', import.meta.url).href)
-  t.after(async () => { await ctx.fiber.dispose() })
+  defer(async () => { await ctx.fiber.dispose() })
 
   const dreamEntered = deferred<void>()
   const releaseDream429 = deferred<void>()
@@ -1059,7 +1059,7 @@ test('Dream edited in-flight preserves Retry-After cooldown on newer generation 
   dreamPhase = 'ok'
   const fgSession = SessionId(randomUUID())
   const fgHandle = await ctx.agents.create({ sessionId: fgSession, meta: { cwd: dir }, agentOptions: { provider: 'mock', model: 'test-model' } })
-  t.after(async () => { releaseFg.resolve(); await fgHandle.dispose() })
+  defer(async () => { releaseFg.resolve(); await fgHandle.dispose() })
   fgHandle.agent.send(createUserMessage({ content: [{ type: 'text', text: 'long foreground stream' }], source: { kind: 'user' } }), 'next-turn', true)
   await fgEntered.promise
 

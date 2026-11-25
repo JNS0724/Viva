@@ -86,7 +86,7 @@ export interface MemoryNotes {
     snapshot: (ids: readonly string[]) => SourceRef[];
     jobState: (key: string, generation: number) => string | undefined;
     blocked: (key: string) => boolean;
-    contextSources(session: string, source: MemorySource): string[];
+    contextSources(session: string, source: MemorySource): string[] | null;
     hasRange(session: string, fromSeq: number, toSeq: number): boolean;
     addRange(input: {
         session: string;

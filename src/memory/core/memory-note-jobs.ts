@@ -70,13 +70,13 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (!source) return null
     const day = todayAt(sources.at(-1)!.at, timezone)
     const dependencies = notes.contextSources(session, source)
-    const contextCurrent = dependencies.every(id => readable(id))
+    const contextCurrent = dependencies !== null && dependencies.every(id => readable(id))
     const safeAssistant = contextCurrent && assistant && sources.every(item => allowsText(assistant, item)) ? assistant : ''
     const key = notes.addRange({
       session, day, fromSeq, toSeq, turn, sources,
       assistantDigest: safeAssistant ? hash(safeAssistant) : null,
-      assistantSources: safeAssistant ? dependencies : [],
-      questionSources: dependencies,
+      assistantSources: safeAssistant && dependencies ? dependencies : [],
+      questionSources: contextCurrent && dependencies ? dependencies : [],
       questionCurrent: contextCurrent,
     })
     if (!key) return null
@@ -102,12 +102,12 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (!source) return
     const day = todayAt(sources.at(-1)!.at, timezone)
     const dependencies = notes.contextSources(session, source)
-    const contextCurrent = dependencies.every(id => readable(id))
+    const contextCurrent = dependencies !== null && dependencies.every(id => readable(id))
     // A generated response may contain protected material or opaque tool
     // metadata. Suppress that copy without discarding independent human input.
     const safeAssistant = contextCurrent && sources.every(item => allowsText(assistant, item)) ? assistant : ''
-    const key = notes.add(session, day, sources, safeAssistant, ids[0]!, safeAssistant ? dependencies : [], assistant,
-      { questionSources: dependencies, questionCurrent: contextCurrent })
+    const key = notes.add(session, day, sources, safeAssistant, ids[0]!, safeAssistant && dependencies ? dependencies : [], assistant,
+      { questionSources: contextCurrent && dependencies ? dependencies : [], questionCurrent: contextCurrent })
     if (!key) return
     let pendingCount = 0
     store.tx(() => {

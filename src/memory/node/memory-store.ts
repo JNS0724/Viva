@@ -30,6 +30,7 @@ const SCHEMA = `
     outcome TEXT NOT NULL, UNIQUE(operation, version)
   );
   CREATE INDEX memory_sources_conversation ON memory_sources(conversation);
+  CREATE INDEX memory_sources_session ON memory_sources(session);
   CREATE TABLE memory_manual_file_lineage (
     source TEXT NOT NULL, parent TEXT NOT NULL, reference TEXT NOT NULL, PRIMARY KEY(source,parent)
   );

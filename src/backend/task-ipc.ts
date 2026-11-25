@@ -10,4 +10,5 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, tasks: Tas
   ipcMain.handle('task:close', (_event, taskId) => tasks.close(taskId))
   ipcMain.handle('task:stop', (_event, taskId) => tasks.stop(taskId))
   ipcMain.handle('task:resume', (_event, taskId) => tasks.resume(taskId))
+  ipcMain.handle('task:message', (_event, taskId, text) => tasks.message(taskId, text))
 }

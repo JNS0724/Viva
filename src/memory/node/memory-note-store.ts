@@ -127,18 +127,19 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       if (row) sessions.set(`${row.workspace}\0${row.session}`, row)
     }
     for (const { workspace, session } of sessions.values()) {
-      const latest = db.prepare(`SELECT rowid, range_id, source_tokens_json, assistant_valid
+      const latest = db.prepare(`SELECT rowid, range_id
         FROM memory_note_ranges
         WHERE workspace=? AND session=? AND status IN ('written','skipped')
         ORDER BY rowid DESC LIMIT 1`).get(workspace, session) as
-        { rowid: number, range_id: string, source_tokens_json: string, assistant_valid: number } | undefined
+        { rowid: number, range_id: string } | undefined
       if (!latest) continue
-      // Keep only the single latest consumed range per (workspace, session) for `previous()`
-      // and strip cumulative/question refs so retained references stay O(1) across turns (§5.3 item 2).
-      const directAssistantRefs = latest.assistant_valid ? latest.source_tokens_json : '[]'
+      // Keep only the single latest consumed range per (workspace, session) for `previous()`.
+      // Preserve its complete `assistant_sources_json` proof list intact so revoking an earlier
+      // turn still invalidates `previousAssistant`; clear only `question_sources_json` since
+      // `memory_sources` owns direct question metadata (§5.3 item 2).
       db.prepare(`UPDATE memory_note_ranges
-        SET assistant_sources_json=?, question_sources_json='[]'
-        WHERE rowid=?`).run(directAssistantRefs, latest.rowid)
+        SET question_sources_json='[]'
+        WHERE rowid=?`).run(latest.rowid)
       const retired = db.prepare(`SELECT range_id FROM memory_note_ranges
         WHERE workspace=? AND session=? AND status IN ('written','skipped') AND rowid<?`)
         .all(workspace, session, latest.rowid) as Array<{ range_id: string }>
@@ -412,12 +413,28 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     recover, read, snapshot, references,
     jobState: (key: string, generation: number) => journal.state(`note:${memoryFileRevision(key)}:${generation}`),
     blocked: (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(key) || rawNote(key)?.file_revision && !read(key)),
-    contextSources(session: string, source: MemorySource) {
-      // Collect only direct source IDs from active/retained ranges (<= noteInterval + 1 rows)
-      // rather than transitively re-copying assistant/question lists, bounding storage to O(1) per turn.
-      const rows = db.prepare('SELECT sources_json FROM memory_note_ranges WHERE session=? AND workspace=? ORDER BY rowid')
-        .all(session, workspaceOf(source)) as Array<{ sources_json: string }>
-      return [...new Set(rows.flatMap(row => JSON.parse(row.sources_json) as string[]))]
+    contextSources(session: string, source: MemorySource): string[] | null {
+      // Bound dependency capture to O(1) per row even under deep pending backlogs (e.g. when no
+      // Note model is configured). If complete prior proofs in this (session, workspace) exceed
+      // MAX_CONTEXT_SOURCES, fail closed (return null) so optional assistant/question context is
+      // omitted instead of storing truncated proofs or quadratic O(N^2) reference lists.
+      const MAX_CONTEXT_SOURCES = 16
+      const targetWorkspace = workspaceOf(source)
+      const rows = db.prepare('SELECT id, scope, context, project FROM memory_sources WHERE session=? AND id<>? ORDER BY rowid DESC')
+        .all(session, source.id) as Array<{ id: string, scope: string, context: string | null, project: string | null }>
+      const ids: string[] = []
+      for (const row of rows) {
+        const rowWorkspace = workspaceOf({
+          ...source,
+          scope: JSON.parse(row.scope) as MemorySource['scope'],
+          context: row.context ? JSON.parse(row.context) as NonNullable<MemorySource['context']> : null,
+          project: row.project ? JSON.parse(row.project) as NonNullable<MemorySource['project']> : null,
+        })
+        if (rowWorkspace !== targetWorkspace) continue
+        ids.push(row.id)
+        if (ids.length > MAX_CONTEXT_SOURCES) return null
+      }
+      return ids
     },
     hasRange: (session: string, fromSeq: number, toSeq: number) =>
       Boolean(db.prepare('SELECT 1 FROM memory_note_ranges WHERE session=? AND from_seq=? AND to_seq=?').get(session, fromSeq, toSeq)),

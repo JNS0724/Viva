@@ -675,7 +675,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
         const { session, turn } = input
         const context = sessionContext(session)
+        const activeTurn = db.prepare('SELECT turn FROM owner_active_turns WHERE session=?').get(session) as { turn: string } | undefined
         if (context.conversation !== input.conversation || context.project?.id !== input.project?.id
+          || !activeTurn || activeTurn.turn !== String(turn)
           || db.prepare('SELECT 1 FROM memory_note_ranges WHERE session=? AND turn=?').get(session, turn)) {
           throw new MemoryDomainError('not.found', 'Answer context is unavailable')
         }
