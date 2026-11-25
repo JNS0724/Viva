@@ -61,13 +61,6 @@ export interface DocumentRevisionEntry {
   before: DocumentSnapshot | null
   after: DocumentSnapshot | null
 }
-export class MemoryPhysicalReadError extends Error {
-  readonly code = 'memory-physical-read-unavailable'
-  constructor(message = 'Memory physical file is temporarily unavailable', options?: { cause?: unknown }) {
-    super(message, options)
-    this.name = 'MemoryPhysicalReadError'
-  }
-}
 
 export interface MemoryDocuments {
   acceptedSnapshot(workspace: string, id: string): DocumentSnapshot | null
@@ -88,7 +81,7 @@ export interface MemoryDocuments {
   receipt(workspace: string, operationId: string): DocumentReceipt | null
   hasPendingCleanup(sourceId: string): boolean
   pendingCleanup(): number
-  read(workspace: string, path: string, options?: { includeDisabled?: boolean, physical?: MemoryPhysicalFile | null, throwOnPhysicalError?: boolean }): DocumentSnapshot | null
+  read(workspace: string, path: string, options?: { includeDisabled?: boolean, physical?: MemoryPhysicalFile | null }): DocumentSnapshot | null
   list(workspace: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[]
   commit(input: DocumentCommit): DocumentReceipt
   writeManual(input: DocumentManualWrite): DocumentReceipt

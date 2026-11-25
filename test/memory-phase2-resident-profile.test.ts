@@ -51,14 +51,6 @@ function dreamHarness(t: TestContext, options: {
     workspace: string,
     filePath: string,
   ) => { path: string, revision: string, markdown: string } | null
-  omitReadFileAtCommit?: boolean
-  omitReadFileRevisionAtCommit?: boolean
-  omitReadPhysicalFile?: boolean
-  readFileRevisionAtCommitOverride?: (
-    defaultRead: (workspace: string, filePath: string) => string | undefined,
-    workspace: string,
-    filePath: string,
-  ) => string | undefined
 } = {}) {
   const { dir, defer } = scratch(t, 'phase2-dream-')
   const dbPath = path.join(dir, 'memory.db')
@@ -112,30 +104,14 @@ function dreamHarness(t: TestContext, options: {
       reference: id => ({ namespace: 'canonical', sourceId: id, revision: 1 }),
       transaction: write => store.tx(write),
       committed: receipt => onCommittedHook?.(receipt),
-      ...(options.omitReadPhysicalFile
-        ? {}
-        : {
-            readPhysicalFile: (workspace: string, filePath: string, signal?: AbortSignal) =>
-              options.readPhysicalOverride
-                ? options.readPhysicalOverride(defaultReadPhysical, workspace, filePath, signal)
-                : defaultReadPhysical(workspace, filePath, signal),
-          }),
-      ...(options.omitReadFileAtCommit
-        ? options.omitReadFileRevisionAtCommit
-          ? {}
-          : {
-              readFileRevisionAtCommit: (workspace: string, filePath: string) =>
-                options.readFileRevisionAtCommitOverride
-                  ? options.readFileRevisionAtCommitOverride((w, p) => defaultReadAtCommit(w, p)?.revision, workspace, filePath)
-                  : defaultReadAtCommit(workspace, filePath)?.revision,
-            }
-        : {
-            readFileAtCommit: (workspace: string, filePath: string) =>
-              options.readFileAtCommitOverride
-                ? options.readFileAtCommitOverride(defaultReadAtCommit, workspace, filePath)
-                : defaultReadAtCommit(workspace, filePath),
-            ...(options.omitReadFileRevisionAtCommit ? {} : { readFileRevisionAtCommit: (workspace: string, filePath: string) => defaultReadAtCommit(workspace, filePath)?.revision }),
-          }),
+      readPhysicalFile: (workspace: string, filePath: string, signal?: AbortSignal) =>
+        options.readPhysicalOverride
+          ? options.readPhysicalOverride(defaultReadPhysical, workspace, filePath, signal)
+          : defaultReadPhysical(workspace, filePath, signal),
+      readFileAtCommit: (workspace: string, filePath: string, cached) =>
+        options.readFileAtCommitOverride
+          ? options.readFileAtCommitOverride(defaultReadAtCommit, workspace, filePath)
+          : readMemoryFileAtCommit(store.fileRoot, workspace, filePath, cached),
       calculate: async request => {
         modelLog.push({
           isProfilePass: request.system === DREAM_PROFILE_SYSTEM,
@@ -1395,6 +1371,7 @@ test('profile_deleted_at watermark stays monotonic across system clock rollback 
   const jobs = createMemoryDreamJobs({
     store, notes, documents, effects, now: () => clock, transaction: store.tx,
     identity: { newId: randomUUID, hash: memoryHash },
+    readFileAtCommit: (workspace, filePath, cached) => readMemoryFileAtCommit(store.fileRoot, workspace, filePath, cached),
     readable: () => true, eligible: () => true,
     source: id => store.readSource(id) ?? undefined,
     reference: id => { const s = store.readSource(id); return s ? { namespace: 'canonical', sourceId: s.id, revision: s.version } : null },
@@ -1599,6 +1576,7 @@ test('pre-deletion question with clock rollback is blocked by profile_deletion_g
   const jobs = createMemoryDreamJobs({
     store, notes, documents, effects, now: () => clock + 3, transaction: store.tx,
     identity: { newId: randomUUID, hash: memoryHash },
+    readFileAtCommit: (workspace, filePath, cached) => readMemoryFileAtCommit(store.fileRoot, workspace, filePath, cached),
     readable: () => true, eligible: () => true,
     source: id => store.readSource(id) ?? undefined,
     reference: id => { const s = store.readSource(id); return s ? { namespace: 'canonical', sourceId: s.id, revision: s.version } : null },
@@ -2085,514 +2063,12 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   assert.equal(hE.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'single physical snapshot must feed notes.read directly without a second disk open that would race and classify as stale (R7 P1)')
   fs.renameSync(d0EBackup, d0EAbs)
 
-  // Part F (R8 P2-4): A runtime omitting optional readFileAtCommit (revision-only) must retain deferred recovery with 0 extra planner calls.
-  let armMoveF = false
-  let d0FPath = ''
-  let d0FAbs = ''
-  let d0FBackup = ''
-  const hF = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
-      const res = await defaultRead(workspace, filePath, signal)
-      if (armMoveF && filePath === d0FPath) {
-        armMoveF = false
-        fs.renameSync(d0FAbs, d0FBackup)
-      }
-      return res
-    },
-  })
-  const d0F = hF.addDailyNote([{ text: '旧日记：西安机房配置' }], { session: 's-r8-f0', day: '2026-11-15' })
-  d0FPath = d0F.path
-  d0FAbs = path.join(hF.store.fileRoot, d0F.workspace, d0F.path)
-  d0FBackup = `${d0FAbs}.moved`
-  hF.notes.markProcessed(d0F.key, d0F.note.revision)
-  hF.addDailyNote([{ text: '目标 F 无新建摘要' }], { session: 's-r8-f1', day: '2026-11-16' })
-  let modelCallsF = 0
-  hF.setModel(async request => {
-    modelCallsF++
-    if (request.system === DREAM_PROFILE_SYSTEM) {
-      armMoveF = true
-      return JSON.stringify({ action: 'NOOP' })
-    }
-    const readRes = await request.tools!.executeTool({ callId: 'c-d0f', name: 'read', input: { path: d0F.path } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({ operations: [] })
-  })
-  await hF.run()
-  const callsAfterDeferF = modelCallsF
-  await hF.retryNow()
-  assert.equal(modelCallsF, callsAfterDeferF, 'revision-only runtime omitting readFileAtCommit must preserve deferred checkpoint with 0 extra planner calls (R8 P2-4)')
-  fs.renameSync(d0FBackup, d0FAbs)
-  await hF.retryNow()
-  assert.equal(modelCallsF, callsAfterDeferF)
-  assert.equal(hF.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
-
-  // Part G (R9 P2-4): On a revision-only runtime, moving an observed note right AFTER readFileRevisionAtCommit confirms
-  // the live hash matches must NOT reopen disk in notes.read (reuses checkpointBatch snapshot, 0 stale/replan).
-  let d0GPath = ''
-  let d0GAbs = ''
-  let d0GBackup = ''
-  let armMoveAfterRev = false
-  const hG = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-      const rev = defaultRead(workspace, filePath)
-      if (armMoveAfterRev && filePath === d0GPath && rev) {
-        armMoveAfterRev = false
-        fs.renameSync(d0GAbs, d0GBackup)
-      }
-      return rev
-    },
-  })
-  const d0G = hG.addDailyNote([{ text: '旧日记：南京机房配置' }], { session: 's-r9-g0', day: '2026-11-15' })
-  d0GPath = d0G.path
-  d0GAbs = path.join(hG.store.fileRoot, d0G.workspace, d0G.path)
-  d0GBackup = `${d0GAbs}.moved`
-  hG.notes.markProcessed(d0G.key, d0G.note.revision)
-  hG.addDailyNote([{ text: '目标 G 无新建摘要' }], { session: 's-r9-g1', day: '2026-11-16' })
-  hG.setModel(async request => {
-    if (request.system === DREAM_PROFILE_SYSTEM) {
-      armMoveAfterRev = true
-      return JSON.stringify({ action: 'NOOP' })
-    }
-    const readRes = await request.tools!.executeTool({ callId: 'c-d0g', name: 'read', input: { path: d0G.path } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({ operations: [] })
-  })
-  await hG.run()
-  assert.equal(armMoveAfterRev, false, 'move right after revision check must have fired')
-  assert.equal(hG.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'revision-only live check must reuse checkpointBatch snapshot without reopening disk in notes.read (R9 P2-4)')
-  fs.renameSync(d0GBackup, d0GAbs)
-
-  // Part H (R10 P2-4): Revision-only runtime ALSO omitting optional readPhysicalFile (no checkpointBatch):
-  // moving an observed note right after readFileRevisionAtCommit must classify as unverifiable (0 extra planner calls on retry).
-  let d0HPath = ''
-  let d0HAbs = ''
-  let d0HBackup = ''
-  let armMoveNoBatch = false
-  const hH = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    omitReadPhysicalFile: true,
-    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-      const rev = defaultRead(workspace, filePath)
-      if (armMoveNoBatch && filePath === d0HPath && rev) {
-        armMoveNoBatch = false
-        fs.renameSync(d0HAbs, d0HBackup)
-      }
-      return rev
-    },
-  })
-  const d0H = hH.addDailyNote([{ text: '旧日记：武汉机房配置' }], { session: 's-r10-h0', day: '2026-11-15' })
-  d0HPath = d0H.path
-  d0HAbs = path.join(hH.store.fileRoot, d0H.workspace, d0H.path)
-  d0HBackup = `${d0HAbs}.moved`
-  hH.notes.markProcessed(d0H.key, d0H.note.revision)
-  hH.addDailyNote([{ text: '目标 H 无新建摘要' }], { session: 's-r10-h1', day: '2026-11-16' })
-  let modelCallsH = 0
-  hH.setModel(async request => {
-    modelCallsH++
-    if (request.system === DREAM_PROFILE_SYSTEM) {
-      armMoveNoBatch = true
-      return JSON.stringify({ action: 'NOOP' })
-    }
-    const readRes = await request.tools!.executeTool({ callId: 'c-d0h', name: 'read', input: { path: d0H.path } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({ operations: [] })
-  })
-  await hH.run()
-  assert.equal(armMoveNoBatch, false, 'move right after revision check must have fired in no-batch mode')
-  const callsAfterDeferH = modelCallsH
-  assert.equal(hH.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'no-batch missing note must defer instead of marking processed')
-  await hH.retryNow()
-  assert.equal(modelCallsH, callsAfterDeferH, 'no-batch revision-only runtime must preserve deferred checkpoint with 0 extra planner calls while file is absent (R10 P2-4)')
-  fs.renameSync(d0HBackup, d0HAbs)
-  await hH.retryNow()
-  assert.equal(modelCallsH, callsAfterDeferH, 'restored file must complete deferred checkpoint with 0 extra planner calls (R10 P2-4)')
-  assert.equal(hH.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
-
-  // Part I (R11 P2-3): Revision-only no-batch runtime where an observed digest becomes unreadable (EACCES) right after
-  // readFileRevisionAtCommit matches -> documents.read throws -> caught as unverifiable -> deferred checkpoint preserved (0 extra planner calls!).
-  if (process.platform !== 'win32' && (typeof process.getuid !== 'function' || process.getuid() !== 0)) {
-    let docIAbs = ''
-    let armChmod = false
-    const hI = dreamHarness(t, {
-      initialNow: TODAY_MS,
-      omitReadFileAtCommit: true,
-      omitReadPhysicalFile: true,
-      readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-        const rev = defaultRead(workspace, filePath)
-        if (armChmod && filePath === 'digest/wiki/doc-i.md' && rev) {
-          armChmod = false
-          fs.chmodSync(docIAbs, 0o000)
-        }
-        return rev
-      },
-    })
-    const d0I = hI.addDailyNote([{ text: '旧摘要来源：天津机房配置' }], { session: 's-r11-i0', day: '2026-11-15' })
-    hI.documents.commit({
-      operationId: randomUUID(),
-      workspace: d0I.workspace,
-      path: 'digest/wiki/doc-i.md',
-      expectedRevision: null,
-      action: 'CREATE',
-      markdown: '---\nname: Doc I\ndescription: Observed digest for EACCES test\n---\n\n天津机房运维配置。\n',
-      sources: [{ id: d0I.sources[0]!.id, token: memorySourceToken(d0I.sources[0]!) }],
-      reads: [],
-    })
-    docIAbs = path.join(hI.store.fileRoot, d0I.workspace, 'digest/wiki/doc-i.md')
-    t.after(() => { try { fs.chmodSync(docIAbs, 0o644) } catch { /* ignore */ } })
-    hI.notes.markProcessed(d0I.key, d0I.note.revision)
-    hI.addDailyNote([{ text: '目标 I 读取观察摘要后无需新建文档' }], { session: 's-r11-i1', day: '2026-11-16' })
-    let modelCallsI = 0
-    hI.setModel(async request => {
-      modelCallsI++
-      if (request.system === DREAM_PROFILE_SYSTEM) {
-        armChmod = true
-        return JSON.stringify({ action: 'NOOP' })
-      }
-      const readRes = await request.tools!.executeTool({ callId: 'c-doci', name: 'read', input: { path: 'digest/wiki/doc-i.md' } })
-      assert.equal(readRes.state, 'completed')
-      return JSON.stringify({ operations: [] })
-    })
-    await hI.run()
-    assert.equal(armChmod, false, 'chmod 0o000 right after revision check must have fired')
-    const callsAfterDeferI = modelCallsI
-    assert.equal(callsAfterDeferI, 2, 'initial Dream run should make exactly 2 planner calls (consolidate + profile)')
-    assert.equal(hI.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'EACCES during observed digest read must defer instead of marking processed')
-    await hI.retryNow()
-    assert.equal(modelCallsI, callsAfterDeferI, 'deferred checkpoint must survive EACCES with 0 extra planner calls while unreadable (R11 P2-3)')
-    fs.chmodSync(docIAbs, 0o644)
-    await hI.retryNow()
-    assert.equal(modelCallsI, callsAfterDeferI, 'restoring read access must complete deferred checkpoint with 0 extra planner calls (R11 P2-3)')
-    assert.equal(hI.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
-
-    // Part J (R12 P2-1): Brief EACCES on observed daily note after first revision match, restored BEFORE any second revision check:
-    // notes.read preserves the physical read error separately from a policy/revision mismatch -> defers -> 0 extra planner calls!
-    let d0JPath = ''
-    let d0JAbs = ''
-    let revChecksJ = 0
-    let armBriefChmod = false
-    const hJ = dreamHarness(t, {
-      initialNow: TODAY_MS,
-      omitReadFileAtCommit: true,
-      omitReadPhysicalFile: true,
-      readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-        if (filePath === d0JPath) {
-          revChecksJ++
-          if (revChecksJ === 2) {
-            // Even if access is restored before any second check, the first notes.read EACCES must already have deferred!
-            try { fs.chmodSync(d0JAbs, 0o644) } catch { /* ignore */ }
-          }
-        }
-        const rev = defaultRead(workspace, filePath)
-        if (armBriefChmod && filePath === d0JPath && rev) {
-          armBriefChmod = false
-          fs.chmodSync(d0JAbs, 0o000)
-        }
-        return rev
-      },
-    })
-    const d0J = hJ.addDailyNote([{ text: '旧日记：重庆机房配置' }], { session: 's-r12-j0', day: '2026-11-15' })
-    d0JPath = d0J.path
-    d0JAbs = path.join(hJ.store.fileRoot, d0J.workspace, d0J.path)
-    t.after(() => { try { fs.chmodSync(d0JAbs, 0o644) } catch { /* ignore */ } })
-    hJ.notes.markProcessed(d0J.key, d0J.note.revision)
-    hJ.addDailyNote([{ text: '目标 J 无新建摘要' }], { session: 's-r12-j1', day: '2026-11-16' })
-    let modelCallsJ = 0
-    hJ.setModel(async request => {
-      modelCallsJ++
-      if (request.system === DREAM_PROFILE_SYSTEM) {
-        armBriefChmod = true
-        return JSON.stringify({ action: 'NOOP' })
-      }
-      const readRes = await request.tools!.executeTool({ callId: 'c-d0j', name: 'read', input: { path: d0J.path } })
-      assert.equal(readRes.state, 'completed')
-      return JSON.stringify({ operations: [] })
-    })
-    await hJ.run()
-    assert.equal(armBriefChmod, false)
-    assert.equal(modelCallsJ, 2)
-    assert.equal(hJ.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'brief note EACCES must defer instead of discarding checkpoint as stale (R12 P2-1)')
-    fs.chmodSync(d0JAbs, 0o644)
-    await hJ.retryNow()
-    assert.equal(modelCallsJ, 2, 'restoring note access must finish deferred checkpoint with 0 extra planner calls (2 total, not 4) (R12 P2-1)')
-    assert.equal(hJ.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
-  }
-
-  // Part K (R12 P2-2): Malformed source-reference metadata JSON for an observed digest after revision matches must NOT be
-  // swallowed as unverifiable — it must propagate to the job error handler and keep the manual Dream request pending!
-  let armCorruptK = false
-  let corruptWorkspaceK = ''
-  const hK = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    omitReadPhysicalFile: true,
-    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-      const rev = defaultRead(workspace, filePath)
-      if (armCorruptK && filePath === 'digest/wiki/doc-k.md' && rev) {
-        armCorruptK = false
-        hK.store.db.prepare('UPDATE memory_documents SET sources = ? WHERE workspace = ? AND path = ?')
-          .run('{malformed-json', corruptWorkspaceK, 'digest/wiki/doc-k.md')
-      }
-      return rev
-    },
-  })
-  const d0K = hK.addDailyNote([{ text: '旧摘要来源：苏州机房配置' }], { session: 's-r12-k0', day: '2026-11-15' })
-  corruptWorkspaceK = d0K.workspace
-  hK.documents.commit({
-    operationId: randomUUID(),
-    workspace: d0K.workspace,
-    path: 'digest/wiki/doc-k.md',
-    expectedRevision: null,
-    action: 'CREATE',
-    markdown: '---\nname: Doc K\ndescription: Observed digest for metadata decode failure test\n---\n\n苏州机房运维配置。\n',
-    sources: [{ id: d0K.sources[0]!.id, token: memorySourceToken(d0K.sources[0]!) }],
-    reads: [],
-  })
-  hK.notes.markProcessed(d0K.key, d0K.note.revision)
-  hK.addDailyNote([{ text: '目标 K 读取观察摘要' }], { session: 's-r12-k1', day: '2026-11-16' })
-  hK.setModel(async request => {
-    if (request.system === DREAM_PROFILE_SYSTEM) {
-      armCorruptK = true
-      return JSON.stringify({ action: 'NOOP' })
-    }
-    const readRes = await request.tools!.executeTool({ callId: 'c-dock', name: 'read', input: { path: 'digest/wiki/doc-k.md' } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({ operations: [] })
-  })
-  const manualOpK = randomUUID()
-  hK.jobs.request(manualOpK)
-  await hK.effects.wake()
-  assert.equal(armCorruptK, false, 'metadata corruption after revision check must have fired')
-  const statusK = hK.jobs.status(manualOpK)
-  assert.equal(statusK.completedAt, null, 'metadata decoding failure must NOT produce a successful manual completion receipt (R12 P2-2)')
-  assert.notEqual(statusK.state, 'idle', 'job must enter retry state rather than idle/empty on metadata decoding error (R12 P2-2)')
-
-  // Part L (R13 P2-1): No-batch revision-only runtime must reuse the strict read's snapshot for policy validation
-  // without reopening the target note a second time (moving/denying access after strict read cannot misclassify as stale).
-  const hL = dreamHarness(t, { initialNow: TODAY_MS, omitReadFileAtCommit: true, omitReadPhysicalFile: true })
-  const d1L = hL.addDailyNote([{ text: '目标 L 单次严格读取后直接复用快照' }], { session: 's-r13-l1', day: '2026-11-16' })
-  const d1LAbs = path.join(hL.store.fileRoot, d1L.workspace, d1L.path)
-  const d1LBackup = `${d1LAbs}.moved`
-  let strictReadsL = 0
-  const origNotesReadL = hL.notes.read
-  hL.notes.read = (key, physical, opts) => {
-    const res = origNotesReadL(key, physical, opts)
-    if (key === d1L.key && opts?.throwOnPhysicalError && res) {
-      strictReadsL++
-      // Remove the file right AFTER the strict read succeeds; policy validation must use the snapshot without reopening disk!
-      fs.renameSync(d1LAbs, d1LBackup)
-    }
-    return res
-  }
-  let modelCallsL = 0
-  hL.setModel(async request => {
-    modelCallsL++
-    if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
-    return JSON.stringify({ operations: [] })
-  })
-  await hL.run()
-  assert.equal(strictReadsL, 1, 'strict read of target note must have fired once')
-  assert.equal(modelCallsL, 2)
-  assert.equal(hL.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'target note checkpoint must reuse strict read snapshot without reopening disk (R13 P2-1)')
-  fs.renameSync(d1LBackup, d1LAbs)
-
-  // Part M (R13 P2-2): Briefly missing observed note (ENOENT) restored before any second revision check must still defer (0 extra planner calls).
-  let d0MPath = ''
-  let d0MAbs = ''
-  let d0MBackup = ''
-  let revChecksM = 0
-  let armBriefMoveM = false
-  const hM = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    omitReadPhysicalFile: true,
-    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-      if (filePath === d0MPath) {
-        revChecksM++
-        if (revChecksM === 2 && fs.existsSync(d0MBackup)) {
-          fs.renameSync(d0MBackup, d0MAbs)
-        }
-      }
-      const rev = defaultRead(workspace, filePath)
-      if (armBriefMoveM && filePath === d0MPath && rev) {
-        armBriefMoveM = false
-        fs.renameSync(d0MAbs, d0MBackup)
-      }
-      return rev
-    },
-  })
-  const d0M = hM.addDailyNote([{ text: '旧日记：厦门机房配置' }], { session: 's-r13-m0', day: '2026-11-15' })
-  d0MPath = d0M.path
-  d0MAbs = path.join(hM.store.fileRoot, d0M.workspace, d0M.path)
-  d0MBackup = `${d0MAbs}.moved`
-  hM.notes.markProcessed(d0M.key, d0M.note.revision)
-  hM.addDailyNote([{ text: '目标 M 无新建摘要' }], { session: 's-r13-m1', day: '2026-11-16' })
-  let modelCallsM = 0
-  hM.setModel(async request => {
-    modelCallsM++
-    if (request.system === DREAM_PROFILE_SYSTEM) {
-      armBriefMoveM = true
-      return JSON.stringify({ action: 'NOOP' })
-    }
-    const readRes = await request.tools!.executeTool({ callId: 'c-d0m', name: 'read', input: { path: d0M.path } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({ operations: [] })
-  })
-  await hM.run()
-  assert.equal(armBriefMoveM, false)
-  assert.equal(modelCallsM, 2)
-  assert.equal(hM.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'briefly missing observed note must defer instead of classifying as stale (R13 P2-2)')
-  if (fs.existsSync(d0MBackup)) fs.renameSync(d0MBackup, d0MAbs)
-  await hM.retryNow()
-  assert.equal(modelCallsM, 2, 'restoring briefly missing note must complete deferred checkpoint with 0 extra planner calls (R13 P2-2)')
-  assert.equal(hM.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
-
-  // Part N (R13 P2-3): Temporarily replacing an observed note with a directory (MemoryFileError('not-file')) must defer and keep checkpoint intact!
-  let d0NPath = ''
-  let d0NAbs = ''
-  let d0NBackup = ''
-  let armDirSwapN = false
-  const hN = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    omitReadPhysicalFile: true,
-    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-      const rev = defaultRead(workspace, filePath)
-      if (armDirSwapN && filePath === d0NPath && rev) {
-        armDirSwapN = false
-        fs.renameSync(d0NAbs, d0NBackup)
-        fs.mkdirSync(d0NAbs)
-      }
-      return rev
-    },
-  })
-  const d0N = hN.addDailyNote([{ text: '旧日记：青岛机房配置' }], { session: 's-r13-n0', day: '2026-11-15' })
-  d0NPath = d0N.path
-  d0NAbs = path.join(hN.store.fileRoot, d0N.workspace, d0N.path)
-  d0NBackup = `${d0NAbs}.orig`
-  t.after(() => {
-    try {
-      if (fs.existsSync(d0NBackup)) {
-        fs.rmSync(d0NAbs, { recursive: true, force: true })
-        fs.renameSync(d0NBackup, d0NAbs)
-      }
-    } catch { /* ignore */ }
-  })
-  hN.notes.markProcessed(d0N.key, d0N.note.revision)
-  hN.addDailyNote([{ text: '目标 N 无新建摘要' }], { session: 's-r13-n1', day: '2026-11-16' })
-  let modelCallsN = 0
-  hN.setModel(async request => {
-    modelCallsN++
-    if (request.system === DREAM_PROFILE_SYSTEM) {
-      armDirSwapN = true
-      return JSON.stringify({ action: 'NOOP' })
-    }
-    const readRes = await request.tools!.executeTool({ callId: 'c-d0n', name: 'read', input: { path: d0N.path } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({ operations: [] })
-  })
-  await hN.run()
-  assert.equal(armDirSwapN, false)
-  assert.equal(modelCallsN, 2)
-  assert.equal(hN.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'non-regular file (directory) at observed note path must defer instead of aborting checkpoint persistence (R13 P2-3)')
-  // Restore original regular file -> completes with 0 extra planner calls (2 total, not 4)!
-  fs.rmSync(d0NAbs, { recursive: true, force: true })
-  fs.renameSync(d0NBackup, d0NAbs)
-  await hN.retryNow()
-  assert.equal(modelCallsN, 2, 'restoring regular file after directory swap must complete deferred checkpoint with 0 extra planner calls (R13 P2-3)')
-  assert.equal(hN.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
-
-  // Part O (R14 P2-1): On a no-batch runtime, changing the target note on disk WHILE Dream validates a distinct observed
-  // dependency must be caught by target's single live check immediately before markProcessed (kept pending, NOT processed).
-  let d0OPath = ''
-  let d1OAbs = ''
-  let armMutateTargetO = false
-  const hO = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    omitReadPhysicalFile: true,
-    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-      const rev = defaultRead(workspace, filePath)
-      if (armMutateTargetO && filePath === d0OPath) {
-        armMutateTargetO = false
-        fs.writeFileSync(d1OAbs, `${fs.readFileSync(d1OAbs, 'utf8')}\n<!-- target edited during distinct obs validation -->`)
-      }
-      return rev
-    },
-  })
-  const d0O = hO.addDailyNote([{ text: '旧日记：大连机房配置' }], { session: 's-r14-o0', day: '2026-11-15' })
-  d0OPath = d0O.path
-  hO.notes.markProcessed(d0O.key, d0O.note.revision)
-  const d1O = hO.addDailyNote([{ text: '目标 O 读取 d0O 后无需新建文档' }], { session: 's-r14-o1', day: '2026-11-16' })
-  d1OAbs = path.join(hO.store.fileRoot, d1O.workspace, d1O.path)
-  hO.setModel(async request => {
-    if (request.system === DREAM_PROFILE_SYSTEM) {
-      armMutateTargetO = true
-      return JSON.stringify({ action: 'NOOP' })
-    }
-    const readRes = await request.tools!.executeTool({ callId: 'c-d0o', name: 'read', input: { path: d0O.path } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({ operations: [] })
-  })
-  await hO.run()
-  assert.equal(armMutateTargetO, false, 'target mutation during distinct observed note check must have fired')
-  assert.equal(hO.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'target note changed during distinct dependency check must remain pending, NOT marked processed (R14 P2-1)')
-
-  // Part P (R14 P2-2): Target note that the planner also reads (in observedNotes) must be physically validated ONLY ONCE
-  // (1 revision check + 1 strict read total); moving it after that single strict read must still complete cleanly.
-  let d1PPath = ''
-  let d1PAbs = ''
-  let d1PBackup = ''
-  let revChecksP = 0
-  let strictReadsP = 0
-  const hP = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    omitReadPhysicalFile: true,
-    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
-      if (filePath === d1PPath) revChecksP++
-      return defaultRead(workspace, filePath)
-    },
-  })
-  const d1P = hP.addDailyNote([{ text: '目标 P 同时被规划器自身 read 读取' }], { session: 's-r14-p1', day: '2026-11-16' })
-  d1PPath = d1P.path
-  d1PAbs = path.join(hP.store.fileRoot, d1P.workspace, d1P.path)
-  d1PBackup = `${d1PAbs}.moved`
-  const origReadP = hP.notes.read
-  hP.notes.read = (key, physical, opts) => {
-    const res = origReadP(key, physical, opts)
-    if (key === d1P.key && opts?.throwOnPhysicalError && res) {
-      strictReadsP++
-      fs.renameSync(d1PAbs, d1PBackup)
-    }
-    return res
-  }
-  hP.setModel(async request => {
-    if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
-    const readRes = await request.tools!.executeTool({ callId: 'c-self', name: 'read', input: { path: d1P.path } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({ operations: [] })
-  })
-  await hP.run()
-  assert.equal(revChecksP, 1, 'self-observed target note must run only 1 revision check (R14 P2-2)')
-  assert.equal(strictReadsP, 1, 'self-observed target note must run only 1 strict read (R14 P2-2)')
-  assert.equal(hP.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'self-observed target note must complete cleanly using its single physical observation (R14 P2-2)')
-  fs.renameSync(d1PBackup, d1PAbs)
-
   // Part Q (R14 P2-3, R15 P2-1, R16 P2-3): Persistently malformed memory_documents.sources committed OUTSIDE the
   // checkpoint transaction must propagate through strict candidate-scan policy reads on retry with 0 extra planner calls
-  // and keep the manual Dream request pending on both batch and no-batch runtimes!
-  for (const omitPhysical of [true, false]) {
-    const hQ = dreamHarness(t, {
-      initialNow: TODAY_MS,
-      omitReadFileAtCommit: omitPhysical,
-      omitReadPhysicalFile: omitPhysical,
-    })
-    const d0Q = hQ.addDailyNote([{ text: '旧摘要来源：合肥机房配置' }], { session: `s-r16-q0-${omitPhysical}`, day: '2026-11-15' })
+  // and keep the manual Dream request pending.
+  {
+    const hQ = dreamHarness(t, { initialNow: TODAY_MS })
+    const d0Q = hQ.addDailyNote([{ text: '旧摘要来源：合肥机房配置' }], { session: 's-r16-q0', day: '2026-11-15' })
     hQ.documents.commit({
       operationId: randomUUID(),
       workspace: d0Q.workspace,
@@ -2604,7 +2080,7 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
       reads: [],
     })
     hQ.notes.markProcessed(d0Q.key, d0Q.note.revision)
-    const d1Q = hQ.addDailyNote([{ text: `目标 Q 关联 [[digest/wiki/doc-q.md]] (${omitPhysical})` }], { session: `s-r16-q1-${omitPhysical}`, day: '2026-11-16' })
+    const d1Q = hQ.addDailyNote([{ text: '目标 Q 关联 [[digest/wiki/doc-q.md]]' }], { session: 's-r16-q1', day: '2026-11-16' })
     let modelCallsQ = 0
     hQ.setModel(async request => {
       modelCallsQ++
@@ -2623,21 +2099,21 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
     await hQ.effects.wake()
     assert.equal(modelCallsQ, 2)
     const statusQ1 = hQ.jobs.status(manualOpQ)
-    assert.equal(statusQ1.completedAt, null, `first failure must NOT emit completedAt receipt (omitPhysical=${omitPhysical}) (R14 P2-3)`)
+    assert.equal(statusQ1.completedAt, null, 'first failure must NOT emit completedAt receipt (R14 P2-3)')
     assert.notEqual(statusQ1.state, 'idle')
     // Retry with the persistent corruption still in memory_documents.sources: candidate scan readStrict must fail
     // BEFORE running the planner (0 extra planner calls, manual request still pending)!
     await hQ.retryNow()
-    assert.equal(modelCallsQ, 2, `retry with persistent malformed memory_documents.sources must fail in candidate scan without another planner call (omitPhysical=${omitPhysical}) (R16 P2-3)`)
+    assert.equal(modelCallsQ, 2, 'retry with persistent malformed memory_documents.sources must fail in candidate scan without another planner call (R16 P2-3)')
     const statusQ2 = hQ.jobs.status(manualOpQ)
-    assert.equal(statusQ2.completedAt, null, `retry with persistent metadata corruption must NOT emit completedAt/empty receipt (omitPhysical=${omitPhysical}) (R15 P2-1, R16 P2-3)`)
+    assert.equal(statusQ2.completedAt, null, 'retry with persistent metadata corruption must NOT emit completedAt/empty receipt (R15 P2-1, R16 P2-3)')
     assert.notEqual(statusQ2.state, 'idle')
     assert.equal(hQ.notes.changedFiles('2026-11-15', '2026-11-16').some(f => f.key === d1Q.key), true)
   }
 
-  // Part R (R15 P2-2, R16 P2-2): Missing target + temporarily ineligible dependency must defer on BOTH batch AND
-  // no-batch revision-only runtimes (saving deferred checkpoint and finishing with 2 total planner calls, NOT 4).
-  for (const noBatch of [false, true]) {
+  // Part R (R15 P2-2, R16 P2-2): Missing target + temporarily ineligible dependency must defer
+  // (saving deferred checkpoint and finishing with 2 total planner calls, NOT 4).
+  {
     const ineligibleR = new Set<string>()
     let d1RPath = ''
     let d1RAbs = ''
@@ -2647,11 +2123,9 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
     let postProfileReadsOfD1R = 0
     const hR = dreamHarness(t, {
       initialNow: TODAY_MS,
-      omitReadFileAtCommit: noBatch,
-      omitReadPhysicalFile: noBatch,
       eligible: src => !ineligibleR.has(src.id),
       async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
-        if (!noBatch && armCheckpointR && filePath === d1RPath) {
+        if (armCheckpointR && filePath === d1RPath) {
           postProfileReadsOfD1R++
           if (postProfileReadsOfD1R === 2) {
             armCheckpointR = false
@@ -2662,7 +2136,7 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
         return defaultRead(workspace, filePath, signal)
       },
     })
-    const d0R = hR.addDailyNote([{ text: `旧摘要来源：宁波机房配置 (${noBatch})` }], { session: `s-r15-r0-${noBatch}`, day: '2026-11-15' })
+    const d0R = hR.addDailyNote([{ text: '旧摘要来源：宁波机房配置' }], { session: 's-r15-r0', day: '2026-11-15' })
     d0RSourceId = d0R.sources[0]!.id
     hR.documents.commit({
       operationId: randomUUID(),
@@ -2675,22 +2149,10 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
       reads: [],
     })
     hR.notes.markProcessed(d0R.key, d0R.note.revision)
-    const d1R = hR.addDailyNote([{ text: `目标 R 读取 doc-r 后缺失且依赖暂不可入场 (${noBatch})` }], { session: `s-r15-r1-${noBatch}`, day: '2026-11-16' })
+    const d1R = hR.addDailyNote([{ text: '目标 R 读取 doc-r 后缺失且依赖暂不可入场' }], { session: 's-r15-r1', day: '2026-11-16' })
     d1RPath = d1R.path
     d1RAbs = path.join(hR.store.fileRoot, d1R.workspace, d1R.path)
     d1RBackup = `${d1RAbs}.moved`
-    if (noBatch) {
-      // Trigger move + dependency ineligibility at the very start of checkpointTargets (BEFORE classifyObservedRefs checks eligibility!).
-      const origNoteRegR = hR.notes.noteRegistration
-      hR.notes.noteRegistration = key => {
-        if (armCheckpointR && key === d1R.key) {
-          armCheckpointR = false
-          fs.renameSync(d1RAbs, d1RBackup)
-          ineligibleR.add(d0RSourceId)
-        }
-        return origNoteRegR(key)
-      }
-    }
     let modelCallsR = 0
     hR.setModel(async request => {
       modelCallsR++
@@ -2705,14 +2167,14 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
     const manualOpR = randomUUID()
     hR.jobs.request(manualOpR)
     await hR.effects.wake()
-    assert.equal(armCheckpointR, false, `target move + dependency ineligibility must have triggered (noBatch=${noBatch})`)
+    assert.equal(armCheckpointR, false, 'target move + dependency ineligibility must have triggered')
     assert.equal(modelCallsR, 2)
-    assert.ok(hR.jobs.status(manualOpR).completedAt !== null, `manual request must complete while missing target is deferred (noBatch=${noBatch}) (R15 P2-2, R16 P2-2)`)
+    assert.ok(hR.jobs.status(manualOpR).completedAt !== null, 'manual request must complete while missing target is deferred (R15 P2-2, R16 P2-2)')
     assert.equal(hR.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
     fs.renameSync(d1RBackup, d1RAbs)
     ineligibleR.clear()
     await hR.retryNow()
-    assert.equal(modelCallsR, 2, `missing target deferred before dependency wait must finish with 0 extra planner calls (noBatch=${noBatch}) (R15 P2-2, R16 P2-2)`)
+    assert.equal(modelCallsR, 2, 'missing target deferred before dependency wait must finish with 0 extra planner calls (R15 P2-2, R16 P2-2)')
     assert.equal(hR.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
   }
 
@@ -2778,42 +2240,4 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   await hR2.run()
   assert.equal(modelCallsR2, 4, 'observed target revision mismatch during dependency wait must drop the deferred checkpoint so restoring original bytes requires replanning (R16 P2-1)')
   assert.equal(hR2.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
-
-  // Part S (R15 P2-3): Caller omitting BOTH readFileAtCommit AND readFileRevisionAtCommit (plus readPhysicalFile):
-  // moving target immediately before strict read must defer (0 extra planner calls after restore).
-  const hS = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    omitReadFileAtCommit: true,
-    omitReadFileRevisionAtCommit: true,
-    omitReadPhysicalFile: true,
-  })
-  const d1S = hS.addDailyNote([{ text: '目标 S 省略两个 commit reader 时的物理读错恢复' }], { session: 's-r15-s1', day: '2026-11-16' })
-  const d1SAbs = path.join(hS.store.fileRoot, d1S.workspace, d1S.path)
-  const d1SBackup = `${d1SAbs}.moved`
-  let armMoveS = false
-  const origReadS = hS.notes.read
-  hS.notes.read = (key, physical, opts) => {
-    if (armMoveS && key === d1S.key && opts?.throwOnPhysicalError) {
-      armMoveS = false
-      fs.renameSync(d1SAbs, d1SBackup)
-    }
-    return origReadS(key, physical, opts)
-  }
-  let modelCallsS = 0
-  hS.setModel(async request => {
-    modelCallsS++
-    if (request.system === DREAM_PROFILE_SYSTEM) {
-      armMoveS = true
-      return JSON.stringify({ action: 'NOOP' })
-    }
-    return JSON.stringify({ operations: [] })
-  })
-  await hS.run()
-  assert.equal(armMoveS, false, 'target move immediately before strict read must have fired')
-  assert.equal(modelCallsS, 2)
-  assert.equal(hS.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'physical read error with both commit readers omitted must defer instead of throwing (R15 P2-3)')
-  fs.renameSync(d1SBackup, d1SAbs)
-  await hS.retryNow()
-  assert.equal(modelCallsS, 2, 'restoring target with both commit readers omitted must complete deferred checkpoint with 0 extra planner calls (R15 P2-3)')
-  assert.equal(hS.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
 })

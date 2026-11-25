@@ -288,13 +288,11 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       if (isRequestCancelled(sessionId, requestId, stepToken)) {
         return { msg, requestId, result: { status: 'skipped' } }
       }
-      if (requestId && (connection.claimPrefetch || connection.claimPrefetchBatch)) {
+      if (requestId && connection.claimPrefetch) {
         const left = remaining()
         if (left <= 0) return { msg, requestId, result: { status: 'timeout' } }
         try {
-          const claim = connection.claimPrefetch
-            ? await connection.claimPrefetch({ requestId, sessionId }, { signal, budgetMs: left })
-            : (await connection.claimPrefetchBatch!({ requestIds: [requestId], sessionId }, { signal, budgetMs: left }))[0]
+          const claim = await connection.claimPrefetch({ requestId, sessionId }, { signal, budgetMs: left })
           ingestCancelledRequests(sessionId, claim?.cancelledRequestIds)
           if (isRequestCancelled(sessionId, requestId, stepToken)) {
             return { msg, requestId, result: { status: 'skipped' } }

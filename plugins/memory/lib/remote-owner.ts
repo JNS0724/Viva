@@ -13,7 +13,6 @@ export type MemoryOwnerConnection = OwnerAdapterCaller & {
   reconciled?(epoch: string, ready: boolean): void
   claimPrefetch?(input: { requestId: string, sessionId: string }, options?: OwnerCallOptions): Promise<PrefetchClaimResponse>
   refreshPrefetch?(input: { requestId: string, sessionId: string }, options?: OwnerCallOptions): Promise<PrefetchClaimResponse>
-  claimPrefetchBatch?(input: { requestIds: readonly string[], sessionId: string }, options?: OwnerCallOptions): Promise<PrefetchClaimResponse[]>
   callHost: HostMemoryCaller
   subscribe(listener: (event: unknown) => void): () => void
   status(): MemoryOwnerState['state']

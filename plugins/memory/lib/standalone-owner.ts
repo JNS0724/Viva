@@ -192,7 +192,6 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
     reconciled(epoch, ready) { peer.notify({ type: 'memory_adapter_ready', epoch, ready }) },
     claimPrefetch: (input, opts) => peer.call('claimPrefetch', input, opts),
     refreshPrefetch: (input, opts) => peer.call('refreshPrefetch', input, opts),
-    claimPrefetchBatch: (input, opts) => peer.call('claimPrefetchBatch', input, opts),
     callAdapter: (method, args, opts) => peer.call('adapter', { method, args, epoch: current?.epoch }, opts),
     callHost: () => Promise.reject(new Error('The Viva memory adapter has no host capabilities')),
     subscribe(listener) {

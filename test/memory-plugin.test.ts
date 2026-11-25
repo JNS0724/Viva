@@ -76,7 +76,7 @@ test('automatic recall times out without interrupting the request', { timeout: D
   let lostReceiptBudget: number | undefined
   t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
     const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
-    if (frame?.kind === 'request' && (frame.method === 'claimPrefetch' || frame.method === 'claimPrefetchBatch')) {
+    if (frame?.kind === 'request' && frame.method === 'claimPrefetch') {
       lookup = true
       lostReceiptBudget = frame.budgetMs
       return true // Simulate hung host prefetch claim.

@@ -345,52 +345,6 @@ test('task header escapes quoted main-conversation routing headers and preserves
   assert.equal(reconstructed, raw)
 })
 
-test('claimPrefetchBatch rejects stale hit A when file is disabled while sibling B is still pending (P1-3)', async t => {
-  let clock = 5_000
-  const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
-  let calls = 0
-  const prefetch = createMemoryPrefetchManager({
-    now: () => clock,
-    defaultBudgetMs: 100,
-    callPrefetch(input) {
-      calls++
-      const d = deferred<PrefetchReply>()
-      pending.set(`${input.query}:${calls}`, d)
-      return d.promise
-    },
-  })
-  t.after(() => prefetch.close())
-  prefetch.onState(ownerState('e1', 10))
-
-  const reqA = randomUUID()
-  const reqB = randomUUID()
-  prefetch.startPrefetch({ requestId: reqA, sessionId: 'sess-steer', queryText: 'query-A' })
-  prefetch.startPrefetch({ requestId: reqB, sessionId: 'sess-steer', queryText: 'query-B' })
-
-  // A completes at revision 10 first; B is still pending.
-  pending.get('query-A:1')!.resolve({
-    epoch: 'e1',
-    revision: 10,
-    result: { status: 'hit', text: 'A_SECRET_DISABLED', partial: false, hits: [{ text: 'A_SECRET_DISABLED', names: ['a'] }] },
-  })
-  await Promise.resolve()
-
-  const batchPromise = prefetch.claimPrefetchBatch({ sessionId: 'sess-steer', requestIds: [reqA, reqB] })
-  await Promise.resolve()
-
-  // While B is waiting, user disables A's file -> revision advances to 11 and budget expires.
-  clock += 110
-  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 11 })
-  pending.get('query-B:2')!.resolve({ epoch: 'e1', revision: 11, result: { status: 'empty' } })
-
-  const results = await batchPromise
-  assert.equal(results.length, 2)
-  assert.equal(results[0]!.found, true)
-  if (results[0]!.found) assert.equal(results[0]!.result.status, 'timeout', 'disabled hit A must not survive sibling wait')
-  assert.equal(results[1]!.found, true)
-  if (results[1]!.found) assert.equal(results[1]!.result.status, 'timeout', 'late B reply past absolute deadline must timeout')
-})
-
 test('prefetch preserves timeout and skipped markers across TTL and >1000 deliveries and enforces absolute deadline on replies (P2-1, P2-2)', async t => {
   let clock = 10_000
   const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
@@ -1176,33 +1130,6 @@ test('cancelling pending multi-steer claim suppresses adapter automaticRecall fa
   assert.deepEqual(await claimSettledPromise, { found: true, result: { status: 'skipped' } }, 'cancel during settled claim handoff must return skipped (R7 P2-3)')
   assert.deepEqual(await prefetchB.refreshPrefetch({ requestId: reqS, sessionId: 'sess-b' }), { found: true, result: { status: 'skipped' } })
   assert.equal(callsB, 1, 'cancelled settled hit must NOT permit a 2nd worker lookup on refreshPrefetch')
-
-  // Part C (R7 P2-3b): Batch [A (settled), B (pending)] — cancel A while waiting on B must return skipped for A.
-  const heldBatchB = deferred<PrefetchReply>()
-  const prefetchC = createMemoryPrefetchManager({
-    defaultBudgetMs: 250,
-    callPrefetch(input) {
-      if (input.query === 'batch-a') {
-        return Promise.resolve({ epoch: 'e-c', revision: 1, result: { status: 'hit', text: 'BATCH_A', partial: false, hits: [{ text: 'BATCH_A', names: ['a'] }] } })
-      }
-      return heldBatchB.promise
-    },
-  })
-  t.after(() => prefetchC.close())
-  prefetchC.onState(ownerState('e-c', 1))
-  const reqBA = randomUUID()
-  const reqBB = randomUUID()
-  prefetchC.startPrefetch({ requestId: reqBA, sessionId: 'sess-c', queryText: 'batch-a' })
-  prefetchC.startPrefetch({ requestId: reqBB, sessionId: 'sess-c', queryText: 'batch-b' })
-  await new Promise(resolve => setTimeout(resolve, 15))
-  const batchPromise = prefetchC.claimPrefetchBatch({ requestIds: [reqBA, reqBB], sessionId: 'sess-c' })
-  await Promise.resolve()
-  prefetchC.cancelPrefetch('sess-c', reqBA)
-  heldBatchB.resolve({ epoch: 'e-c', revision: 1, result: { status: 'hit', text: 'BATCH_B', partial: false, hits: [{ text: 'BATCH_B', names: ['b'] }] } })
-  const batchRes = await batchPromise
-  assert.deepEqual(batchRes[0], { found: true, result: { status: 'skipped' } }, 'cancelled settled batch item A while waiting on B must return skipped (R7 P2-3)')
-  assert.equal(batchRes[1]?.found, true)
-  assert.equal(batchRes[1]?.result.status, 'hit')
 
   // Part D (R7 P2-3c): Active retry in runRequeryOnce (via refreshPrefetch) must abort immediately on cancelPrefetch.
   let retryAborted = false

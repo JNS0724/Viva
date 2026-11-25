@@ -61,7 +61,7 @@ const publishProfile = (force = false) => {
   if (!owner || !booted || closing || owner.status() !== 'ready') return
   const snapshot = owner.profileSnapshot()
   const profileDeletionGen = owner.runtime.profileDeletionGeneration()
-  const key = JSON.stringify([snapshot.epoch, snapshot.revision, snapshot.text, profileDeletionGen])
+  const key = JSON.stringify([snapshot.epoch, snapshot.text, profileDeletionGen])
   if (!force && key === lastProfileKey) return
   lastProfileKey = key
   notify({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, ...snapshot, profileDeletionGen })

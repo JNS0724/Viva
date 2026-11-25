@@ -163,11 +163,6 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
                 send({ type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { found: true, result: { status: 'skipped' } } })
                 return true
               }
-              if (frame?.kind === 'request' && frame.method === 'claimPrefetchBatch') {
-                const reqs = Array.isArray(objectOf(frame.input)?.requestIds) ? (objectOf(frame.input)!.requestIds as unknown[]) : []
-                send({ type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: reqs.map(() => ({ found: true, result: { status: 'skipped' } })) })
-                return true
-              }
             }
             return bound.receive(raw)
           },
