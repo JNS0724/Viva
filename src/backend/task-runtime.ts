@@ -661,16 +661,17 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * Words into a task's turn: into what it said, and to the window as a piece of its run's stream (`task_steered`),
    * numbered with that write, so a read of the task (`finished`) has them exactly when its mark counts the piece.
    */
-  function said(taskId: string, text: string, key?: string, sourceId?: string) {
+  function said(taskId: string, text: string, key?: string, sourceId?: string): string | null {
     taskWords.userSaid(taskId, text, key, sourceId)
     const runId = registry.runOf(taskId)
     if (runId !== null) pushPiece(taskId, runId, { type: 'task_steered', text, ...(key ? { key } : {}) })
+    return runId
   }
 
-  /** Retract a steered message ONLY after dsh explicitly confirms non-delivery (idle/missing/not-sent). */
-  function retractSaid(taskId: string, key: string) {
+  /** Retract a steered message ONLY after dsh explicitly confirms non-delivery (idle/not-sent). */
+  function retractSaid(taskId: string, key: string, sentRunId: string | null) {
     taskWords.undoUserSaid(taskId, key)
-    const runId = registry.runOf(taskId)
+    const runId = sentRunId ?? registry.runOf(taskId)
     if (runId !== null) pushPiece(taskId, runId, { type: 'task_steer_retracted', key })
   }
 
@@ -695,19 +696,17 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (stillSelected && !stillSelected()) throw new Error(t('main.requests.start.elsewhere'))
     const sourceId = dispatch.origin === 'human' ? (dispatch.sourceId ?? randomUUID()) : undefined
     const steerKey = sourceId ?? randomUUID()
-    said(taskId, text, steerKey, sourceId)
+    const sentRunId = said(taskId, text, steerKey, sourceId)
     const steered = await agent.steerTask(taskId, text, {
       origin: dispatch.origin,
       conversationId: kept.segmentId,
       ...(sourceId ? { sourceId } : {}),
     })
     if (!steered?.ok) {
-      // Retract ONLY on confirmed non-delivery (idle / missing / explicit not-sent).
-      // On ACK timeout (unknown delivery), retain the in-flight record and its sourceId.
-      const confirmedNotSent = steered?.delivery === 'not-sent'
-        || steered?.reason === 'idle'
-        || steered?.reason === 'missing'
-      if (confirmedNotSent) retractSaid(taskId, steerKey)
+      // Retract ONLY on confirmed non-delivery (explicit `not-sent` or plugin `idle`).
+      // On ACK timeout or post-send bridge disposal (unknown delivery), keep history & sourceId.
+      const confirmedNotSent = steered?.delivery === 'not-sent' || steered?.reason === 'idle'
+      if (confirmedNotSent) retractSaid(taskId, steerKey, sentRunId)
       throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
     }
     return { taskId, delivered: 'into its turn', ...(sourceId ? { sourceId } : {}) }

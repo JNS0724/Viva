@@ -21,6 +21,7 @@ import { withRequestSource } from '../src/shared/request-routing/header.ts'
 import { withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
 import { withProvenanceHeader, wrapRawWithProvenance } from '../src/shared/request-routing/provenance.ts'
 import { interjection, NO_PLUGIN } from '../src/backend/steer-channel.ts'
+import { createAcpTaskSessions } from '../src/backend/acp-task-sessions.ts'
 import { createTaskRuntime } from '../src/backend/task-runtime.ts'
 import { createTaskStore } from '../src/backend/task-store.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
@@ -2455,4 +2456,179 @@ test('Phase 4A Codex R4 P1-1..P1-2 & P2-3..P2-4: multi-answer mid-read revocatio
   assert.ok(msgsAfterTimeout[1]!.sourceId, 'timeout with unknown delivery must preserve sourceId')
   const openTaskAfterTimeout = winState.tasks.list.find(item => item.id === taskIdR4)!
   assert.deepEqual(openTaskAfterTimeout.view.messages.map(m => m.text), ['initial task brief', 'timed out maybe delivered'])
+})
+
+test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post-question steer independence, post-send dispose preservation, task_end-raced retraction sync, and monotonic message IDs', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4a-r5-')
+  const nowMs = Date.parse('2026-11-26T00:00:00Z')
+
+  // R5 P1-1: Setting ONLY outcome='rejected' (without clearing text/hash) excludes both the source AND dependent questions!
+  const root1 = path.join(dir, 'mem-r5-rej')
+  const noteInputs1: Array<{ turns: Array<{ user: Array<{ sourceId: string, text: string, question: string | null }> }> }> = []
+  const owner1 = openMemoryOwner({
+    root: root1, hostNamespace: 'viva', dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '' }),
+    compute: job => job.stage === 'note'
+      ? (noteInputs1.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '拒绝状态', markdown: '记录' })))
+      : null,
+  })
+  defer(() => owner1.close())
+  await owner1.recover()
+  const sid1 = 'sess-r5-rej', trig1 = randomUUID(), ans1 = randomUUID()
+  owner1.beginTurn({ sessionId: sid1, turn: 1, sessionKind: 'main', conversation: 'conv-r5-1', cwd: dir })
+  await owner1.handleHost('acceptQuestionAnswer', {
+    operationId: ans1, text: '有效回答内容', session: sid1, turn: 1, conversation: 'conv-r5-1',
+    cards: [{ id: 'q1', question: '引用触发原话的问题？', header: '问题', options: [{ label: 'A' }], multiSelect: false }],
+    requestId: 'req-r5-1', questionId: 'q1', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  })
+  await owner1.settleTurn({
+    sessionId: sid1, cwd: dir, sessionKind: 'main', conversation: 'conv-r5-1', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
+    sources: [{ sourceId: trig1, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '将被标记拒绝的触发原话', at: nowMs, timezone: 'UTC' }],
+    assistantText: '', at: nowMs + 20, timezone: 'UTC',
+  })
+  const db1 = new DatabaseSync(path.join(root1, 'memory.db'))
+  defer(() => db1.close())
+  // Update ONLY outcome='rejected' (leaving text and hash intact)!
+  db1.prepare("UPDATE memory_sources SET outcome='rejected' WHERE id=?").run(trig1)
+  owner1.runtime.flushNoteTurns?.(sid1)
+  await owner1.runtime.wake()
+  assert.equal(noteInputs1.length, 1)
+  const users1 = noteInputs1[0]!.turns.flatMap(turn => turn.user)
+  assert.equal(users1.some(u => u.sourceId === trig1), false, 'outcome-only rejected source must never reach Note model')
+  const keptAns1 = users1.find(u => u.sourceId === ans1)
+  assert.ok(keptAns1)
+  assert.equal(keptAns1.question, null, 'question depending on outcome-only rejected source must be withheld')
+
+  // R5 P2-2: Later same-turn steer arriving AFTER a question is NOT a prerequisite of that earlier question!
+  const root2 = path.join(dir, 'mem-r5-poststeer')
+  const noteInputs2: Array<{ turns: Array<{ user: Array<{ sourceId: string, text: string, question: string | null }> }> }> = []
+  const owner2 = openMemoryOwner({
+    root: root2, hostNamespace: 'viva', dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '' }),
+    compute: job => job.stage === 'note'
+      ? (noteInputs2.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '后插话独立', markdown: '记录' })))
+      : null,
+  })
+  defer(() => owner2.close())
+  await owner2.recover()
+  const sid2 = 'sess-r5-post', prompt2 = randomUUID(), ans2 = randomUUID(), laterSteer2 = randomUUID()
+  owner2.beginTurn({ sessionId: sid2, turn: 1, sessionKind: 'main', conversation: 'conv-r5-2', cwd: dir })
+  await owner2.handleHost('acceptQuestionAnswer', {
+    operationId: ans2, text: '固定用 TypeScript', session: sid2, turn: 1, conversation: 'conv-r5-2',
+    cards: [{ id: 'q2', question: '优先使用什么语言？', header: '语言', options: [{ label: 'JS' }], multiSelect: false }],
+    requestId: 'req-r5-2', questionId: 'q2', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  })
+  await owner2.settleTurn({
+    sessionId: sid2, cwd: dir, sessionKind: 'main', conversation: 'conv-r5-2', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 6, turn: 1, reasonKind: 'completed',
+    sources: [
+      { sourceId: prompt2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '帮我规划工程', at: nowMs, timezone: 'UTC' },
+      { sourceId: laterSteer2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '后来的无关插话', at: nowMs + 50, timezone: 'UTC' },
+    ],
+    assistantText: '', at: nowMs + 60, timezone: 'UTC',
+  })
+  const db2 = new DatabaseSync(path.join(root2, 'memory.db'))
+  defer(() => db2.close())
+  // Revoking ONLY the later unrelated steer (at > questionAt) must preserve the earlier question!
+  db2.prepare("UPDATE memory_sources SET text=NULL, hash=NULL, outcome='rejected' WHERE id=?").run(laterSteer2)
+  owner2.runtime.flushNoteTurns?.(sid2)
+  await owner2.runtime.wake()
+  assert.equal(noteInputs2.length, 1)
+  const keptAns2 = noteInputs2[0]!.turns.flatMap(turn => turn.user).find(u => u.sourceId === ans2)
+  assert.ok(keptAns2)
+  assert.equal(keptAns2.question, '优先使用什么语言？', 'revoking a later same-turn steer after questionAt must NOT invalidate the earlier question')
+
+  // R5 P2-3: Bridge disposal AFTER steerTask sends preserves unknown delivery (not rewritten to bare 'missing' / 'not-sent')!
+  const steerGate = deferred<{ ok: boolean, reason?: string }>()
+  const acpTasks = createAcpTaskSessions({
+    connection: () => ({ closeSession: async () => {}, setSessionConfigOption: async () => ({ configOptions: [] }) }) as never,
+    acquire: {
+      fresh: async () => ({ sessionId: 'task-dispose-1' }) as never,
+      resume: async (id: string) => ({ sessionId: id }) as never,
+    },
+    foreground: () => ({ sessionId: 'fg-1', cwd: dir, config: null }),
+    canResume: () => true,
+    prepareFresh: () => {},
+    operations: { run: async () => {}, cancelInTime: async () => true, count: () => 0 } as never,
+    permissions: { pendingFor: () => [], waitingSessions: () => new Set() },
+    questions: { declineTask: () => {}, pendingOf: () => [] },
+    steer: async () => steerGate.promise,
+    emit: () => {},
+    describeError: String,
+    goneMessage: () => 'gone',
+    stoppedMessage: () => 'stopped',
+  })
+  // Pre-send missing attachment IS confirmed not-sent!
+  const preMissing = await acpTasks.steerTask('unknown-task', 'hi')
+  assert.equal(preMissing.ok, false)
+  assert.equal(preMissing.delivery, 'not-sent')
+  const started = await acpTasks.startTask()
+  assert.equal(started.ok, true)
+  const inflightSteer = acpTasks.steerTask(started.taskId!, 'in-flight msg')
+  acpTasks.dispose()
+  steerGate.resolve({ ok: false, reason: NO_PLUGIN })
+  const postDispose = await inflightSteer
+  assert.equal(postDispose.ok, false)
+  assert.notEqual(postDispose.delivery, 'not-sent', 'post-send disposal must keep delivery unknown')
+  assert.notEqual(postDispose.reason, 'missing', 'post-send disposal must not rewrite result to missing')
+  assert.notEqual(postDispose.reason, 'idle')
+
+  // R5 P2-4 & P2-5: task_end racing ahead of idle rejection STILL retracts message in open window,
+  // AND mid-list retraction keeps subsequent message IDs unique and monotonic!
+  const appDbR5 = openAppDb({ file: path.join(dir, 'app-r5.db') })
+  defer(() => appDbR5.close())
+  const historyDbR5 = openHistoryDb({ db: appDbR5.db })
+  defer(() => historyDbR5.close())
+  const mainConvR5 = historyDbR5.save(historyDbR5.create({ sessionId: 'main-r5' }), [{ role: 'user', text: 'hi', receipt: null }]).id
+  const taskStoreR5 = createTaskStore({ db: appDbR5.db })
+  const taskIdR5 = randomUUID()
+  const eventsR5: unknown[] = []
+  const idleReplyGate = deferred<{ ok: boolean, reason: string }>()
+  const runtimeR5 = createTaskRuntime({
+    db: historyDbR5,
+    store: taskStoreR5,
+    current: () => historyDbR5.get(mainConvR5)!.conversation,
+    agentInfo: () => ({ mode: 'ready', model: 'mock' }),
+    publish: ev => { eventsR5.push(ev) },
+    agent: {
+      startTask: async () => ({ ok: true, taskId: taskIdR5 }),
+      promptTask: () => {},
+      steerTask: () => idleReplyGate.promise,
+      resumeTask: async () => ({ ok: true }),
+      cancelTask: async () => {},
+      closeTask: async () => {},
+    },
+  })
+  defer(() => runtimeR5.dispose())
+  await runtimeR5.agent.start('initial brief', 'brief')
+  const steerPromise = runtimeR5.window.message(taskIdR5, 'raced steer msg')
+  // task_end arrives BEFORE the idle rejection reply!
+  runtimeR5.dsh.receive({ type: 'task_end', taskId: taskIdR5, stopReason: 'end_turn' })
+  idleReplyGate.resolve({ ok: false, reason: 'idle' })
+  await assert.rejects(steerPromise)
+
+  const mapEv = createEventActions()
+  let stateR5: State = initialState
+  for (let i = 0; i < eventsR5.length; i++) {
+    const decoded = decodeAgentEvent(eventsR5[i])
+    if (!decoded) continue
+    const action = mapEv(decoded, 100 + i)
+    if (action) stateR5 = reduce(stateR5, action)
+  }
+  const taskAfterRace = stateR5.tasks.list.find(item => item.id === taskIdR5)!
+  assert.equal(taskAfterRace.view.messages.some(m => m.text === 'raced steer msg'), false,
+    'task_steer_retracted must reach open window using sentRunId even after task_end arrived')
+
+  // R5 P2-5: Retracting a message from the middle of a conversation view must NEVER cause duplicate m* IDs!
+  let convState: State = initialState
+  convState = reduce(convState, { type: 'user_steer', text: 'A', streamKey: 'kA', via: null })
+  convState = reduce(convState, { type: 'user_steer', text: 'B', streamKey: 'kB', via: null })
+  convState = reduce(convState, { type: 'user_steer_retracted', streamKey: 'kA' })
+  convState = reduce(convState, { type: 'user_steer', text: 'C', streamKey: 'kC', via: null })
+  const ids = convState.messages.map(m => m.id)
+  assert.equal(new Set(ids).size, ids.length, `message IDs must stay unique after mid-list retraction, got ${JSON.stringify(ids)}`)
+  assert.deepEqual(convState.messages.map(m => m.text), ['B', 'C'])
 })

@@ -156,12 +156,15 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     isUnattended: (id: string) => sessions.get(id)?.unattended === true,
     async steerTask(id: string, text: string, meta?: TaskDispatchMeta): Promise<SteerResult> {
       const attachment = sessions.get(id)
-      if (!attachment?.attached) return { ok: false, reason: 'missing' }
+      if (!attachment?.attached) return { ok: false, reason: 'missing', delivery: 'not-sent' }
       const effectiveMeta: TaskDispatchMeta | undefined = attachment.unattended
         ? { ...meta, origin: 'unattended' }
         : meta
       const result = await steer(id, text, effectiveMeta)
-      return current(id, attachment) ? result : { ok: false, reason: 'missing' }
+      if (!current(id, attachment)) {
+        return result.delivery === 'not-sent' ? result : { ok: false, reason: 'unavailable' }
+      }
+      return result
     },
     waits: (id: string) => has(id) ? { permissions: permissions.pendingFor(id), questions: questions.pendingOf(id) } : { permissions: [], questions: [] },
     workingCount() { const waiting = permissions.waitingSessions(); return operations.count(id => has(id) && !waiting.has(id)) },

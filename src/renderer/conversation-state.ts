@@ -38,7 +38,16 @@ function appendStream<T extends { open?: boolean, text: string }>(list: readonly
 }
 
 const bumpTurn = (turn: ConversationView['turn'], key: 'tools' | 'thoughts') => (turn ? { ...turn, [key]: turn[key] + 1 } : turn)
-const messageId = (view: Pick<ConversationView, 'historyOffset'>, index: number) => `m${(view.historyOffset ?? 0) + index}`
+function messageId(view: Pick<ConversationView, 'historyOffset' | 'messages'>, index: number): string {
+  let max = (view.historyOffset ?? 0) + index - 1
+  for (const message of view.messages) {
+    if (message.id.startsWith('m')) {
+      const num = Number(message.id.slice(1))
+      if (Number.isInteger(num) && num > max) max = num
+    }
+  }
+  return `m${max + 1}`
+}
 
 function onMessageChunk(view: ConversationView, update: Extract<AcpUpdate, { sessionUpdate: 'agent_message_chunk' }>): ConversationView {
   const chunk = contentText(update.content)

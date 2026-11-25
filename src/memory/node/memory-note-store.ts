@@ -210,10 +210,10 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     const activeSourceIds: string[] = []
     for (const ref of refs) {
       const source = store.readSource(ref.id)
-      if (!source) continue
+      if (!source || source.text === null || source.outcome === 'rejected') continue
       if (token(source) === ref.token) {
         activeSourceIds.push(ref.id)
-      } else if (source.text !== null && source.outcome !== 'rejected') {
+      } else {
         throw new Error('memory-source-version')
       }
     }
@@ -374,8 +374,10 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       for (let i = 0; i < sources.length; i++) {
         const answer = sources[i]!
         if (answer.author !== 'answer') continue
+        const askedAt = answer.questionAt ?? answer.at
         const precedingIds = sources
-          .filter((source, idx) => source.id !== answer.id && (source.author !== 'answer' || idx < i))
+          .filter((source, idx) => source.id !== answer.id
+            && (source.author === 'answer' ? idx < i : source.at <= askedAt))
           .map(source => source.id)
         const answerQuestionRefs = questionCurrent
           ? snapshot([...precedingIds, ...(input.questionSources ?? [])])

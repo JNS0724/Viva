@@ -686,7 +686,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (inspected.has(id)) return inspected.get(id)!
     inspected.set(id, null)
     const source = store.readSource(id)
-    if (!source?.hash) return null
+    if (!source?.hash || source.outcome === 'rejected') return null
     if (source.author === 'manual' && store.manualFileParents(id).some(ref => {
       const parent = canonicalSource(ref.id, inspected)
       return !parent?.text || !documentSourceProofCurrent(ref, parent.text, resources.sourceToken(parent))
