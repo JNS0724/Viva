@@ -104,17 +104,16 @@ test('the plugin injects static memory rules and recalls file memory with exact 
   assert.ok((await restarted.memory.call('readFile', { args: [created.identity] }))?.markdown.includes(input.text))
 })
 
-test('trusted source aliases retain exact user evidence and refuse reused operation text', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { agent, call, session, userData, workspace } = await setupMemory(t)
+test('provenance-headed prompts retain exact user evidence under their sourceId without sourceAlias', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { agent, session, userData } = await setupMemory(t)
   const text = '周报每周五交给李四，客户故障时另行确认。'
-  const alias = { operationId: randomUUID(), sourceId: randomUUID(), session: session(), conversation: session(), text, wireText: text, cwd: workspace }
-  assert.deepEqual(await call('sourceAlias', alias), await call('sourceAlias', alias))
-  await assert.rejects(call('sourceAlias', { ...alias, text: 'different text' }))
-  await agent.prompt(text, [], { sourceId: alias.sourceId })
+  const sourceId = randomUUID()
+  await agent.prompt(text, [], { sourceId })
   const db = new DatabaseSync(join(userData, 'memory', 'memory.db'), { readOnly: true })
   try {
-    const source = db.prepare('SELECT text,author FROM memory_sources WHERE id=?').get(alias.sourceId)
-    assert.deepEqual(source, Object.assign(Object.create(null), { text, author: 'user' }))
+    const source = await eventually(() => db.prepare('SELECT text,author,source_kind,profile_eligible FROM memory_sources WHERE id=?').get(sourceId))
+    assert.deepEqual(source, Object.assign(Object.create(null), { text, author: 'user', source_kind: 'main-human', profile_eligible: 1 }))
+    assert.equal(db.prepare('SELECT session FROM owner_intake_cursors WHERE session=?').get(session())?.session, session())
   } finally { db.close() }
 })
 

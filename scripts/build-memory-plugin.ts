@@ -37,6 +37,7 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
     'node/tool-call-budget.js',
     'request-routing/header.js',
     'request-routing/task-header.js',
+    'request-routing/provenance.js',
   ].map(file => path.join(shared, file))
   if (!existsSync(path.join(plugin, 'index.js')) || !existsSync(path.join(memory, 'node/index.js'))) throw new Error('Compile memory and its plugin before assembly')
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Manifest

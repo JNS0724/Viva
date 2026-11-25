@@ -1,4 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
+import type { TaskDispatchMeta } from './acp-task-sessions.ts'
 import { ended, updated, type Transcript } from './task-transcript.ts'
 
 /**
@@ -17,7 +18,7 @@ export type RunResult = (
 
 export interface UnattendedAgent {
   startUnattendedTask: (where: { cwd: string }) => Promise<{ ok: boolean, reason?: string, taskId?: string }>
-  promptTask: (taskId: string, text: string) => unknown
+  promptTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => unknown
   closeTask: (taskId: string) => unknown
 }
 
@@ -79,7 +80,7 @@ export function createUnattendedRuns({ agent, timeoutMs = RUN_TIMEOUT_MS, later 
       }
       const timer = later(() => finish({ ok: false, problem: t('main.unattended-runs.timed.out') }), timeoutMs)
       runs = new Map([...runs, [taskId, { cwd, transcript: [], finish }]])
-      Promise.resolve(now.promptTask(taskId, prompt)).catch((err: unknown) => finish({ ok: false, problem: err instanceof Error ? err.message : String(err) }))
+      Promise.resolve(now.promptTask(taskId, prompt, { origin: 'unattended' })).catch((err: unknown) => finish({ ok: false, problem: err instanceof Error ? err.message : String(err) }))
     })
     Promise.resolve(now.closeTask(taskId)).catch(() => {})
     return result

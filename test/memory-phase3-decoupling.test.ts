@@ -23,6 +23,8 @@ import { createMemoryRuntime } from '../src/memory/node/runtime.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { RESIDENT_PROFILE_PATH } from '../src/memory/core/resident-profile.ts'
 import { applyMemoryAdapter } from '../plugins/memory/lib/adapter.ts'
+import { withProvenanceHeader } from '../src/shared/request-routing/provenance.ts'
+import { withRequestSource } from '../src/shared/request-routing/header.ts'
 import { attachHostMemoryRelay } from '../plugins/memory/lib/host-relay.ts'
 import { createSessionIngestion } from '../plugins/memory/lib/ingestion.ts'
 import { openPluginOwner, registerStandaloneOwner } from '../plugins/memory/lib/standalone-owner.ts'
@@ -400,28 +402,6 @@ test('single-hop agent/pre-step detects real mid-recall file disable (no frame m
   const handle = await ctx.agents.create({ sessionId, agentOptions: { provider: 'mock', model: 'test-model' } })
   t.after(async () => { await handle.dispose() })
 
-  const aliasId = randomUUID()
-  const aliasWaiter = deferred<{ ok: boolean, result?: unknown }>()
-  hostResults.set(aliasId, aliasWaiter)
-  port.emit('message', {
-    type: 'memory_host_request',
-    protocol: MEMORY_HOST_PROTOCOL,
-    requestId: aliasId,
-    epoch: owner.epoch!,
-    method: 'sourceAlias',
-    input: {
-      operationId: aliasId,
-      sourceId: aliasId,
-      session: String(sessionId),
-      conversation: String(sessionId),
-      text: '查询发布清单规范',
-      wireText: '查询发布清单规范',
-      cwd: dir,
-      origin: 'original',
-    },
-  })
-  assert.equal((await aliasWaiter.promise).ok, true)
-
   const disableTask = firstRecallArrived.promise.then(async () => {
     assert.equal(objectOf(firstRecallReply?.result)?.status, 'hit', 'unmodified first recall must be a hit before disable')
     const revBeforeDisable = latestChangeRev
@@ -452,7 +432,17 @@ test('single-hop agent/pre-step detects real mid-recall file disable (no frame m
   const off = ctx.on('session/event', (session, event) => {
     if (session.id === handle.agent.session.id && event.type === 'turn/end') { off(); done.resolve() }
   })
-  handle.agent.send(createUserMessage({ content: [{ type: 'text', text: '查询发布清单规范' }], source: { kind: 'user' } }), 'next-turn', true)
+  const queryText = '查询发布清单规范'
+  const routed = withRequestSource(queryText, randomUUID(), queryText)
+  const headedText = withProvenanceHeader(routed.text, {
+    origin: 'human',
+    sourceKind: 'main-human',
+    sessionKind: 'main',
+    conversationId: String(sessionId),
+    sourceId: randomUUID(),
+    humanSpans: routed.spans,
+  })
+  handle.agent.send(createUserMessage({ content: [{ type: 'text', text: headedText }], source: { kind: 'user' } }), 'next-turn', true)
   await Promise.all([done.promise, disableTask])
 
   assert.equal(recallCalls, 2, 'mid-recall file disable must trigger exactly one refresh without frame mutation')
@@ -485,16 +475,6 @@ test('single-hop agent/pre-step detects real mid-recall file disable (no frame m
 
   const workerSession = randomUUID()
   const workerAliasText = '检索命中目标内容'
-  await sendHostRpc('sourceAlias', {
-    operationId: randomUUID(),
-    sourceId: randomUUID(),
-    session: workerSession,
-    conversation: workerSession,
-    text: workerAliasText,
-    wireText: workerAliasText,
-    cwd: dir,
-    origin: 'original',
-  })
   let observedWorkerStale = false
   let toggleEnabled = false
   for (let attempt = 0; attempt < 5 && !observedWorkerStale; attempt++) {
@@ -502,9 +482,8 @@ test('single-hop agent/pre-step detects real mid-recall file disable (no frame m
     // automaticRecall captures startRevision before awaiting async file search, while setFileEnabled
     // commits endRevision synchronously in SQLite -> worker observes startRevision !== endRevision with hit!
     const recallPromise = owner.call('automaticRecall', [
-      { session: workerSession, turn: attempt + 1, question: '' },
+      { session: workerSession, turn: attempt + 1, question: workerAliasText },
       dir,
-      [{ id: randomUUID(), text: workerAliasText }],
     ])
     const mutatePromise = sendHostRpc('setFileEnabled', {
       args: [{ operationId: randomUUID(), identity: otherCreated.identity, version: otherDetail.version, enabled: toggleEnabled }],
@@ -639,8 +618,8 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
 
   const seedTurns = async (
     targetOwner: typeof owner,
-    targetPort: typeof port,
-    targetResults: typeof hostResults,
+    _targetPort: typeof port,
+    _targetResults: typeof hostResults,
     sid: string,
     cwdPath: string,
     count: number,
@@ -649,34 +628,22 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
       const at = Date.now()
       const text = `I submit my weekly report every Friday. Turn ${turn}.`
       const sourceId = randomUUID()
-      const aliasReqId = randomUUID()
-      const aliasWaiter = deferred<{ ok: boolean, result?: unknown }>()
-      targetResults.set(aliasReqId, aliasWaiter)
-      targetPort.emit('message', {
-        type: 'memory_host_request',
-        protocol: MEMORY_HOST_PROTOCOL,
-        requestId: aliasReqId,
-        epoch: targetOwner.epoch!,
-        method: 'sourceAlias',
-        input: {
-          operationId: sourceId,
-          sourceId,
-          session: sid,
-          conversation: sid,
-          text,
-          wireText: text,
-          cwd: cwdPath,
-          origin: 'original',
-        },
-      })
-      assert.equal((await aliasWaiter.promise).ok, true)
-      const rec = await targetOwner.call('receiveSource', [{
-        sessionId: sid, messageId: randomUUID(), text,
-        at, timezone: 'UTC', turn, cwd: cwdPath,
-      }])
-      await targetOwner.call('completeTurn', [{
-        sessionId: sid, turn, eventSeq: turn * 2, sourceIds: [rec.sourceId],
-        assistant: 'Noted.', completed: true, at, timezone: 'UTC',
+      const fromSeq = (turn - 1) * 3
+      await targetOwner.call('settleTurn', [{
+        sessionId: sid,
+        cwd: cwdPath,
+        sessionKind: 'main',
+        conversation: sid,
+        inheritedSeq: 0,
+        expectedNextSeq: fromSeq === 0 ? null : fromSeq,
+        fromSeq,
+        toSeq: fromSeq + 3,
+        turn,
+        reasonKind: 'completed',
+        sources: [{ sourceId, author: 'user', sourceKind: 'main-human', profileEligible: true, text, conversation: sid, at, timezone: 'UTC' }],
+        assistantText: '',
+        at,
+        timezone: 'UTC',
       }])
     }
   }
@@ -879,831 +846,6 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
   assert.equal(readEffectsE(DREAM)[0]!.attempts, 1)
 })
 
-test('hosted ingestion defers missing alias until late sourceAlias, skips unmatched L3, supports >20k wireText, and avoids orphan alias rows (P1-1, P1-2, P2-2)', { timeout: 30_000 }, async t => {
-  const { dir } = scratch(t, 'phase3-hosted-alias-')
-  const root = path.join(dir, 'memory')
-  const config = path.join(dir, 'cordis.yml')
-  writeFileSync(config, JSON.stringify([
-    ...['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions']
-      .map(name => ({ id: name, name: '@deepseek-ai/' + name })),
-    { id: 'session-persistence-jsonl', name: '@deepseek-ai/dsh-session-persistence-jsonl', config: { root: path.join(dir, 'sessions'), compression: 'zstd' } },
-  ]))
-  const ctx = await boot('phase3-alias-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
-  t.after(async () => { await ctx.fiber.dispose() })
-
-  const seenPrompts: string[] = []
-  class EchoAdapter extends LlmAdapter {
-    override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-      seenPrompts.push(JSON.stringify(options.messages))
-      yield { type: 'block-start', index: 0, blockType: 'text' }
-      yield { type: 'text-delta', index: 0, text: 'noted' }
-      yield { type: 'block-end', index: 0, block: { type: 'text', text: 'noted' } }
-      yield { type: 'finish', reason: { kind: 'stop' } }
-    }
-  }
-  ctx.llm.registerAdapter(['mock'], new EchoAdapter())
-
-  const port = createMockParentPort()
-  const hostResults = new Map<string, ReturnType<typeof deferred<{ ok: boolean, result?: unknown }>>>()
-  port.send = (raw, cb) => {
-    const msg = objectOf(raw)
-    if (msg?.type === 'memory_host_result' && typeof msg.requestId === 'string') {
-      hostResults.get(msg.requestId)?.resolve({ ok: Boolean(msg.ok), result: msg.result })
-      hostResults.delete(msg.requestId)
-    }
-    cb?.(null)
-    return true
-  }
-  const owner = applyMemoryAdapter(ctx, { host: true, dataRoot: root, dailyNotes: true }, port as unknown as NodeJS.Process)
-  t.after(async () => { await owner.close() })
-  assert.ok(await eventually(() => owner.ready(), { timeoutMs: 10_000 }))
-
-  const sendHost = async (method: string, input: unknown) => {
-    const requestId = randomUUID()
-    const waiter = deferred<{ ok: boolean, result?: unknown }>()
-    hostResults.set(requestId, waiter)
-    port.emit('message', { type: 'memory_host_request', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch: owner.epoch!, method, input })
-    const res = await waiter.promise
-    assert.equal(res.ok, true, `${method} must succeed`)
-    return res.result
-  }
-
-  await sendHost('createFile', {
-    args: [{
-      operationId: randomUUID(),
-      title: '别名隔离与超长验证',
-      text: 'HOSTED_ONLY_MARKER_P12 查询超长消息别名标记 发布核对暗号',
-    }],
-  })
-
-  // 1. P1-1 + P1-2 (unmatched draft): complete a full turn BEFORE sourceAlias arrives.
-  const sessionId = SessionId(randomUUID())
-  const handle = await ctx.agents.create({ sessionId, meta: { cwd: dir }, agentOptions: { provider: 'mock', model: 'test-model' } })
-  t.after(async () => { await handle.dispose() })
-  const lateText = '发布核对暗号：我每周五提交周报'
-  const turn1Done = deferred<void>()
-  const off1 = ctx.on('session/event', (session, event) => {
-    if (session.id === handle.agent.session.id && event.type === 'turn/end') { off1(); turn1Done.resolve() }
-  })
-  handle.agent.send(createUserMessage({ content: [{ type: 'text', text: lateText }], source: { kind: 'user' } }), 'next-turn', true)
-  await turn1Done.promise
-
-  // Unmatched hosted prompt MUST NOT inject L3 recall (P1-2)!
-  assert.equal((seenPrompts[0] ?? '').includes('HOSTED_ONLY_MARKER_P12'), false,
-    'unmatched hosted prompt must skip L3 recall and never query raw unverified text')
-
-  // Immediately after turn/end before sourceAlias, ingestion must defer (NOT permanently mark ignored)!
-  const queryDb = () => new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-  await delay(80)
-  {
-    const db = queryDb()
-    try {
-      const ignored = db.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND kind = 'ignored'").get(String(sessionId)) as { n: number }
-      assert.equal(ignored.n, 0, 'completed turn before late sourceAlias must defer instead of writing ignored')
-    } finally { db.close() }
-  }
-
-  // Send late sourceAlias -> onHostSuccess wakes ingestion -> verified original lands ONCE!
-  const lateAlias = {
-    operationId: randomUUID(),
-    sourceId: randomUUID(),
-    session: String(sessionId),
-    conversation: String(sessionId),
-    text: lateText,
-    wireText: lateText,
-    cwd: dir,
-    origin: 'original' as const,
-  }
-  await sendHost('sourceAlias', lateAlias)
-  assert.ok(await eventually(() => {
-    const db = queryDb()
-    try {
-      const row = db.prepare("SELECT COUNT(*) AS n FROM memory_sources WHERE id = ? AND author = 'user'").get(lateAlias.sourceId) as { n: number }
-      return row.n === 1
-    } finally { db.close() }
-  }, { timeoutMs: 5_000 }), 'late sourceAlias must wake deferred ingestion and ingest original exactly once')
-
-  // 2. P2-2: replaying already-consumed sourceAlias returns { sourceId } without re-inserting orphan row into owner_aliases!
-  const replayResult = await sendHost('sourceAlias', lateAlias)
-  assert.deepEqual(replayResult, { sourceId: lateAlias.sourceId })
-  {
-    const db = queryDb()
-    try {
-      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(String(sessionId)) as { n: number }
-      assert.equal(aliases.n, 0, 'replaying an already-consumed sourceAlias must not leave an orphan row in owner_aliases')
-    } finally { db.close() }
-  }
-
-  // 3. P1-2 (>20,000-char wireText with short verified sourceAlias) + P2-3 (normal sourceAlias does NOT trigger extra ctx.sessions.flush + indexed query plan):
-  {
-    const db = queryDb()
-    try {
-      const plan = db.prepare("EXPLAIN QUERY PLAN SELECT source, kind FROM owner_messages WHERE session=? AND hash=? AND (source=? OR kind='ignored')")
-        .all(String(sessionId), 'h', 's') as Array<{ detail: string }>
-      assert.ok(plan.some(row => row.detail.includes('USING INDEX owner_messages_session_hash')),
-        `expected indexed lookup on owner_messages_session_hash, got ${JSON.stringify(plan)}`)
-    } finally { db.close() }
-  }
-  const longWireText = `${'背景草稿片段。'.repeat(3_200)}\n查询超长消息别名标记`
-  assert.ok(longWireText.length > 20_000)
-  let flushesOnAlias = 0
-  const origFlush = ctx.sessions.flush.bind(ctx.sessions)
-  t.mock.method(ctx.sessions, 'flush', ((...args: Parameters<typeof ctx.sessions.flush>) => {
-    flushesOnAlias++
-    return origFlush(...args)
-  }) as typeof ctx.sessions.flush)
-  await sendHost('sourceAlias', {
-    operationId: randomUUID(),
-    sourceId: randomUUID(),
-    session: String(sessionId),
-    conversation: String(sessionId),
-    text: '查询超长消息别名标记',
-    wireText: longWireText,
-    cwd: dir,
-    origin: 'original' as const,
-  })
-  assert.equal(flushesOnAlias, 0, 'normal sourceAlias when no message is awaiting alias must NOT trigger ctx.sessions.flush')
-  const promptOffset = seenPrompts.length
-  const turn2Done = deferred<void>()
-  const off2 = ctx.on('session/event', (session, event) => {
-    if (session.id === handle.agent.session.id && event.type === 'turn/end') { off2(); turn2Done.resolve() }
-  })
-  handle.agent.send(createUserMessage({ content: [{ type: 'text', text: longWireText }], source: { kind: 'user' } }), 'next-turn', true)
-  await turn2Done.promise
-  assert.match(seenPrompts[promptOffset] ?? '', /HOSTED_ONLY_MARKER_P12/,
-    'hosted >20,000-char wireText with short verified sourceAlias must succeed in automaticRecall')
-
-  // 4. P1-2 (Round 2): session disposed during grace window before late sourceAlias still settles final persisted turn!
-  const shortSessionId = SessionId(randomUUID())
-  const shortHandle = await ctx.agents.create({ sessionId: shortSessionId, meta: { cwd: dir }, agentOptions: { provider: 'mock', model: 'test-model' } })
-  const shortText = '后台会话关闭前已落盘的最后一句原话'
-  const shortDone = deferred<void>()
-  const offShort = ctx.on('session/event', (session, event) => {
-    if (session.id === shortHandle.agent.session.id && event.type === 'turn/end') { offShort(); shortDone.resolve() }
-  })
-  shortHandle.agent.send(createUserMessage({ content: [{ type: 'text', text: shortText }], source: { kind: 'user' } }), 'next-turn', true)
-  await shortDone.promise
-  // Ensure turn/end has flushed to persistence before closing the session (still BEFORE late sourceAlias arrives).
-  await ctx.sessions.flush(shortHandle.agent.session)
-  await delay(60)
-  // Close session BEFORE late sourceAlias arrives!
-  await shortHandle.dispose()
-  const shortAlias = {
-    operationId: randomUUID(),
-    sourceId: randomUUID(),
-    session: String(shortSessionId),
-    conversation: String(shortSessionId),
-    text: shortText,
-    wireText: shortText,
-    cwd: dir,
-    origin: 'original' as const,
-  }
-  await sendHost('sourceAlias', shortAlias)
-  let lastShortState = ''
-  assert.ok(await eventually(() => {
-    const db = queryDb()
-    try {
-      const src = db.prepare("SELECT COUNT(*) AS n FROM memory_sources WHERE id = ? AND author = 'user'").get(shortAlias.sourceId) as { n: number }
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(String(shortSessionId)) as { n: number }
-      const active = db.prepare('SELECT COUNT(*) AS n FROM owner_active_turns WHERE session = ?').get(String(shortSessionId)) as { n: number }
-      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(String(shortSessionId)) as { n: number }
-      lastShortState = JSON.stringify({ src: src.n, turns: turns.n, active: active.n, aliases: aliases.n })
-      return src.n === 1 && turns.n === 1 && active.n === 0 && aliases.n === 0
-    } finally { db.close() }
-  }, { timeoutMs: 5_000 }), `session disposed during grace window must still settle persisted turn once late sourceAlias arrives (${lastShortState})`)
-
-  // 5. P2-2 (Round 2): late sourceAlias arriving AFTER message was finalized as ignored returns terminal ignored status & inserts 0 orphan alias rows!
-  const expiredSession = randomUUID()
-  const expiredText = '宽限期已过被终结的消息'
-  await owner.call('receiveSource', [{
-    sessionId: expiredSession,
-    messageId: randomUUID(),
-    text: expiredText,
-    at: Date.now(),
-    timezone: 'UTC',
-    turn: 1,
-    cwd: dir,
-  }])
-  const expiredAliasId = randomUUID()
-  const expiredRes = await sendHost('sourceAlias', {
-    operationId: expiredAliasId,
-    sourceId: expiredAliasId,
-    session: expiredSession,
-    conversation: expiredSession,
-    text: expiredText,
-    wireText: expiredText,
-    cwd: dir,
-    origin: 'original' as const,
-  })
-  assert.deepEqual(expiredRes, { sourceId: expiredAliasId, status: 'ignored' })
-  {
-    const db = queryDb()
-    try {
-      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(expiredSession) as { n: number }
-      assert.equal(aliases.n, 0, 'late alias for already-ignored message must not insert an orphan row into owner_aliases')
-    } finally { db.close() }
-  }
-})
-
-test('incremental two-scan ingestion preserves prior turn sources and receivedReport when mid-turn steer awaits late alias (R2 P1-1)', async () => {
-  const completedTurns: Array<{ sourceIds: readonly string[], assistant: string }> = []
-  const aliases = new Map<string, string>([['msg-a', 'src-a']])
-  const fakeOwner = {
-    epoch: 'e-inc',
-    inEpoch: async <T>(_epoch: string | undefined, fn: () => Promise<T>) => fn(),
-    intakeWatermark: async () => ({ createdAt: 0, nextSeq: 0 }),
-    advanceIntake: async () => {},
-    receiveSource: async (input: { messageId: string, deferMissingAlias?: boolean }) => {
-      const mapped = aliases.get(input.messageId)
-      if (!mapped) {
-        if (input.deferMissingAlias) return { sourceId: input.messageId, text: '', handledIntent: true, awaitingAlias: true }
-        return { sourceId: input.messageId, text: '', handledIntent: true }
-      }
-      return { sourceId: mapped, text: input.messageId, handledIntent: false }
-    },
-    completeTurn: async (input: { sourceIds: readonly string[], assistant: string }) => {
-      completedTurns.push({ sourceIds: input.sourceIds, assistant: input.assistant })
-    },
-  }
-  const allEvents = [
-    { seq: 0, time: 1, type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: 2, type: 'user/message', data: { id: 'msg-a', source: { kind: 'user' }, content: [{ type: 'text', text: 'A' }] } },
-    { seq: 2, time: 3, type: 'user/message', data: { id: 'rep-1', source: { kind: 'viva-report' }, content: [{ type: 'text', text: 'report body' }] } },
-    { seq: 3, time: 4, type: 'assistant/message', data: { interrupted: false, message: { content: [{ type: 'text', text: 'report summary should stay excluded' }] } } },
-  ] as Array<Record<string, unknown>>
-  const fakeSession = {
-    id: 'sess-inc',
-    inheritedEventCount: 0,
-    header: { cwd: '/tmp', origin: 'main' },
-    get seq() { return allEvents.length },
-    snapshotEvents(from: number, end: number) { return allEvents.slice(from, end) },
-  }
-  const ingestion = createSessionIngestion(
-    fakeOwner as unknown as Parameters<typeof createSessionIngestion>[0],
-    async () => true,
-    { host: true, aliasGraceMs: 1_500 },
-  )
-  // Scan 1 folds original A + viva-report + report assistant message.
-  await ingestion.synchronize(fakeSession as unknown as Parameters<typeof ingestion.synchronize>[0])
-  assert.equal(completedTurns.length, 0)
-
-  // Scan 2 appends steer B (alias missing yet) + turn/end; pauses at steer B without wiping A or receivedReport!
-  allEvents.push(
-    { seq: 4, time: 5, type: 'user/message', data: { id: 'msg-b', source: { kind: 'user' }, content: [{ type: 'text', text: 'B' }] } },
-    { seq: 5, time: 6, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  )
-  await ingestion.synchronize(fakeSession as unknown as Parameters<typeof ingestion.synchronize>[0])
-  assert.equal(completedTurns.length, 0, 'turn must defer while steer B awaits late alias')
-
-  // Late alias for B arrives -> wakeIfAwaiting resumes right at B and preserves A + receivedReport!
-  aliases.set('msg-b', 'src-b')
-  ingestion.wakeIfAwaiting('sess-inc')
-  await ingestion.drain()
-  assert.equal(completedTurns.length, 1)
-  assert.deepEqual(completedTurns[0]!.sourceIds, ['src-a', 'src-b'], 'both A and B must appear exactly once')
-  assert.equal(completedTurns[0]!.assistant, '', 'receivedReport must remain preserved so report assistant text is excluded')
-})
-
-test('ingestion isolates live turn from deferred scan turn, keeps state across queued release scans, propagates active flush EIO, and retries transient released RPC failures (R3 P1-1, P1-2, P1-3, P2-2)', { timeout: 20_000 }, async t => {
-  const { dir } = scratch(t, 'phase3-r3-ingestion-')
-  const root = path.join(dir, 'memory')
-  const port = createMockParentPort()
-  const connection = openPluginOwner({ root, hostNamespace: 'viva', dailyNotes: true }, port as unknown as NodeJS.Process)
-  t.after(async () => { await connection.close() })
-  await connection.start()
-  const ownerApi = {
-    get epoch() { return connection.epoch() },
-    inEpoch: async <T>(epoch: string | undefined, fn: () => Promise<T>) => {
-      if (epoch !== connection.epoch()) throw new Error('stale epoch')
-      return fn()
-    },
-    intakeWatermark: (session: string) => connection.callAdapter('intakeWatermark', [session]),
-    advanceIntake: (session: string, nextSeq: number) => connection.callAdapter('advanceIntake', [session, nextSeq]),
-    receiveSource: (input: Parameters<ReturnType<typeof createSessionIngestion>['synchronize']>[0] extends never ? never : Parameters<typeof connection.callAdapter<'receiveSource'>>[1][0]) =>
-      connection.callAdapter('receiveSource', [input]),
-    completeTurn: (input: Parameters<typeof connection.callAdapter<'completeTurn'>>[1][0]) =>
-      connection.callAdapter('completeTurn', [input]),
-  }
-
-  // 1. R3 P1-1: Turn 1 awaits alias for A; Turn 2 pre-step runs receive(..., 2) before A's alias arrives -> both turns settle cleanly!
-  const sess1 = randomUUID()
-  const msgA = randomUUID()
-  const msgB = randomUUID()
-  const textA = '第一回合迟到别名原话 A'
-  const textB = '第二回合正常别名原话 B'
-  const events1: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msgA, source: { kind: 'user' }, content: [{ type: 'text', text: textA }] } },
-    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  ]
-  const fakeSession1 = {
-    id: sess1,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events1.length },
-    snapshotEvents(from: number, end: number) { return events1.slice(from, end) },
-  }
-  const ing1 = createSessionIngestion(ownerApi, async () => true, { host: true, aliasGraceMs: 1_500 })
-  t.after(() => ing1.drain())
-  await ing1.synchronize(fakeSession1 as unknown as Parameters<typeof ing1.synchronize>[0])
-
-  // Turn 2 begins while Turn 1 message A is still awaiting its alias!
-  const srcB = randomUUID()
-  await connection.callHost('sourceAlias', {
-    operationId: srcB, sourceId: srcB, session: sess1, conversation: sess1,
-    text: textB, wireText: textB, cwd: dir, origin: 'original',
-  })
-  events1.push(
-    { seq: 3, time: Date.now(), type: 'turn/start', data: { turn: 2 } },
-    { seq: 4, time: Date.now(), type: 'user/message', data: { id: msgB, source: { kind: 'user' }, content: [{ type: 'text', text: textB }] } },
-    { seq: 5, time: Date.now(), type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
-  )
-  await ing1.receive(
-    fakeSession1 as unknown as Parameters<typeof ing1.receive>[0],
-    [{ id: msgB, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: textB }] } as unknown as Parameters<typeof ing1.receive>[1][0]],
-    2,
-  )
-
-  // Now A's alias arrives -> wakeIfAwaiting must register A on turn 1 (NOT turn 2!) and settle BOTH turns!
-  const srcA = randomUUID()
-  await connection.callHost('sourceAlias', {
-    operationId: srcA, sourceId: srcA, session: sess1, conversation: sess1,
-    text: textA, wireText: textA, cwd: dir, origin: 'original',
-  })
-  ing1.wakeIfAwaiting(sess1)
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT turn FROM owner_turns WHERE session = ? ORDER BY turn').all(sess1) as Array<{ turn: number }>
-      return turns.length === 2 && turns[0]!.turn === 1 && turns[1]!.turn === 2
-    } finally { db.close() }
-  }, { timeoutMs: 5_000 }), 'both turn 1 and turn 2 must settle cleanly without cross-turn turn-number corruption')
-
-  // 2. R3 P1-2: queued short scan (up to turn/start) + queued full scan + immediate release() must NOT delete state before second scan runs!
-  const sess2 = randomUUID()
-  const msg2 = randomUUID()
-  const text2 = '两段排队扫描后关闭会话的原话'
-  const flushGate1 = deferred<boolean>()
-  let flushCalls2 = 0
-  const events2: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-  ]
-  const fakeSession2 = {
-    id: sess2,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events2.length },
-    snapshotEvents(from: number, end: number) { return events2.slice(from, end) },
-  }
-  const ing2 = createSessionIngestion(ownerApi, () => {
-    flushCalls2++
-    return flushCalls2 === 1 ? flushGate1.promise : Promise.resolve(true)
-  }, { host: true, aliasGraceMs: 1_500 })
-  t.after(() => ing2.drain())
-  const scan1Promise = ing2.synchronize(fakeSession2 as unknown as Parameters<typeof ing2.synchronize>[0])
-  events2.push(
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg2, source: { kind: 'user' }, content: [{ type: 'text', text: text2 }] } },
-    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  )
-  const scan2Promise = ing2.synchronize(fakeSession2 as unknown as Parameters<typeof ing2.synchronize>[0])
-  ing2.release(fakeSession2 as unknown as Parameters<typeof ing2.release>[0])
-  flushGate1.resolve(true)
-  await Promise.all([scan1Promise, scan2Promise])
-
-  const src2 = randomUUID()
-  await connection.callHost('sourceAlias', {
-    operationId: src2, sourceId: src2, session: sess2, conversation: sess2,
-    text: text2, wireText: text2, cwd: dir, origin: 'original',
-  })
-  ing2.wakeIfAwaiting(sess2)
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess2) as { n: number }
-      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(sess2) as { n: number }
-      return turns.n === 1 && aliases.n === 0
-    } finally { db.close() }
-  }, { timeoutMs: 5_000 }), 'queued release scans must keep state until inFlight===0 and settle when late alias arrives')
-
-  // 3. R3 P1-3: Active session flush EIO MUST propagate (never swallowed) so memory_remember fails rather than succeeding on unpersisted input!
-  const sess3 = randomUUID()
-  const fakeSession3 = {
-    id: sess3,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    seq: 1,
-    snapshotEvents: () => [],
-  }
-  const ing3 = createSessionIngestion(ownerApi, async () => { throw Object.assign(new Error('disk EIO'), { code: 'EIO' }) }, { host: true })
-  t.after(() => ing3.drain())
-  await assert.rejects(
-    () => ing3.synchronize(fakeSession3 as unknown as Parameters<typeof ing3.synchronize>[0]),
-    /disk EIO/,
-    'active session flush EIO must propagate to callers such as memory_remember',
-  )
-
-  // 4. R3 P2-2: Released session hitting one transient RPC error retries automatically within grace window and settles; persistent errors clean up after grace expiry!
-  const sess4 = randomUUID()
-  const msg4 = randomUUID()
-  const text4 = '关闭会话临时 RPC 失败后自动重试'
-  let injectOnce = true
-  const flakyOwner = {
-    ...ownerApi,
-    async receiveSource(input: Parameters<typeof ownerApi.receiveSource>[0]) {
-      if (input.sessionId === sess4 && !input.live && injectOnce && !input.deferMissingAlias === false) {
-        // Trigger transient failure on the FIRST retry after alias arrives (second receiveSource call).
-      }
-      return ownerApi.receiveSource(input)
-    },
-  }
-  let sess4Calls = 0
-  flakyOwner.receiveSource = async input => {
-    if (input.sessionId === sess4) {
-      sess4Calls++
-      if (sess4Calls === 2 && injectOnce) {
-        injectOnce = false
-        throw new Error('Memory owner request limit reached')
-      }
-    }
-    return ownerApi.receiveSource(input)
-  }
-  const events4: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg4, source: { kind: 'user' }, content: [{ type: 'text', text: text4 }] } },
-    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  ]
-  const fakeSession4 = {
-    id: sess4,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events4.length },
-    snapshotEvents(from: number, end: number) { return events4.slice(from, end) },
-  }
-  const ing4 = createSessionIngestion(flakyOwner, async () => true, { host: true, aliasGraceMs: 1_500 })
-  t.after(() => ing4.drain())
-  await ing4.synchronize(fakeSession4 as unknown as Parameters<typeof ing4.synchronize>[0])
-  ing4.release(fakeSession4 as unknown as Parameters<typeof ing4.release>[0])
-  const src4 = randomUUID()
-  await connection.callHost('sourceAlias', {
-    operationId: src4, sourceId: src4, session: sess4, conversation: sess4,
-    text: text4, wireText: text4, cwd: dir, origin: 'original',
-  })
-  // Wake once -> hits transient RPC error -> must reschedule automatically within grace window without a second manual wake!
-  ing4.wakeIfAwaiting(sess4)
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess4) as { n: number }
-      return turns.n === 1
-    } finally { db.close() }
-  }, { timeoutMs: 5_000 }), 'released session must automatically retry transient RPC failure within grace window')
-
-  // 5. R4 P1-1: Released session succeeds in receiveSource (clearing awaitingSince), then first completeTurn fails transiently -> must keep deadline and retry turn/end!
-  const sess5 = randomUUID()
-  const msg5 = randomUUID()
-  const text5 = '别名成功后 completeTurn 临时失败重试'
-  let failCompleteTurnOnce = true
-  const flakyCompleteOwner = {
-    ...ownerApi,
-    async completeTurn(input: Parameters<typeof ownerApi.completeTurn>[0]) {
-      if (input.sessionId === sess5 && failCompleteTurnOnce) {
-        failCompleteTurnOnce = false
-        throw new Error('Memory owner busy')
-      }
-      return ownerApi.completeTurn(input)
-    },
-  }
-  const events5: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg5, source: { kind: 'user' }, content: [{ type: 'text', text: text5 }] } },
-    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  ]
-  const fakeSession5 = {
-    id: sess5,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events5.length },
-    snapshotEvents(from: number, end: number) { return events5.slice(from, end) },
-  }
-  const ing5 = createSessionIngestion(flakyCompleteOwner, async () => true, { host: true, aliasGraceMs: 1_500 })
-  t.after(() => ing5.drain())
-  await ing5.receive(
-    fakeSession5 as unknown as Parameters<typeof ing5.receive>[0],
-    [{ id: msg5, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: text5 }] } as unknown as Parameters<typeof ing5.receive>[1][0]],
-    1,
-  )
-  ing5.release(fakeSession5 as unknown as Parameters<typeof ing5.release>[0])
-  const src5 = randomUUID()
-  await connection.callHost('sourceAlias', {
-    operationId: src5, sourceId: src5, session: sess5, conversation: sess5,
-    text: text5, wireText: text5, cwd: dir, origin: 'original',
-  })
-  ing5.wakeIfAwaiting(sess5)
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess5) as { n: number }
-      const active = db.prepare('SELECT COUNT(*) AS n FROM owner_active_turns WHERE session = ?').get(sess5) as { n: number }
-      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(sess5) as { n: number }
-      return turns.n === 1 && active.n === 0 && aliases.n === 0
-    } finally { db.close() }
-  }, { timeoutMs: 5_000 }), 'transient completeTurn failure after receiveSource on released session must retry within release deadline and clear active turn')
-
-  // 6. R4 P2-1: wakeIfAwaiting queues synchronize while active -> immediate release() -> receiveSource fails once -> retries automatically within release deadline!
-  const sess6 = randomUUID()
-  const msg6 = randomUUID()
-  const text6 = '先唤醒再释放遇到临时失败自动重试'
-  const wakeFlushGate = deferred<boolean>()
-  let flushCount6 = 0
-  let sess6Calls = 0
-  let failSess6Once = true
-  const flakyWakeReleaseOwner = {
-    ...ownerApi,
-    async receiveSource(input: Parameters<typeof ownerApi.receiveSource>[0]) {
-      if (input.sessionId === sess6) {
-        sess6Calls++
-        if (sess6Calls === 2 && failSess6Once) {
-          failSess6Once = false
-          throw new Error('Memory owner request limit reached')
-        }
-      }
-      return ownerApi.receiveSource(input)
-    },
-  }
-  const events6: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg6, source: { kind: 'user' }, content: [{ type: 'text', text: text6 }] } },
-    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  ]
-  const fakeSession6 = {
-    id: sess6,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events6.length },
-    snapshotEvents(from: number, end: number) { return events6.slice(from, end) },
-  }
-  const ing6 = createSessionIngestion(flakyWakeReleaseOwner, () => {
-    flushCount6++
-    return flushCount6 === 2 ? wakeFlushGate.promise : Promise.resolve(true)
-  }, { host: true, aliasGraceMs: 1_500 })
-  t.after(() => ing6.drain())
-  await ing6.synchronize(fakeSession6 as unknown as Parameters<typeof ing6.synchronize>[0])
-  const src6 = randomUUID()
-  await connection.callHost('sourceAlias', {
-    operationId: src6, sourceId: src6, session: sess6, conversation: sess6,
-    text: text6, wireText: text6, cwd: dir, origin: 'original',
-  })
-  // Wake while session is still active (queues synchronize with gated flush), then immediately release(), then let flush finish into failing receiveSource!
-  ing6.wakeIfAwaiting(sess6)
-  ing6.release(fakeSession6 as unknown as Parameters<typeof ing6.release>[0])
-  wakeFlushGate.resolve(true)
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess6) as { n: number }
-      const aliases = db.prepare('SELECT COUNT(*) AS n FROM owner_aliases WHERE session = ?').get(sess6) as { n: number }
-      return turns.n === 1 && aliases.n === 0
-    } finally { db.close() }
-  }, { timeoutMs: 5_000 }), 'wake -> release -> transient receiveSource failure must automatically retry and settle without manual wake')
-
-  // 7. R5 P1: completeTurn fails transiently BEFORE release() -> release() schedules retry from turn/end only and assistant text appears ONCE (never duplicated)!
-  const sess7 = randomUUID()
-  const msg7 = randomUUID()
-  const text7 = '释放前 completeTurn 临时失败不重复助手文本'
-  const assistantText7 = 'UNIQUE_ASSISTANT_CONCLUSION_R5P1'
-  let failCompleteBeforeRelease = true
-  const seenAssistants7: string[] = []
-  const flakyPreReleaseOwner = {
-    ...ownerApi,
-    async completeTurn(input: Parameters<typeof ownerApi.completeTurn>[0]) {
-      if (input.sessionId === sess7) {
-        if (failCompleteBeforeRelease) {
-          failCompleteBeforeRelease = false
-          throw new Error('Memory owner busy before release')
-        }
-        seenAssistants7.push(input.assistant)
-      }
-      return ownerApi.completeTurn(input)
-    },
-  }
-  const events7: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg7, source: { kind: 'user' }, content: [{ type: 'text', text: text7 }] } },
-    { seq: 2, time: Date.now(), type: 'assistant/message', data: { interrupted: false, message: { content: [{ type: 'text', text: assistantText7 }] } } },
-    { seq: 3, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  ]
-  const fakeSession7 = {
-    id: sess7,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events7.length },
-    snapshotEvents(from: number, end: number) { return events7.slice(from, end) },
-  }
-  const ing7 = createSessionIngestion(flakyPreReleaseOwner, async () => true, { host: true, aliasGraceMs: 1_500 })
-  t.after(() => ing7.drain())
-  await ing7.synchronize(fakeSession7 as unknown as Parameters<typeof ing7.synchronize>[0])
-  const src7 = randomUUID()
-  await connection.callHost('sourceAlias', {
-    operationId: src7, sourceId: src7, session: sess7, conversation: sess7,
-    text: text7, wireText: text7, cwd: dir, origin: 'original',
-  })
-  // Active scan consumes alias + accumulates assistant, then completeTurn throws before release()!
-  await assert.rejects(
-    () => ing7.synchronize(fakeSession7 as unknown as Parameters<typeof ing7.synchronize>[0]),
-    /Memory owner busy before release/,
-  )
-  // Now release(): must schedule retry from turn/end only and settle with assistantText7 appearing ONCE!
-  ing7.release(fakeSession7 as unknown as Parameters<typeof ing7.release>[0])
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess7) as { n: number }
-      const active = db.prepare('SELECT COUNT(*) AS n FROM owner_active_turns WHERE session = ?').get(sess7) as { n: number }
-      return turns.n === 1 && active.n === 0
-    } finally { db.close() }
-  }, { timeoutMs: 5_000 }), 'release() after pre-release completeTurn failure must retry and settle turn cleanly')
-  assert.deepEqual(seenAssistants7, [assistantText7], 'retried completeTurn must receive assistant text exactly once without duplication')
-
-  // 8. R5 P2: Released session with 4 missing-alias messages shares ONE releaseDeadline (does NOT multiply grace window per message)!
-  const sess8 = randomUUID()
-  const events8: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '无别名消息 1' }] } },
-    { seq: 2, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '无别名消息 2' }] } },
-    { seq: 3, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '无别名消息 3' }] } },
-    { seq: 4, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '无别名消息 4' }] } },
-    { seq: 5, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  ]
-  const fakeSession8 = {
-    id: sess8,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events8.length },
-    snapshotEvents(from: number, end: number) { return events8.slice(from, end) },
-  }
-  const ing8 = createSessionIngestion(ownerApi, async () => true, { host: true, aliasGraceMs: 150 })
-  t.after(() => ing8.drain())
-  const started8 = Date.now()
-  await ing8.synchronize(fakeSession8 as unknown as Parameters<typeof ing8.synchronize>[0])
-  ing8.release(fakeSession8 as unknown as Parameters<typeof ing8.release>[0])
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess8) as { n: number }
-      const ignored = db.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND kind = 'ignored'").get(sess8) as { n: number }
-      return turns.n === 1 && ignored.n === 4
-    } finally { db.close() }
-  }, { timeoutMs: 2_000 }), 'all 4 missing-alias messages in a released session must finalize once shared releaseDeadline expires')
-  const elapsed8 = Date.now() - started8
-  assert.ok(elapsed8 < 450, `4 missing-alias messages in released session must share one 150ms releaseDeadline (not 4x=600ms), got ${elapsed8}ms`)
-
-  // 9. R6 P1: Retry timer starts flush -> release() -> flush rejects EIO -> settleReleased restores bounded retry without external wake!
-  const sess9 = randomUUID()
-  const msg9 = randomUUID()
-  const text9 = '重试等待 flush 时关闭会话且 flush EIO 仍自动结算'
-  let flushCount9 = 0
-  const retryFlushStarted = deferred<void>()
-  const retryFlushGate = deferred<boolean>()
-  const events9: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: msg9, source: { kind: 'user' }, content: [{ type: 'text', text: text9 }] } },
-    { seq: 2, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  ]
-  const fakeSession9 = {
-    id: sess9,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events9.length },
-    snapshotEvents(from: number, end: number) { return events9.slice(from, end) },
-  }
-  const ing9 = createSessionIngestion(ownerApi, () => {
-    flushCount9++
-    if (flushCount9 === 2) {
-      retryFlushStarted.resolve()
-      return retryFlushGate.promise
-    }
-    return Promise.resolve(true)
-  }, { host: true, aliasGraceMs: 250 })
-  t.after(() => ing9.drain())
-  await ing9.receive(
-    fakeSession9 as unknown as Parameters<typeof ing9.receive>[0],
-    [{ id: msg9, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: text9 }] } as unknown as Parameters<typeof ing9.receive>[1][0]],
-    1,
-  )
-  // Wait for the retry timer to fire, enter scan()'s `await persisted` (setImmediate barrier), then release(), then reject flush #2 with EIO!
-  await retryFlushStarted.promise
-  await new Promise(resolve => setImmediate(resolve))
-  ing9.release(fakeSession9 as unknown as Parameters<typeof ing9.release>[0])
-  retryFlushGate.reject(Object.assign(new Error('retry flush EIO'), { code: 'EIO' }))
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess9) as { n: number }
-      const active = db.prepare('SELECT COUNT(*) AS n FROM owner_active_turns WHERE session = ?').get(sess9) as { n: number }
-      return turns.n === 1 && active.n === 0
-    } finally { db.close() }
-  }, { timeoutMs: 3_000 }), 'retry flush -> release -> EIO must still restore bounded retry and settle turn without external wake')
-
-  // 10. R6 P2: Queued short scan (turn/start) + queued 4-message scan + release() preserves shared releaseDeadline across both scans!
-  const sess10 = randomUUID()
-  const shortFlushGate10 = deferred<boolean>()
-  let flushCount10 = 0
-  const events10: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-  ]
-  const fakeSession10 = {
-    id: sess10,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events10.length },
-    snapshotEvents(from: number, end: number) { return events10.slice(from, end) },
-  }
-  const ing10 = createSessionIngestion(ownerApi, () => {
-    flushCount10++
-    return flushCount10 === 1 ? shortFlushGate10.promise : Promise.resolve(true)
-  }, { host: true, aliasGraceMs: 150 })
-  t.after(() => ing10.drain())
-  const scanShort10 = ing10.synchronize(fakeSession10 as unknown as Parameters<typeof ing10.synchronize>[0])
-  events10.push(
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '双扫描无别名 1' }] } },
-    { seq: 2, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '双扫描无别名 2' }] } },
-    { seq: 3, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '双扫描无别名 3' }] } },
-    { seq: 4, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '双扫描无别名 4' }] } },
-    { seq: 5, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  )
-  const scanFull10 = ing10.synchronize(fakeSession10 as unknown as Parameters<typeof ing10.synchronize>[0])
-  const started10 = Date.now()
-  ing10.release(fakeSession10 as unknown as Parameters<typeof ing10.release>[0])
-  shortFlushGate10.resolve(true)
-  await Promise.all([scanShort10, scanFull10])
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess10) as { n: number }
-      const ignored = db.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND kind = 'ignored'").get(sess10) as { n: number }
-      return turns.n === 1 && ignored.n === 4
-    } finally { db.close() }
-  }, { timeoutMs: 2_000 }), 'queued short scan must NOT clear shared releaseDeadline for queued 4-message scan')
-  const elapsed10 = Date.now() - started10
-  assert.ok(elapsed10 < 450, `queued short+full scans must share one 150ms releaseDeadline (not 4x=600ms), got ${elapsed10}ms`)
-
-  // 11. R7 P2: Queued short scan failing AFTER releaseDeadline must NOT clear releaseDeadline for subsequent queued scan (0 deferMissingAlias calls after error)!
-  const sess11 = randomUUID()
-  const shortStarted11 = deferred<void>()
-  const releaseBusy11 = deferred<void>()
-  let calls11 = 0
-  let deferralsAfterError11 = 0
-  const events11: Array<Record<string, unknown>> = [
-    { seq: 0, time: Date.now(), type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '超期错误无别名 1' }] } },
-  ]
-  const fakeSession11 = {
-    id: sess11,
-    inheritedEventCount: 0,
-    header: { cwd: dir, origin: 'main' },
-    get seq() { return events11.length },
-    snapshotEvents(from: number, end: number) { return events11.slice(from, end) },
-  }
-  const flakyDeadlineOwner = {
-    ...ownerApi,
-    async receiveSource(input: Parameters<typeof ownerApi.receiveSource>[0]) {
-      if (input.sessionId === sess11) {
-        calls11++
-        if (calls11 === 1) {
-          shortStarted11.resolve()
-          await releaseBusy11.promise
-          throw new Error('Memory owner busy after deadline')
-        }
-        if (input.deferMissingAlias) deferralsAfterError11++
-      }
-      return ownerApi.receiveSource(input)
-    },
-  }
-  const ing11 = createSessionIngestion(flakyDeadlineOwner, async () => true, { host: true, aliasGraceMs: 120 })
-  t.after(() => ing11.drain())
-  const scanShort11 = ing11.synchronize(fakeSession11 as unknown as Parameters<typeof ing11.synchronize>[0])
-  await shortStarted11.promise
-  events11.push(
-    { seq: 2, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '超期错误无别名 2' }] } },
-    { seq: 3, time: Date.now(), type: 'user/message', data: { id: randomUUID(), source: { kind: 'user' }, content: [{ type: 'text', text: '超期错误无别名 3' }] } },
-    { seq: 4, time: Date.now(), type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
-  )
-  const scanFull11 = ing11.synchronize(fakeSession11 as unknown as Parameters<typeof ing11.synchronize>[0])
-  ing11.release(fakeSession11 as unknown as Parameters<typeof ing11.release>[0])
-  await delay(160)
-  releaseBusy11.resolve()
-  await Promise.all([scanShort11, scanFull11])
-  assert.ok(await eventually(() => {
-    const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
-    try {
-      const turns = db.prepare('SELECT COUNT(*) AS n FROM owner_turns WHERE session = ?').get(sess11) as { n: number }
-      const ignored = db.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND kind = 'ignored'").get(sess11) as { n: number }
-      return turns.n === 1 && ignored.n === 3
-    } finally { db.close() }
-  }, { timeoutMs: 2_000 }), 'queued full scan after expired short-scan failure must immediately finalize all 3 messages')
-  assert.equal(deferralsAfterError11, 0, 'expired short-scan error must NOT reset releaseDeadline (subsequent scan must pass deferMissingAlias=false)')
-})
-
 test('Dream edited in-flight preserves Retry-After cooldown on newer generation without bumping attempts (P1-4) and non-agent-loop streams do not defer background work (P2-4)', { timeout: 30_000 }, async t => {
   const { dir } = scratch(t, 'phase3-dream-race-p14-')
   const root = path.join(dir, 'memory')
@@ -1810,11 +952,26 @@ test('Dream edited in-flight preserves Retry-After cooldown on newer generation 
 
   const sid = randomUUID()
   for (let turn = 1; turn <= 5; turn++) {
+    const at = Date.now()
     const text = `Compaction probe turn ${turn}`
     const sourceId = randomUUID()
-    await sendHost('sourceAlias', { operationId: sourceId, sourceId, session: sid, conversation: sid, text, wireText: text, cwd: dir, origin: 'original' })
-    const rec = await owner.call('receiveSource', [{ sessionId: sid, messageId: randomUUID(), text, at: Date.now(), timezone: 'UTC', turn, cwd: dir }])
-    await owner.call('completeTurn', [{ sessionId: sid, turn, eventSeq: turn * 2, sourceIds: [rec.sourceId], assistant: 'ok', completed: true, at: Date.now(), timezone: 'UTC' }])
+    const fromSeq = (turn - 1) * 3
+    await owner.call('settleTurn', [{
+      sessionId: sid,
+      cwd: dir,
+      sessionKind: 'main',
+      conversation: sid,
+      inheritedSeq: 0,
+      expectedNextSeq: fromSeq === 0 ? null : fromSeq,
+      fromSeq,
+      toSeq: fromSeq + 3,
+      turn,
+      reasonKind: 'completed',
+      sources: [{ sourceId, author: 'user', sourceKind: 'main-human', profileEligible: true, text, conversation: sid, at, timezone: 'UTC' }],
+      assistantText: '',
+      at,
+      timezone: 'UTC',
+    }])
   }
   assert.ok(await eventually(() => stages.includes('note'), { timeoutMs: 8_000 }),
     'non-agent-loop stream carrying sessionId must NOT defer background Note')

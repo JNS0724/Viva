@@ -93,13 +93,6 @@ export async function startHarness(t: TestContext, { mcpServers = [], prewarmSes
       mcpServers: () => mcpServers,
       prewarmSessions,
       configActions,
-      recordSource: ({ session, sourceId, text, wireText, wireSpans, task }) => {
-        if (!created.memory.ready()) return
-        const operationId = randomUUID()
-        void created.memory.callIntake('sourceAlias', { operationId, sourceId: sourceId ?? operationId, session,
-          conversation: session, text, wireText, wireSpans, cwd: workspace, origin: sourceId ? 'original' : 'derived',
-          ...(task ? { context: { kind: 'task', id: session } } : {}) }).catch(() => {})
-      },
 
       emit: (event) => {
         events.push(event)

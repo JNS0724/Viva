@@ -43,9 +43,11 @@ import {
 } from './resident-profile.ts'
 import { looksSecret } from './memory-sensitive.ts'
 import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments, MemoryPhysicalFile } from './ports/documents.ts'
+import type { ReadSessionRange } from './ports/notes.ts'
 import type { Effect, Outcome } from './ports/effects.ts'
 import type { MemoryFileIndexChanges, MemoryRuntimeResources } from './ports/runtime.ts'
 import type { MemoryFileDependency, MemorySource, MemoryStore } from './ports/store.ts'
+import type { MemorySourceKind } from '../contracts/records.ts'
 import type { MemoryPresentation } from './presentation.ts'
 import { defaultMemoryText, MemoryDomainError } from './presentation.ts'
 import { contextAllows } from './scope.ts'
@@ -57,7 +59,18 @@ export const MAX_RECALL_CHARS = 6000
 export const MAX_DEEP_RECALL_CHARS = 12000
 const USER = { kind: 'user' } as const
 type FileProfileScope = { kind: 'user' } | { kind: 'project', id: string }
-type Origin = { conversation: string | null, session: string | null, scope?: MemoryScope, context?: MemoryScope, project?: Extract<FileProfileScope, { kind: 'project' }>, foregroundTurn?: string, turn?: string }
+type Origin = {
+  conversation: string | null
+  session: string | null
+  scope?: MemoryScope
+  context?: MemoryScope
+  project?: Extract<FileProfileScope, { kind: 'project' }>
+  foregroundTurn?: string
+  turn?: string
+  author?: MemorySource['author']
+  sourceKind?: MemorySourceKind | null
+  profileEligible?: boolean
+}
 type AnswerSource = { question: string, requestId: string, questionId: string, custom?: true, questionAt?: number, questionProfileGen?: number }
 type Receipt = { sourceId: string, outcome: string }
 type MemoryInterval = { from: number | null, to: number | null }
@@ -72,7 +85,7 @@ const DOCUMENT_CLEANUP = 'memory.document-cleanup'
 export const publicationEffectKinds: ReadonlySet<string> = new Set([INDEX_PUBLISH, INDEX_SEED, DOCUMENT_CLEANUP])
 
 export function createMemoryRuntime({ store, resources, presentation = {}, compute, route, embedder, changed, injected: _injected,
-  dailyNotes = false, diagnostics: providedDiagnostics = NO_DIAGNOSTICS,
+  dailyNotes = false, diagnostics: providedDiagnostics = NO_DIAGNOSTICS, readSessionRange,
   canCommit, now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
   store: MemoryStore,
   diagnostics?: DiagnosticPort,
@@ -82,6 +95,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   route: () => Route | null,
   embedder?: Pick<MemoryEmbedder, 'fingerprint' | 'dimensions' | 'embedBatch' | 'close'>,
   dailyNotes?: boolean | DailyMemorySettings,
+  readSessionRange?: ReadSessionRange,
   changed: (change: { revision: number }) => void,
   now?: () => number,
   timezone?: () => string,
@@ -113,13 +127,30 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         || existing.requestId !== (answer?.requestId ?? null) || existing.questionId !== (answer?.questionId ?? null)) throw domainError('operation.conflict')
       return existing
     }
+    const scope = origin.scope ?? USER
+    const context = origin.context ?? origin.project ?? origin.scope ?? USER
+    const project = origin.project ?? null
+    const defaultProfileEligible = (author === 'user' || author === 'answer')
+      && scope.kind === 'user' && context.kind === 'user' && project === null
+    const profileEligible = (author === 'user' || author === 'answer')
+      ? (origin.profileEligible ?? defaultProfileEligible)
+      : false
+    const defaultSourceKind: MemorySourceKind | null = origin.sourceKind !== undefined
+      ? origin.sourceKind
+      : author === 'manual' ? 'manual'
+      : author === 'answer' ? 'question-answer'
+      : author === 'user' ? (project !== null ? 'project-user' : 'main-human')
+      : author === 'agent' ? 'task-brief'
+      : 'task-assistant'
     const source: MemorySource = {
       id, operation: id, version: 1, conversation: origin.conversation, session: origin.session,
-      scope: origin.scope ?? USER, context: origin.context ?? origin.project ?? origin.scope ?? USER, project: origin.project ?? null, author, text: denied ? null : text, hash,
+      scope, context, project, author, sourceKind: defaultSourceKind, profileEligible, text: denied ? null : text, hash,
       length: denied ? 0 : text.length,
       question: answer && !denied ? answer.question.slice(0, 1000) : null,
       questionAt: answer && !denied ? (answer.questionAt ?? null) : null,
       questionProfileGen: answer && !denied ? (answer.questionProfileGen ?? null) : null,
+      questionValid: false,
+      questionSources: [],
       requestId: answer?.requestId ?? null, questionId: answer?.questionId ?? null,
       at: captured?.at ?? now(), timezone: captured?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       outcome: denied ? 'rejected' : 'received',
@@ -131,7 +162,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function accept(text: string, origin: Origin, operation: string = randomUUID(), answer?: AnswerSource, intake?: { deferAutomatic?: boolean, at: number, timezone: string }): Receipt {
     const source = store.tx(() => {
       const known = store.readSource(operation)
-      const current = createSource(text, origin, operation, answer === undefined ? 'user' : 'answer', answer, intake)
+      const author = answer !== undefined ? 'answer' : (origin.author ?? 'user')
+      const current = createSource(text, origin, operation, author, answer, intake)
       if (!current.text || known && known.outcome !== 'received') return current
       const outcome = intake?.deferAutomatic ? 'received' : dailyNotes ? 'note-pending' : 'recorded'
       store.outcome(current.id, outcome)
@@ -209,6 +241,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     readable: id => fileSourceCurrent(id),
     eligible: source => !closed && canCommit(source),
     allowsText: (text) => !looksSecret(text),
+    hash: memoryHash,
+    readSessionRange,
     async calculate(job, source, stage, system, input, sources, current) {
       const model = route()
       if (model) return calculate(source, job, model, stage, input, sources, system, current)
@@ -881,8 +915,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
 
   function freshFileEvidence(id: string, text: string, parent?: MemorySource, project?: Origin['project'], context: MemoryScope = project ?? USER): MemorySource {
     return { id, operation: id, version: 1, conversation: null, session: null, scope: parent?.scope ?? USER,
-      context: parent ? parent.context : context, project: parent ? parent.project ?? null : project ?? null, author: 'manual', text, hash: memoryHash(text), length: text.length,
-      question: null, requestId: null, questionId: null, at: now(), timezone: timezone(), outcome: 'written' }
+      context: parent ? parent.context : context, project: parent ? parent.project ?? null : project ?? null, author: 'manual', sourceKind: 'manual', profileEligible: false, text, hash: memoryHash(text), length: text.length,
+      question: null, questionValid: false, questionSources: [], requestId: null, questionId: null, at: now(), timezone: timezone(), outcome: 'written' }
   }
 
   async function writeManagedFile(operationId: string, workspace: string, input: MemoryFileCreateRequest | MemoryFileEditRequest | undefined,
@@ -1123,6 +1157,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     },
     accept,
     recordNoteTurn: notes?.record,
+    recordNoteRangeInTx: notes?.recordRangeInTx,
+    hasNoteRange: notes?.storage.hasRange,
     flushNoteTurns: notes?.flush,
     handle,
     handleModelRequest,

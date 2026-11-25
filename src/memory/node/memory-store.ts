@@ -11,18 +11,22 @@ import { memoryScopeKey } from '../core/scope.ts'
 export { memoryScopeKey } from '../core/scope.ts'
 export type { MemorySource, MemoryFileDependency } from '../contracts/records.ts'
 
-type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'requestId' | 'questionId' | 'questionAt' | 'questionProfileGen'> & {
-  seq?: number, scope: string, context: string | null, project: string | null, request_id: string | null, question_id: string | null, question_at: number | null, question_profile_gen: number | null
+type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'sourceKind' | 'profileEligible' | 'requestId' | 'questionId' | 'questionAt' | 'questionProfileGen' | 'questionValid' | 'questionSources'> & {
+  seq?: number, scope: string, context: string | null, project: string | null, source_kind: string | null, profile_eligible: number,
+  request_id: string | null, question_id: string | null, question_at: number | null, question_profile_gen: number | null,
+  question_valid: number, question_sources_json: string | null
 }
 export const memoryHash = (text: string) => createHash('sha256').update(text).digest('hex')
 
 const SCHEMA = `
   CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-  CREATE TABLE memory_session_cursors (session TEXT PRIMARY KEY, next_seq INTEGER NOT NULL);
   CREATE TABLE memory_sources (
     id TEXT PRIMARY KEY, operation TEXT NOT NULL, version INTEGER NOT NULL,
     conversation TEXT, session TEXT, scope TEXT NOT NULL, context TEXT, project TEXT, author TEXT NOT NULL,
-    text TEXT, hash TEXT, length INTEGER NOT NULL, question TEXT, question_at INTEGER, question_profile_gen INTEGER, request_id TEXT, question_id TEXT, at INTEGER NOT NULL, timezone TEXT NOT NULL,
+    source_kind TEXT, profile_eligible INTEGER NOT NULL DEFAULT 0,
+    text TEXT, hash TEXT, length INTEGER NOT NULL, question TEXT, question_at INTEGER, question_profile_gen INTEGER,
+    question_valid INTEGER NOT NULL DEFAULT 0, question_sources_json TEXT,
+    request_id TEXT, question_id TEXT, at INTEGER NOT NULL, timezone TEXT NOT NULL,
     outcome TEXT NOT NULL, UNIQUE(operation, version)
   );
   CREATE INDEX memory_sources_conversation ON memory_sources(conversation);
@@ -65,15 +69,28 @@ export function openMemoryStore(file: string, now = Date.now) {
   const readSource = (id: string): MemorySource | null => {
     const row = sourceById.get(id) as SourceRow | undefined
     if (!row) return null
-    return { ...row, ...(typeof row.seq === 'number' ? { seq: row.seq } : {}), questionAt: row.question_at ?? null, questionProfileGen: row.question_profile_gen ?? null, requestId: row.request_id, questionId: row.question_id,
+    return { ...row, ...(typeof row.seq === 'number' ? { seq: row.seq } : {}),
+      sourceKind: (row.source_kind ?? null) as MemorySource['sourceKind'],
+      profileEligible: Boolean(row.profile_eligible),
+      questionAt: row.question_at ?? null, questionProfileGen: row.question_profile_gen ?? null,
+      questionValid: Boolean(row.question_valid),
+      questionSources: row.question_sources_json ? JSON.parse(row.question_sources_json) as DocumentSourceRef[] : [],
+      requestId: row.request_id, questionId: row.question_id,
       scope: memoryScope.parse(JSON.parse(row.scope)), context: row.context ? memoryScope.parse(JSON.parse(row.context)) : null,
       project: row.project ? memoryScope.parse(JSON.parse(row.project)) : null }
   }
   const insertSource = (source: MemorySource) => db.prepare(`INSERT INTO memory_sources
-    (id, operation, version, conversation, session, scope, context, project, author, text, hash, length, question, question_at, question_profile_gen, request_id, question_id, at, timezone, outcome)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
-    memoryScopeKey(source.scope), source.context ? memoryScopeKey(source.context) : null, source.project ? memoryScopeKey(source.project) : null, source.author, source.text, source.hash, source.length,
-    source.question, source.questionAt ?? null, source.questionProfileGen ?? null, source.requestId, source.questionId, source.at, source.timezone, source.outcome)
+    (id, operation, version, conversation, session, scope, context, project, author, source_kind, profile_eligible, text, hash, length, question, question_at, question_profile_gen, question_valid, question_sources_json, request_id, question_id, at, timezone, outcome)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
+    memoryScopeKey(source.scope), source.context ? memoryScopeKey(source.context) : null, source.project ? memoryScopeKey(source.project) : null,
+    source.author, source.sourceKind ?? null, source.profileEligible ? 1 : 0, source.text, source.hash, source.length,
+    source.question, source.questionAt ?? null, source.questionProfileGen ?? null,
+    source.questionValid ? 1 : 0, source.questionSources ? JSON.stringify(source.questionSources) : null,
+    source.requestId, source.questionId, source.at, source.timezone, source.outcome)
+  const updateSourceQuestionContext = (id: string, valid: boolean, refs: readonly DocumentSourceRef[]) => {
+    db.prepare('UPDATE memory_sources SET question_valid=?, question_sources_json=? WHERE id=?')
+      .run(valid ? 1 : 0, JSON.stringify(refs), id)
+  }
   function insertManualFileSource(source: MemorySource, parents: readonly DocumentSourceRef[]) {
     tx(() => {
       insertSource(source)
@@ -91,7 +108,7 @@ export function openMemoryStore(file: string, now = Date.now) {
   return { get fileRoot() {
     return file === ':memory:' ? temporaryFileRoot ??= fs.mkdtempSync(path.join(tmpdir(), 'viva-memory-files-')) : path.join(path.dirname(file), 'memory-files')
   }, db, tx, revision, epoch, nextRevision,
-    readSource, maxSourceSeq, insertSource, insertManualFileSource, manualFileParents,
+    readSource, maxSourceSeq, insertSource, updateSourceQuestionContext, insertManualFileSource, manualFileParents,
     outcome, meta, setMeta, command, recordCommand,
     close() { try { db.close() } finally { if (temporaryFileRoot) fs.rmSync(temporaryFileRoot, { recursive: true, force: true }) } }
   }

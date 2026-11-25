@@ -6,11 +6,14 @@ type Owner = ReturnType<typeof openMemoryOwner>
 export type OwnerActiveTurn = { sessionId: string, turn: number }
 export type OwnerCallOptions = { signal?: AbortSignal, budgetMs?: number, deadlineAt?: number, waitForCompletion?: boolean }
 export type AutomaticRecallResponse = { epoch: string, revision: number, stale: boolean, result: AutomaticRecallResult }
-export type OwnerAdapterApi = Pick<Owner, 'receiveSource' | 'intakeWatermark' | 'advanceIntake' | 'bindIntakeSession' | 'rememberStandaloneFile'> & {
+export type OwnerAdapterApi = Pick<
+  Owner,
+  'intakeCursor' | 'advanceIntakeCursor' | 'beginTurn' | 'stageOpenTurnSources' | 'bindIntakeSession' | 'rememberStandaloneFile'
+> & {
   forgetStandaloneFile(session: string, id: string, operationId: string): ReturnType<Owner['forgetStandaloneFile']>
-  completeTurn(input: Parameters<Owner['completeTurn']>[0]): ReturnType<Owner['completeTurn']>
+  settleTurn(input: Parameters<Owner['settleTurn']>[0]): ReturnType<Owner['settleTurn']>
   sidecarRequest(input: MemorySidecarRequest, cwd?: string | null): Promise<string | null>
-  automaticRecall(input: { session: string, turn: number, question: string }, cwd?: string | null, originals?: readonly { id: string, text: string }[]): Promise<AutomaticRecallResponse>
+  automaticRecall(input: { session: string, turn: number, question: string }, cwd?: string | null): Promise<AutomaticRecallResponse>
   reportContextUsed(input: { session: string, turn: number, pushed: Array<{ text: string, names: string[] }> }): void
   setRoute(route: { provider: string, model: string } | null): void
   computeTool(jobId: string, input: Parameters<MemoryComputeTools['executeTool']>[0]): ReturnType<MemoryComputeTools['executeTool']>

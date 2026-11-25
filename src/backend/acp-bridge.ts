@@ -20,6 +20,7 @@ import { createRemoteMemoryChannel } from './remote-memory-channel.ts'
 import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
 import { withRequestSource } from '../shared/request-routing/header.ts'
 import { withTaskRequestSource } from '../shared/request-routing/task-header.ts'
+import { withProvenanceHeader, wrapRawWithProvenance } from '../shared/request-routing/provenance.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
@@ -89,7 +90,7 @@ export function createAcpBridge({
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
   launch = null as object | null, routing, onQuestionAnswer, admitTaskWaitResume, onSessionCreated, projectMatches, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed,
-  allowGeneralQuestion, recordSource,
+  allowGeneralQuestion,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -99,8 +100,6 @@ export function createAcpBridge({
   spawnFn?: typeof spawn, mcpServers?: () => McpServerEntry[],
   onExit?: ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform?: string, configActions?: Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  recordSource?: (input: { session: string, text: string, wireText: string, sourceId?: string,
-    wireSpans?: Array<{ start: number, end: number }>, task?: boolean }) => void,
   taskRead?: TaskRead | null,
   /** Schedule actions from viva-tasks. */
   taskAct?: TaskAct | null,
@@ -363,15 +362,54 @@ export function createAcpBridge({
     },
     foreground: () => ({ sessionId, cwd: sessionCwd, config: configNow }), canResume: () => canResume, prepareFresh,
     operations, permissions: broker, questions,
-    preparePrompt: async (id, text) => {
+    preparePrompt: async (_id, text, meta) => {
+      const origin = meta?.origin ?? 'router'
       const wrapped = withTaskRequestSource(text, randomUUID())
-      recordSource?.({ session: id, text, wireText: wrapped.text, wireSpans: wrapped.spans, task: true })
-      return wrapped.text
+      if (origin === 'unattended') {
+        return withProvenanceHeader(wrapped.text, {
+          origin: 'unattended',
+          sourceKind: 'unattended',
+          sessionKind: 'unattended',
+          humanSpans: [],
+        })
+      }
+      if (origin === 'human') {
+        return withProvenanceHeader(wrapped.text, {
+          origin: 'human',
+          sourceKind: 'task-human-steer',
+          sessionKind: 'task',
+          ...(meta?.conversationId ? { conversationId: meta.conversationId } : {}),
+          ...(meta?.sourceId ? { sourceId: meta.sourceId } : {}),
+          humanSpans: wrapped.spans,
+        })
+      }
+      return withProvenanceHeader(wrapped.text, {
+        origin: 'router',
+        sourceKind: 'task-brief',
+        sessionKind: 'task',
+        ...(meta?.conversationId ? { conversationId: meta.conversationId } : {}),
+        humanSpans: wrapped.spans,
+      })
     },
-    steer: async (id, text) => {
+    steer: async (id, text, meta) => {
+      const origin = meta?.origin ?? 'router'
       const wrapped = withTaskRequestSource(text, randomUUID())
-      recordSource?.({ session: id, text, wireText: wrapped.text, wireSpans: wrapped.spans, task: true })
-      return steering.steer(wrapped.text, id)
+      if (origin === 'human') {
+        return steering.steer(wrapped.text, id, {
+          source: {
+            kind: 'viva-task-human-steer',
+            ...(meta?.sourceId ? { sourceId: meta.sourceId } : {}),
+            ...(meta?.conversationId ? { conversationId: meta.conversationId } : {}),
+            humanSpans: wrapped.payloadSpans,
+          },
+        })
+      }
+      return steering.steer(wrapped.text, id, {
+        source: {
+          kind: 'viva-task-router-message',
+          ...(meta?.conversationId ? { conversationId: meta.conversationId } : {}),
+        },
+      })
     },
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
@@ -500,8 +538,23 @@ export function createAcpBridge({
     const origin = contextFor(asked), context = origin ? { ...origin } : null
     const effectiveSourceText = sourceText !== undefined ? sourceText : text
     const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, effectiveSourceText) : null
-    const words = routed?.text ?? text
-    if (asked && request) recordSource?.({ session: asked, sourceId, text: effectiveSourceText, wireText: words, wireSpans: routed?.spans })
+    const words = routed
+      ? withProvenanceHeader(routed.text, {
+        origin: 'human',
+        sourceKind: 'main-human',
+        sessionKind: 'main',
+        ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
+        ...(sourceId ? { sourceId } : {}),
+        humanSpans: routed.spans,
+      })
+      : (asked
+        ? wrapRawWithProvenance(text, {
+          origin: 'router',
+          sourceKind: 'viva-report-batch',
+          sessionKind: 'main',
+          ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
+        }, '').text
+        : text)
     if (held && !held()) throw new ForegroundRequestRetired()
     if (asked !== sessionId || isSwitching() || disposed || recoveryRequired) throw new Error(switchingMessage())
     routed?.register()
@@ -679,17 +732,25 @@ export function createAcpBridge({
     const asked = sessionId
     if (!held()) return retired()
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
+    const context = contextFor(asked)
     const request = asRequest(text, asked, 'interjection', sourceId)
     const wrapped = interjection(request.text)
     const prefixLength = wrapped.length - request.text.length
     const spans = request.spans.map(({ start, end }) => ({ start: start + prefixLength, end: end + prefixLength }))
     const undelivered = () => routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })
-    recordSource?.({ session: asked, sourceId, text, wireText: wrapped, wireSpans: spans })
     if (!held()) return retired()
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
     request.register()
     onDispatch?.()
-    const result = await steering.steer(wrapped, asked, { fast: true })
+    const result = await steering.steer(wrapped, asked, {
+      fast: true,
+      source: {
+        kind: 'viva-main-human-steer',
+        ...(sourceId ? { sourceId } : {}),
+        ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
+        humanSpans: spans,
+      },
+    })
     // A lost transport receipt leaves the request routable if the native inbox took it.
     if (!result.ok && result.reason !== NO_PLUGIN) {
       undelivered()

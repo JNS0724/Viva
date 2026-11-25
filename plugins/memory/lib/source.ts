@@ -1,8 +1,13 @@
 import type {} from '@deepseek-ai/dsh-llm'
+import type { SteerMessageSource } from '../../../src/shared/request-routing/provenance.ts'
+
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'viva-memory': { kind: 'viva-memory', form?: 'recall' }
     'viva-memory-recovery': { kind: 'viva-memory-recovery', ticketId: string, originalMessageIds: string[] }
+    'viva-main-human-steer': Extract<SteerMessageSource, { kind: 'viva-main-human-steer' }>
+    'viva-task-human-steer': Extract<SteerMessageSource, { kind: 'viva-task-human-steer' }>
+    'viva-task-router-message': Extract<SteerMessageSource, { kind: 'viva-task-router-message' }>
   }
 }
 /** Generated memory context is never an original user source. */

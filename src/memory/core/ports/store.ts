@@ -11,6 +11,7 @@ export interface MemoryStore {
   readSource(id: string): MemorySource | null
   maxSourceSeq?(): number
   insertSource(source: MemorySource): void
+  updateSourceQuestionContext?(id: string, valid: boolean, refs: readonly DocumentSourceRef[]): void
   /** Body-free ties from a manually edited draft to the exact proof it reused. */
   insertManualFileSource(source: MemorySource, parents: readonly DocumentSourceRef[]): void
   manualFileParents(source: string): DocumentSourceRef[]

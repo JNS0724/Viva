@@ -148,10 +148,6 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
     const bridge = createAcpBridge({
       routing: testRequests(), dshBin: path.join(CODE_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), nodeBin: runtime.nodeBin,
       profile: DSH_PROFILE, overlay: vivaLayerFile(dshHome), cwd: workspace,
-      recordSource: ({ session, sourceId, text, wireText, wireSpans }) => {
-        if (sourceId && bridge.memory.ready()) void bridge.memory.callIntake('sourceAlias', { operationId: sourceId, sourceId, session,
-          conversation: session, text, wireText, wireSpans, cwd: workspace }).catch(() => {})
-      },
       env: {
         ...dshEnv({
           base: process.env,

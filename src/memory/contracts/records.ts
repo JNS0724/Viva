@@ -12,6 +12,20 @@ export type MemoryFileDependency = {
   /** Body-free evidence of this accepted projection, retained even after it changes. */
   sourceRanges: Array<{ sourceId: string; spans?: TextSpan[] }>
 }
+export type MemorySessionKind = 'main' | 'task' | 'unattended'
+
+export type MemorySourceKind =
+  | 'main-human'
+  | 'project-user'
+  | 'question-answer'
+  | 'task-human-steer'
+  | 'task-question-answer'
+  | 'task-brief'
+  | 'task-assistant'
+  | 'manual'
+
+export type MemorySourceQuestionRef = { id: string, token: string, spans?: TextSpan[] }
+
 export interface MemorySource {
   id: string
   operation: string
@@ -21,13 +35,17 @@ export interface MemorySource {
   scope: MemoryScope
   context: MemoryScope | null
   project?: MemoryScope | null
-  author: 'user' | 'manual' | 'answer'
+  author: 'user' | 'manual' | 'answer' | 'agent' | 'assistant'
+  sourceKind?: MemorySourceKind | null
+  profileEligible?: boolean
   text: string | null
   hash: string | null
   length: number
   question: string | null
   questionAt?: number | null
   questionProfileGen?: number | null
+  questionValid?: boolean
+  questionSources?: MemorySourceQuestionRef[]
   requestId: string | null
   questionId: string | null
   at: number

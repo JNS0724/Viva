@@ -10,12 +10,14 @@ import { OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
 import type { MemoryComputeTools } from '../contracts/compute.ts'
 import type { MemoryCompute } from '../contracts/memory-contract.ts'
+import type { ReadSessionRangeResult } from '../core/ports/notes.ts'
 import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from './owner-adapter.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 
 export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerProfile | MemoryOwnerChange | MemoryOwnerContextUsed
 export type MemoryOwnerCallbacks = {
   compute?(input: { job: MemoryCompute, tools?: MemoryComputeTools['tools'] }, signal: AbortSignal): Promise<string>
+  readSessionRange?(input: { sessionId: string, fromSeq: number, toSeq: number }, signal: AbortSignal): Promise<ReadSessionRangeResult>
 }
 type Options = {
   root: string
@@ -159,6 +161,20 @@ export function createMemoryOwnerSupervisor(options: Options) {
           case 'compute':
             if (!callbacks?.compute || !input || !objectOf(input.job)) throw new Error('Memory computation is unavailable')
             return callbacks.compute(input as Parameters<NonNullable<MemoryOwnerCallbacks['compute']>>[0], signal)
+          case 'readSessionRange':
+            if (!callbacks?.readSessionRange) {
+              return { status: 'ok', assistant: '' } satisfies ReadSessionRangeResult
+            }
+            if (!input
+              || typeof input.sessionId !== 'string'
+              || typeof input.fromSeq !== 'number'
+              || typeof input.toSeq !== 'number') {
+              return { status: 'unavailable' } satisfies ReadSessionRangeResult
+            }
+            return callbacks.readSessionRange(
+              { sessionId: input.sessionId, fromSeq: input.fromSeq, toSeq: input.toSeq },
+              signal,
+            )
           default: throw new Error('Unsupported memory owner callback')
         }
       },

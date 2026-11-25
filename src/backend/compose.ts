@@ -25,7 +25,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { createVivaMemoryClient } from './memory-client.ts'
 import { MemoryOwnerUnavailable } from './remote-memory-channel.ts'
 import { createRequestBudget } from '../shared/request-budget.ts'
-import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod, MemorySourceAlias } from '../memory/contracts/host.ts'
+import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod } from '../memory/contracts/host.ts'
+import type { TaskDispatchMeta } from './acp-task-sessions.ts'
 import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
 import { resolveMemoryProject } from '../memory/node/project-scope.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
@@ -167,65 +168,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   let defaultWorkspace: string | undefined
   function historyWorkspace(cwd: string | null | undefined) {
     return cwd && defaultWorkspace && sameDir(cwd, defaultWorkspace) ? null : cwd
-  }
-  const MAX_PENDING_ALIASES = 256
-  const MAX_INFLIGHT_ALIASES = 16
-  const ALIAS_RETRY_DELAY_MS = 250
-  const pendingAliases = new Map<string, { alias: MemorySourceAlias, nextAttemptAt: number }>()
-  const inflightAliases = new Set<string>()
-  let aliasRetryTimer: ReturnType<typeof setTimeout> | null = null
-  function clearAliasRetryTimer() {
-    if (aliasRetryTimer) { clearTimeout(aliasRetryTimer); aliasRetryTimer = null }
-  }
-  function drainPendingAliases() {
-    if (closed) return
-    const bridge = dsh.current
-    if (!bridge || !bridge.memory.ready()) return
-    const now = Date.now()
-    let minDelay = Infinity
-    for (const [operationId, entry] of pendingAliases) {
-      if (inflightAliases.size >= MAX_INFLIGHT_ALIASES) break
-      if (inflightAliases.has(operationId)) continue
-      if (entry.nextAttemptAt > now) {
-        minDelay = Math.min(minDelay, entry.nextAttemptAt - now)
-        continue
-      }
-      inflightAliases.add(operationId)
-      void bridge.memory.callIntake('sourceAlias', entry.alias).then(
-        () => { pendingAliases.delete(operationId) },
-        error => {
-          emitDiagnosticFailure('memory.intake', error)
-          if (objectOf(error)?.domainCode === 'operation.conflict') pendingAliases.delete(operationId)
-          else {
-            const currentEntry = pendingAliases.get(operationId)
-            if (currentEntry) currentEntry.nextAttemptAt = Date.now() + ALIAS_RETRY_DELAY_MS
-          }
-        },
-      ).finally(() => {
-        inflightAliases.delete(operationId)
-        drainPendingAliases()
-      })
-    }
-    if (minDelay < Infinity && !aliasRetryTimer && !closed) {
-      aliasRetryTimer = setTimeout(() => {
-        aliasRetryTimer = null
-        drainPendingAliases()
-      }, Math.max(10, minDelay))
-    }
-  }
-  function enqueueAlias(alias: MemorySourceAlias) {
-    if (pendingAliases.size >= MAX_PENDING_ALIASES && !pendingAliases.has(alias.operationId)) {
-      const oldest = pendingAliases.keys().next()
-      if (!oldest.done) pendingAliases.delete(oldest.value)
-      emitDiagnosticFailure('memory.intake', new Error('Pending memory alias queue overflow'))
-    }
-    pendingAliases.set(alias.operationId, { alias, nextAttemptAt: 0 })
-    drainPendingAliases()
-  }
-  function replayPendingAliases() {
-    clearAliasRetryTimer()
-    for (const entry of pendingAliases.values()) entry.nextAttemptAt = 0
-    drainPendingAliases()
   }
   const memoryCall: HostMemoryCaller = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) => {
     const bridge = dsh.current
@@ -546,10 +488,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   function createBridge(config: Config, cwd: string, lifetime: DshLifetime): Bridge {
     return createAcpBridge({
       prewarmSessions: true,
-      readyMemory: () => {
-        if (!lifetime.isCurrent()) return
-        replayPendingAliases()
-      },
       memoryStateChanged: () => {
         if (!lifetime.isCurrent()) return
         emitToRenderer({ type: 'memory_changed' })
@@ -576,15 +514,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       projectMatches: (id, cwd) => {
         const saved = historyDb.nativeProject(id)
         return saved === undefined || saved === projectScopeKey(cwd)
-      },
-      recordSource: ({ session, sourceId, text, wireText, wireSpans, task }) => {
-        if (!lifetime.isCurrent()) return
-        const selected = sessions.context()
-        const conversation = task ? historyDb.bySession(session)?.id ?? session : selected.sessionId === session ? selected.conversationId : null
-        if (!conversation) return
-        const operationId = randomUUID()
-        enqueueAlias({ operationId, sourceId: sourceId ?? operationId, session, conversation, text, wireText,
-          wireSpans, origin: sourceId ? 'original' : 'derived', ...(task ? { context: { kind: 'task', id: session } } : {}) })
       },
       allowGeneralQuestion: (_session, turn) => Boolean(turn),
       admitTaskWaitResume: (kind, id) => {
@@ -1572,7 +1501,7 @@ ${question}` : question
   const taskAgent = {
     closeTask: (taskId: string) => dsh.current?.closeTask(taskId),
     cancelTask: (taskId: string) => dsh.current?.cancelTask(taskId),
-    steerTask: (taskId: string, text: string) => requireBridge().steerTask(taskId, text),
+    steerTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => requireBridge().steerTask(taskId, text, meta),
     resumeTask: (request: Parameters<Bridge['resumeTask']>[0]) => (dsh.current ? dsh.current.resumeTask(request) : { ok: false, reason: 'unavailable' }),
     async startTask() {
       const agent = dsh.current
@@ -1580,7 +1509,7 @@ ${question}` : question
       if (!agent || !source || sessions.isChanging()) return { ok: false, reason: 'unavailable' }
       return agent.startTask()
     },
-    promptTask: (taskId: string, text: string) => dsh.current?.promptTask(taskId, text),
+    promptTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => dsh.current?.promptTask(taskId, text, meta),
   }
 
   /** Opens the database and drops conversations whose undo window has passed. */
@@ -1786,9 +1715,6 @@ ${question}` : question
   function close() {
     retireForegroundRequests()
     closed = true
-    clearAliasRetryTimer()
-    pendingAliases.clear()
-    inflightAliases.clear()
     for (const timer of historyPurgeTimers) clearTimeout(timer)
     historyPurgeTimers.clear()
     scheduleRuns?.close()

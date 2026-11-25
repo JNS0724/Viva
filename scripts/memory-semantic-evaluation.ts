@@ -286,13 +286,26 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
               assert.ok(previous?.assistant.includes(pair.answerTo.question), 'A short answer must follow its genuine frozen assistant question')
             }
             const at = Date.now()
+            const fromSeq = turn * 3
             turn++
-            const receipt = await owner.receiveSource({ sessionId, messageId: randomUUID(), text: pair.user, at, timezone: 'UTC',
-              turn, cwd: workingDirectory })
-            sourceIds.add(receipt.sourceId)
-            snapshot.sourceIds.push(receipt.sourceId)
-            await owner.completeTurn({ sessionId, turn, eventSeq: turn * 2 + 1, sourceIds: [receipt.sourceId], assistant: pair.assistant,
-              completed: true, at, timezone: 'UTC' })
+            const sourceId = randomUUID()
+            await owner.settleTurn({
+              sessionId,
+              cwd: workingDirectory,
+              sessionKind: 'main',
+              inheritedSeq: 0,
+              expectedNextSeq: fromSeq === 0 ? null : fromSeq,
+              fromSeq,
+              toSeq: fromSeq + 3,
+              turn,
+              reasonKind: 'completed',
+              sources: [{ sourceId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: pair.user, at, timezone: 'UTC' }],
+              assistantText: pair.assistant,
+              at,
+              timezone: 'UTC',
+            })
+            sourceIds.add(sourceId)
+            snapshot.sourceIds.push(sourceId)
           }
           owner.runtime.flushNoteTurns?.(sessionId)
           await owner.runtime.wake()

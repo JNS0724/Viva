@@ -93,14 +93,16 @@ function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknow
     .join('\n')
 }
 
+import type { TaskDispatchMeta } from './acp-task-sessions.ts'
+
 /** A task's session as dsh started it (its id), or why not (acp-bridge.ts startTask). */
 type StartedTask = { ok: boolean, taskId?: string, reason?: string }
 type Maybe<T> = T | Promise<T>
 /** What the runtime asks of dsh for its tasks (compose.ts taskAgent, over acp-bridge.ts). */
 export interface TaskAgent {
   startTask: () => Maybe<StartedTask>
-  promptTask: (taskId: string, text: string) => unknown
-  steerTask: (taskId: string, text: string) => Maybe<{ ok: boolean } | null | undefined>
+  promptTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => unknown
+  steerTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => Maybe<{ ok: boolean } | null | undefined>
   resumeTask: (request: { taskId: string, cwd?: string }) => Maybe<{ ok: boolean }>
   cancelTask: (taskId: string) => unknown
   closeTask: (taskId: string) => unknown
@@ -391,7 +393,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     tasks.set(task.id, { ...task, runStart: 0, keep: 0, next: main.id })
     attached = new Set([...attached, task.id])
     taskWords.track(task.id, [initial])
-    agent.promptTask(task.id, text)
+    agent.promptTask(task.id, text, { origin: 'router', conversationId: task.segmentId })
     return { ok: true as const, task }
   }
 
@@ -546,7 +548,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     tasks.set(taskId, running)
     if (!taskWords.has(taskId)) taskWords.track(taskId, before)
     taskWords.userSaid(taskId, text)
-    agent.promptTask(taskId, text)
+    agent.promptTask(taskId, text, { origin: 'router', conversationId: kept.segmentId })
     return { ok: true }
   }
 
@@ -591,7 +593,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     attached = new Set([...attached, taskId])
     const said = [...before, brief]
     taskWords.track(taskId, said)
-    agent.promptTask(taskId, words)
+    agent.promptTask(taskId, words, { origin: 'router', conversationId: kept.segmentId })
     return { ok: true, task: restoredSummary(kept), messages: said }
   }
 
@@ -645,7 +647,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     }
     if (stillSelected && !stillSelected()) throw new Error(t('main.requests.start.elsewhere'))
     said(taskId, text)
-    const steered = await agent.steerTask(taskId, text)
+    const steered = await agent.steerTask(taskId, text, { origin: 'router', conversationId: kept.segmentId })
     if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
     return { taskId, delivered: 'into its turn' }
   }

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { parseDiagnosticContext, safeDiagnosticEvent, type DiagnosticPort } from '../../diagnostics/contracts.ts'
 import { diagnosticContext, diagnosticPort, installDiagnosticPort, newDiagnosticContext, withRemoteOperation } from '../../diagnostics/node/context.ts'
 import { MemoryComputeError, type MemoryComputeTools } from '../contracts/compute.ts'
+import type { ReadSessionRangeResult } from '../core/ports/notes.ts'
 import { MEMORY_HOST_PROTOCOL } from '../contracts/host.ts'
 import { isDailyMemoryStage, memoryComputeFailure, memorySidecarRequest } from '../contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../contracts/memory-daily-defaults.ts'
@@ -101,6 +102,13 @@ async function boot(raw: unknown, signal: AbortSignal) {
         throw new MemoryComputeError('call-failed')
       } finally { computeTools.delete(job.id) }
     },
+    readSessionRange: async (input, rangeSignal) => {
+      try {
+        return await peer.call<ReadSessionRangeResult>('readSessionRange', input, { signal: rangeSignal, budgetMs: 10_000 })
+      } catch {
+        return { status: 'unavailable' }
+      }
+    },
     onContextUsed: notice => notify({ type: 'memory_owner_context_used', protocol: MEMORY_HOST_PROTOCOL, epoch: owner!.epoch, ...notice }),
     onChange: change => {
       publishState()
@@ -126,11 +134,12 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
   const { method, args } = inputFrame.parse(raw)
   // Only these operations can run on behalf of the native DSH adapter.
   const handlers: OwnerAdapterApi = {
-    receiveSource: current.receiveSource,
-    completeTurn: input => current.completeTurn(input, signal),
-    bindIntakeSession: (session, cwd, task) => current.bindIntakeSession(idSchema.parse(session), z.string().nullish().parse(cwd), task === true),
-    intakeWatermark: session => current.intakeWatermark(idSchema.parse(session)),
-    advanceIntake: (session, nextSeq) => current.advanceIntake(idSchema.parse(session), z.int().nonnegative().parse(nextSeq)),
+    intakeCursor: session => current.intakeCursor(idSchema.parse(session)),
+    advanceIntakeCursor: input => current.advanceIntakeCursor(input),
+    beginTurn: input => current.beginTurn(input),
+    stageOpenTurnSources: input => current.stageOpenTurnSources(input),
+    settleTurn: input => current.settleTurn(input, signal),
+    bindIntakeSession: (session, cwd) => current.bindIntakeSession(idSchema.parse(session), z.string().nullish().parse(cwd)),
     rememberStandaloneFile: current.rememberStandaloneFile,
     forgetStandaloneFile: (session, id, operation) => current.forgetStandaloneFile(session, id, operation, signal),
     sidecarRequest: (raw, cwd) => {
@@ -152,7 +161,7 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
         return current.runtime.handleModelRequest(request, readScope, current.ready, signal)
       })()
     },
-    automaticRecall: (raw, cwd, originals) => {
+    automaticRecall: (raw, cwd) => {
       const request = z.strictObject({ session: idSchema, turn: z.number().int().positive(), question: z.string().max(20_000) }).parse(raw)
       const session = request.session
       return (async () => {
@@ -165,7 +174,7 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
         const project = resolved.status === 'project' ? resolved.project : undefined
         const scopeCurrent = current.scopeMatches(session, resolved)
         const readScope = scopeCurrent ? { ...origin, project } : { ...origin, project: undefined, context: { kind: 'user' as const } }
-        const question = originals ? current.intakeQuery(session, readScope.project, originals) : request.question
+        const question = request.question
         if (!question.trim()) {
           return { epoch, revision: current.runtime.revision(), stale: false, result: { status: 'skipped' as const } }
         }

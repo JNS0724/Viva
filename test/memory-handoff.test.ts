@@ -660,7 +660,7 @@ test('first idle deliveries and canonical replay retain FIFO ahead of a later st
   assert.deepEqual(order.slice(offset), [first, canonical, second, later])
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
-    for (const id of [firstId, secondId, canonicalId, laterId]) assert.equal(db.prepare('SELECT count(*) AS n FROM memory_sources WHERE id=?').get(id)?.n, 1)
+    assert.ok(await eventually(() => [firstId, secondId, canonicalId, laterId].every(id => db.prepare('SELECT count(*) AS n FROM memory_sources WHERE id=?').get(id)?.n === 1)))
   } finally { db.close() }
   const after = app.model.requests.length
   await assert.rejects(app.call<Promise<void>>('agent:prompt', canonical + ' 被改动', [], [canonicalId]))
@@ -691,10 +691,9 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     const root = join(app.directory, 'memory', 'memory-files', card.workspace)
     assert.match(fs.readFileSync(join(root, card.path), 'utf8'), /沿用上周模板，周五提交周报/u)
     assert.ok(fs.readFileSync(join(root, `daily/${card.day}.md`), 'utf8').includes(card.path))
-    const sessions = fs.readdirSync(join(root, 'session/dialog'))
-    assert.equal(sessions.length, 1)
-    assert.equal(fs.readFileSync(join(root, 'session/dialog', sessions[0]!), 'utf8').trim().split('\n').length, 5)
-    assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
+    assert.equal(fs.existsSync(join(root, 'session/dialog')), false, 'Phase 4A never writes duplicate session/dialog/*.jsonl files')
+    assert.equal(db.prepare("SELECT count(*) AS n FROM memory_note_ranges WHERE status='pending'").get()?.n, 0)
+    assert.equal(db.prepare("SELECT count(*) AS n FROM memory_note_ranges WHERE status='written'").get()?.n, 5)
   } finally { db.close() }
 })
 
@@ -1195,57 +1194,35 @@ test('Viva chats, reports background results and runs schedules with an incompat
   assert.deepEqual(fs.readFileSync(file), before)
 })
 
-for (const hold of ['request', 'receipt'] as const) test(`memory alias ${hold} never holds a foreground prompt`, { timeout: 30_000 }, async t => {
+test('foreground prompt dispatches immediately without any sourceAlias RPC and ingests from persisted DSH log', { timeout: 30_000 }, async t => {
   const operationId = randomUUID()
   const words = '这段真人原话无需等待记忆回执'
-  let release: (() => void) | undefined
-  let requestId: string | undefined
-  let cancelled = false
-  let dispatchedBeforeTimeout = false
-  let ownerResponse: { ok?: boolean } | undefined
+  const sentMethods: string[] = []
   const emit = ChildProcess.prototype.emit
   t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, requestId?: string, method?: string, input?: { sourceId?: string } }
-        if (frame?.type === 'memory_host_request' && frame.method === 'sourceAlias' && frame.input?.sourceId === operationId) {
-          requestId = frame.requestId
-          if (hold === 'request') {
-            release = () => { Reflect.apply(send, this, [message, ...rest]) }
-            return true
-          }
+        const frame = message as { type?: string, method?: string }
+        if (frame?.type === 'memory_host_request' && typeof frame.method === 'string') {
+          sentMethods.push(frame.method)
         }
-        if (frame?.type === 'routing_bind' && requestId && !cancelled) dispatchedBeforeTimeout = true
-        if (frame?.type === 'memory_host_cancel' && frame.requestId === requestId) cancelled = true
         return Reflect.apply(send, this, [message, ...rest]) as boolean
       })
-    }
-    const frame = args[0] as { type?: string, requestId?: string, ok?: boolean } | undefined
-    if (event === 'message' && requestId && frame?.type === 'memory_host_result' && frame.requestId === requestId) {
-      ownerResponse = frame
-      if (hold === 'receipt') {
-        release = () => { Reflect.apply(emit, this, [event, ...args]) }
-        return true
-      }
     }
     return Reflect.apply(emit, this, [event, ...args]) as boolean
   })
   const app = await setup(t, () => null)
   await app.files()
   await app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', words, [], operationId)
-  assert.ok(release, 'the alias frame or its receipt stayed held until the prompt completed')
-  assert.ok(dispatchedBeforeTimeout, 'the host dispatched DSH while the alias was still pending')
   assert.ok(app.model.requests.some(request => questionOf(request.messages) === words))
-  assert.ok(await eventually(() => cancelled), 'the owner receipt deadline elapsed while the conversation proceeded')
-  release()
-  assert.ok(await eventually(() => ownerResponse))
-  assert.equal(ownerResponse?.ok, hold === 'receipt')
+  assert.equal(sentMethods.includes('sourceAlias'), false, 'Phase 4A eliminates sourceAlias side-channel RPCs')
   const database = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
-    const remembered = database.prepare('SELECT text FROM memory_sources WHERE id=?').get(operationId)
-    assert.equal(remembered?.text, hold === 'receipt' ? words : undefined)
-    assert.equal(database.prepare('SELECT 1 FROM owner_aliases WHERE source=?').get(operationId), undefined)
+    const remembered = await eventually(() => database.prepare('SELECT text, source_kind, profile_eligible FROM memory_sources WHERE id=?').get(operationId))
+    assert.equal(remembered?.text, words)
+    assert.equal(remembered?.source_kind, 'main-human')
+    assert.equal(remembered?.profile_eligible, 1)
   } finally { database.close() }
 })
 
@@ -1279,7 +1256,7 @@ test('owner replacement finishes an in-flight trusted original once from the per
   assert.ok(firstPid)
   const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   app.defer(() => memory.close())
-  const registered = () => memory.prepare('SELECT 1 FROM owner_aliases WHERE source=? UNION ALL SELECT 1 FROM memory_sources WHERE id=?').get(original, original)
+  const registered = () => memory.prepare('SELECT 1 FROM owner_active_turns UNION ALL SELECT 1 FROM memory_sources WHERE id=?').get(original)
   assert.ok(await eventually(registered))
   process.kill(firstPid, 'SIGKILL')
   release()
@@ -1305,9 +1282,8 @@ test('a new memory database starts after existing DSH events and resumes from a 
     const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true })
     try { return work(db) } finally { db.close() }
   }
-  const cursor = () => read(db => Number(db.prepare('SELECT next_seq FROM memory_session_cursors WHERE session=?').get(session)?.next_seq))
-  const turnSaved = (seq: number) => read(db => Boolean(db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND seq=?').get(session, seq - 1)))
-  assert.ok(await eventually(() => turnSaved(cursor())))
+  const cursor = () => read(db => Number(db.prepare('SELECT next_seq FROM owner_intake_cursors WHERE session=?').get(session)?.next_seq))
+  assert.ok(await eventually(() => cursor() > 0 && read(db => Boolean(db.prepare('SELECT 1 FROM memory_sources WHERE id=?').get(first)))))
   const firstCursor = cursor()
   assert.ok(firstCursor > 0)
   await app.stopBackend()
@@ -1315,7 +1291,7 @@ test('a new memory database starts after existing DSH events and resumes from a 
   assert.ok(await eventually(() => app.memoryOwnerPid() !== null))
   assert.equal(cursor(), firstCursor)
   const second = await app.ask('owner 重连之后的第二轮真人原话')
-  assert.ok(await eventually(() => cursor() > firstCursor && turnSaved(cursor())))
+  assert.ok(await eventually(() => cursor() > firstCursor && read(db => Boolean(db.prepare('SELECT 1 FROM memory_sources WHERE id=?').get(second)))))
   const ids = read(db => db.prepare('SELECT id FROM memory_sources WHERE id IN (?,?,?)').all(original, first, second).map(row => row.id))
   assert.deepEqual(new Set(ids), new Set([first, second]))
 })
@@ -1521,7 +1497,7 @@ test('a generated task brief stays derived while the answer keeps its task scope
   const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   try {
-    assert.ok(await eventually(() => memory.prepare("SELECT 1 FROM owner_messages WHERE kind='derived' AND session=?").get(event.taskId)))
+    assert.ok(await eventually(() => memory.prepare("SELECT 1 FROM memory_sources WHERE author='agent' AND source_kind='task-brief' AND profile_eligible=0 AND session=? AND text=?").get(event.taskId, brief)))
     assert.equal(memory.prepare("SELECT 1 FROM memory_sources WHERE author='user' AND session=? AND text=?").get(event.taskId, brief), undefined)
     const source = await eventually(() => memory.prepare("SELECT id,conversation,context FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer)))
     assert.ok(source, 'The canonical answer identity survives automatic source compaction')
@@ -1751,90 +1727,43 @@ test('custom ask_user_question answer while memory owner stays unavailable past 
   } finally { history.close() }
 })
 
-test('pending sourceAlias replay caps in-flight concurrency below OWNER_RPC_MAX_ACTIVE and drains >64 queued aliases (P2-1)', { timeout: 30_000 }, async t => {
-  let dropReady = false
-  let inflight = 0
-  let maxInflight = 0
-  let succeeded = 0
-  const aliasIds = new Set<string>()
-  const capturedAliases = new Map<string, { session: string, wireText: string }>()
-  const heldReadyFrames: Array<{ child: ChildProcess, frame: unknown }> = []
+test('prompts completed during memory worker restart settle from persisted DSH logs without sourceAlias RPCs', { timeout: 30_000 }, async t => {
+  const sentMethods: string[] = []
   const emit = ChildProcess.prototype.emit
   t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
         const frame = objectOf(raw)
-        if (frame?.type === 'memory_host_request' && frame.method === 'sourceAlias' && typeof frame.requestId === 'string') {
-          aliasIds.add(frame.requestId)
-          const input = objectOf(frame.input)
-          if (typeof input?.sourceId === 'string' && typeof input.session === 'string' && typeof input.wireText === 'string') {
-            capturedAliases.set(input.sourceId, { session: input.session, wireText: input.wireText })
-          }
-          inflight++
-          maxInflight = Math.max(maxInflight, inflight)
+        if (frame?.type === 'memory_host_request' && typeof frame.method === 'string') {
+          sentMethods.push(frame.method)
         }
         return Reflect.apply(send, this, [raw, ...rest]) as boolean
       })
     }
-    if (event === 'message') {
-      const frame = objectOf(args[0])
-      if (dropReady && frame?.type === 'memory_owner_state' && frame.state === 'ready') {
-        heldReadyFrames.push({ child: this, frame: args[0] })
-        return true
-      }
-      if (frame?.type === 'memory_host_result' && typeof frame.requestId === 'string' && aliasIds.delete(frame.requestId)) {
-        inflight = Math.max(0, inflight - 1)
-        if (frame.ok === true) succeeded++
-      }
-    }
     return Reflect.apply(emit, this, [event, ...args]) as boolean
   })
   const app = await setup(t, () => null)
-
-  // Drop ready while worker restarts, queue 70 prompts (each enqueues a pending sourceAlias while not ready), then release ready.
-  dropReady = true
   const workerPid = app.memoryOwnerPid()
   assert.ok(typeof workerPid === 'number' && workerPid > 0)
   process.kill(workerPid, 'SIGKILL')
-  assert.ok(await eventually(() => heldReadyFrames.length > 0, { timeoutMs: 10_000 }))
 
-  const beforeSucceeded = succeeded
   const submittedIds: string[] = []
-  const submittedTexts: string[] = []
-  for (let i = 0; i < 70; i++) {
+  for (let i = 0; i < 12; i++) {
     const id = randomUUID()
-    const text = `批量别名队列项 ${i}`
     submittedIds.push(id)
-    submittedTexts.push(text)
-    await app.call<Promise<unknown>>('agent:prompt', text, [], id).catch(() => {})
+    await app.call<Promise<unknown>>('agent:prompt', `重启恢复批次消息 ${i}`, [], id)
   }
-  dropReady = false
-  for (const held of heldReadyFrames.splice(0)) {
-    Reflect.apply(emit, held.child, ['message', held.frame])
-  }
-  assert.ok(await eventually(() => succeeded - beforeSucceeded >= 70, { timeoutMs: 15_000 }),
-    `expected all 70 queued aliases to drain cleanly, drained=${succeeded - beforeSucceeded}`)
-  assert.ok(maxInflight <= 16, `pending alias replay must cap concurrency <= 16, saw ${maxInflight}`)
-  assert.equal(submittedIds.every(id => capturedAliases.has(id)), true, 'all 70 submitted aliases must have been sent over IPC')
+  assert.equal(sentMethods.includes('sourceAlias'), false, 'zero sourceAlias RPCs must be emitted in Phase 4A')
+  assert.ok(await eventually(() => app.memoryOwnerPid() !== null && app.memoryOwnerPid() !== workerPid, { timeoutMs: 10_000 }))
   const placeholders = submittedIds.map(() => '?').join(',')
   assert.ok(await eventually(() => {
     const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
     try {
-      const secretRow = memoryDb.prepare("SELECT value FROM memory_meta WHERE key = 'secret'").get() as { value: string } | undefined
-      if (!secretRow?.value) return false
-      const leftover = memoryDb.prepare(`SELECT COUNT(*) AS n FROM owner_aliases WHERE source IN (${placeholders})`).get(...submittedIds) as { n: number }
-      if (leftover.n !== 0) return false
-      const checkRow = memoryDb.prepare("SELECT COUNT(*) AS n FROM owner_messages WHERE session = ? AND ((kind = 'original' AND source = ?) OR (kind = 'ignored' AND hash = ?))")
-      for (const sourceId of submittedIds) {
-        const sent = capturedAliases.get(sourceId)!
-        const wireHash = createHmac('sha256', secretRow.value).update(JSON.stringify(sent.wireText)).digest('hex')
-        const match = checkRow.get(sent.session, sourceId, wireHash) as { n: number }
-        if (match.n !== 1) return false
-      }
-      return true
+      const count = memoryDb.prepare(`SELECT COUNT(*) AS n FROM memory_sources WHERE id IN (${placeholders})`).get(...submittedIds) as { n: number }
+      return count.n === submittedIds.length
     } finally { memoryDb.close() }
-  }, { timeoutMs: 10_000 }), 'every single one of the 70 submitted aliases must settle to exactly 1 terminal owner_messages row (original or ignored) with 0 leftover owner_aliases rows')
+  }, { timeoutMs: 10_000 }), 'all prompts completed during memory-worker restart must ingest once from persisted DSH logs')
 })
 
 test('custom ask_user_question answer recovers across unavailable(A)->recovering(B)->ready(B) within budget and preserves sourceId on post-commit disconnect (R2 P1-3, P2-1)', { timeout: 30_000 }, async t => {

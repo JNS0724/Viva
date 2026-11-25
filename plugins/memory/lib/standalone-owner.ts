@@ -26,6 +26,11 @@ function standaloneOwner(initial: OwnerOptions) {
           if (!compute) throw new Error('Memory model adapter is unavailable')
           return compute(input, signal)
         },
+        readSessionRange: (input, signal) => {
+          const readSessionRange = attached?.callbacks?.readSessionRange
+          if (!readSessionRange) return Promise.resolve({ status: 'unavailable' as const })
+          return readSessionRange(input, signal)
+        },
       },
       onEvent: event => { for (const listener of listeners) listener(event) },
     })

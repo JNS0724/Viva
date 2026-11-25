@@ -15,11 +15,15 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { createSteerChannel, REASONS } from './lib/channel.ts'
 import { createReportDesk, REPORT_SOURCE, reportMessageId, type ReportAgent, type ReportMessage } from './lib/reports.ts'
+import type { SteerMessageSource } from '../../src/shared/request-routing/provenance.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     /** A background task's result the app steered in (lib/reports.ts), named by its report. */
     'viva-report': { kind: 'viva-report', reportId: string, token: string } & ContextFormed
+    'viva-main-human-steer': Extract<SteerMessageSource, { kind: 'viva-main-human-steer' }>
+    'viva-task-human-steer': Extract<SteerMessageSource, { kind: 'viva-task-human-steer' }>
+    'viva-task-router-message': Extract<SteerMessageSource, { kind: 'viva-task-router-message' }>
   }
 }
 
@@ -36,11 +40,11 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     return
   }
   /** Only a running turn takes steering; an idle agent would start a turn of its own, outside the app's prompt. */
-  function steer(sessionId: string, text: string) {
+  function steer(sessionId: string, text: string, source?: SteerMessageSource) {
     const agent = ctx.agents.get(SessionId(sessionId))
     if (!agent) return REASONS.missing
     if (agent.status !== 'running') return REASONS.idle
-    agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+    agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: source ?? { kind: 'user' } }))
     return null
   }
   /** The main conversation's agent, as lib/reports.ts reads it. */
