@@ -1459,25 +1459,19 @@ test('schedule assertions find the matching result before a trailing runtime not
   assert.deepEqual(modelToolResults({ messages: [{ content: [{ type: 'tool_result', tool_use_id: 'unrelated', content: '甲项目定时汇总' }] }] }, 'schedule_list'), [])
 })
 
-test('a generated task brief stays derived while the answer keeps its task scope and history identity', { timeout: 30_000 }, async t => {
-  let answerRequest: string | undefined
-  let withheldReceipt = false
+test('a generated task brief stays derived while the native answer joins global user recall and history identity', { timeout: 30_000 }, async t => {
+  const hostMethods: string[] = []
   const emit = ChildProcess.prototype.emit
   t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
         const frame = objectOf(raw)
-        if (frame?.type === 'memory_host_request' && frame.method === 'acceptQuestionAnswer' && typeof frame.requestId === 'string') {
-          answerRequest = frame.requestId
+        if (frame?.type === 'memory_host_request' && typeof frame.method === 'string') {
+          hostMethods.push(frame.method)
         }
         return Reflect.apply(send, this, [raw, ...rest]) as boolean
       })
-    }
-    const frame = event === 'message' ? objectOf(args[0]) : null
-    if (frame?.type === 'memory_host_result' && frame.requestId === answerRequest && frame.ok === true) {
-      withheldReceipt = true
-      return true
     }
     return Reflect.apply(emit, this, [event, ...args]) as boolean
   })
@@ -1498,16 +1492,19 @@ test('a generated task brief stays derived while the answer keeps its task scope
   const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   try {
+    assert.equal(hostMethods.includes('acceptQuestionAnswer'), false, 'PR 4B must emit zero acceptQuestionAnswer host RPCs')
     assert.ok(await eventually(() => memory.prepare("SELECT 1 FROM memory_sources WHERE author='agent' AND source_kind='task-brief' AND profile_eligible=0 AND session=? AND text=?").get(event.taskId, brief)))
     assert.equal(memory.prepare("SELECT 1 FROM memory_sources WHERE author='user' AND session=? AND text=?").get(event.taskId, brief), undefined)
     const source = await eventually(() => memory.prepare("SELECT id,conversation,context,source_kind,profile_eligible FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer)))
-    assert.ok(source, 'The canonical answer identity survives automatic source compaction')
-    assert.ok(withheldReceipt, 'the task completed and the answer was stored without a host receipt')
+    assert.ok(source, 'The canonical answer identity must settle natively from the persisted DSH log')
+    assert.notEqual(source.conversation, event.taskId, 'fresh task conversation_id must be the Viva segmentId, distinct from DSH sessionId')
     assert.deepEqual(JSON.parse(String(source.context)), { kind: 'user' })
     assert.equal(source.source_kind, 'task-question-answer')
     assert.equal(source.profile_eligible, 1)
     assert.ok(await eventually(() => Number(memory.prepare('SELECT next_seq FROM owner_intake_cursors WHERE session=?').get(event.taskId)?.next_seq ?? 0) > 0),
       'task turn containing brief + answer + conclusion must settle its intake cursor cleanly')
+    assert.equal(Number(memory.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get(event.taskId)?.n ?? 0), 0,
+      'consumed scalar question receipt must be retired at turn settlement')
     assert.equal(history.prepare('SELECT text FROM messages WHERE conversation_id=? AND source_id=?').get(source.conversation, source.id)?.text, answer)
   } finally { memory.close(); history.close() }
 })
@@ -1771,121 +1768,55 @@ test('prompts completed during memory worker restart settle from persisted DSH l
   }, { timeoutMs: 10_000 }), 'all prompts completed during memory-worker restart must ingest once from persisted DSH logs')
 })
 
-test('custom ask_user_question answer recovers across unavailable(A)->recovering(B)->ready(B) within budget and preserves sourceId on post-commit disconnect (R2 P1-3, P2-1)', { timeout: 30_000 }, async t => {
-  let mode: 'recover-within-budget' | 'disconnect-after-commit' = 'recover-within-budget'
-  let answerReqId: string | undefined
-  let injectedDisconnect = false
-  const heldRecoveryFrames: Array<{ child: ChildProcess, frame: unknown }> = []
-  let holdRecovery = false
-  const emit = ChildProcess.prototype.emit
-  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    if (event === 'spawn' && this.send) {
-      const send = this.send
-      t.mock.method(this, 'send', function(this: ChildProcess, raw: unknown, ...rest: unknown[]) {
-        const frame = objectOf(raw)
-        if (frame?.type === 'memory_host_request' && frame.method === 'acceptQuestionAnswer' && typeof frame.requestId === 'string') {
-          answerReqId = frame.requestId
-        }
-        return Reflect.apply(send, this, [raw, ...rest]) as boolean
-      })
-    }
-    if (event === 'message') {
-      const frame = objectOf(args[0])
-      if (mode === 'recover-within-budget' && holdRecovery && frame?.type === 'memory_owner_state' && (frame.state === 'recovering' || frame.state === 'ready')) {
-        heldRecoveryFrames.push({ child: this, frame: args[0] })
-        return true
-      }
-      if (mode === 'disconnect-after-commit' && frame?.type === 'memory_host_result' && frame.requestId === answerReqId && frame.ok === true && !injectedDisconnect) {
-        injectedDisconnect = true
-        // Worker already committed acceptQuestionAnswer; drop ACK and inject unavailable instead!
-        Reflect.apply(emit, this, ['message', {
-          type: 'memory_owner_state',
-          protocol: frame.protocol,
-          epoch: frame.epoch,
-          state: 'unavailable',
-          revision: 1,
-          coreEpoch: 1,
-          pid: 0,
-        }])
-        return true
-      }
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
-
-  const brief1 = '预算内换代恢复写入回答'
-  const brief2 = '提交后断连保留确定性来源编号'
-  const brief3 = '敏感问题被worker明确拒绝不落空链接'
+test('native ask_user_question omits source_id for secret cards and known-offline worker, then links cleanly after recovery', { timeout: 30_000 }, async t => {
+  const brief1 = '敏感问题前置过滤不落空链接'
+  const brief2 = '恢复后原生回答写入并对齐历史编号'
   const app = await setup(t, request => {
     if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
     const q = questionOf(request.messages)
     if (q === brief1) return { tool: { name: 'ask_user_question', input: { questions: [
-      { id: 'rec-city', question: '恢复测试城市？', header: '城市', options: [{ label: '上海', description: '使用上海' }], multiSelect: false },
+      { id: 'sec-key', question: '请确认密钥 sk-1234567890abcdefghijklmnop 的用途？', header: '敏感', options: [{ label: '测试', description: '测试' }], multiSelect: false },
     ] } } }
     if (q === brief2) return { tool: { name: 'ask_user_question', input: { questions: [
-      { id: 'disc-city', question: '断连测试城市？', header: '城市', options: [{ label: '北京', description: '使用北京' }], multiSelect: false },
-    ] } } }
-    if (q === brief3) return { tool: { name: 'ask_user_question', input: { questions: [
-      { id: 'sec-key', question: '请确认密钥 sk-1234567890abcdefghijklmnop 的用途？', header: '敏感', options: [{ label: '测试', description: '测试' }], multiSelect: false },
+      { id: 'rec-city', question: '恢复测试城市？', header: '城市', options: [{ label: '上海', description: '使用上海' }], multiSelect: false },
     ] } } }
     return null
   })
 
-  // Case 1 (R2 P1-3): kill worker -> unavailable(A) -> hold recovering(B)+ready(B) briefly -> submit answer -> release recovering(B) then ready(B) within 500ms budget!
+  // Case 1: Secret-bearing question card is rejected pre-receipt -> zero memory source & null history source_id!
   await app.ask(`后台做：${brief1}`)
   const ev1 = await eventually(() => app.events.find(item => item.type === 'task_question'))
   assert.ok(ev1 && 'questionId' in ev1 && typeof ev1.questionId === 'string' && 'taskId' in ev1 && typeof ev1.taskId === 'string')
-  holdRecovery = true
-  const pid1 = app.memoryOwnerPid()
-  assert.ok(typeof pid1 === 'number' && pid1 > 0)
-  process.kill(pid1, 'SIGKILL')
-  assert.ok(await eventually(() => heldRecoveryFrames.some(item => objectOf(item.frame)?.state === 'ready'), { timeoutMs: 10_000 }))
-
-  const answer1 = '预算内恢复在南京进行'
-  const answerPromise1 = app.call<Promise<boolean>>('agent:answer', ev1.questionId, [{ id: 'rec-city', selected: [], custom: answer1 }], randomUUID())
-  setTimeout(() => {
-    holdRecovery = false
-    for (const held of heldRecoveryFrames.splice(0)) Reflect.apply(emit, held.child, ['message', held.frame])
-  }, 40)
-  assert.equal(await answerPromise1, true)
+  const answer1 = '这是敏感问题的回答文本'
+  assert.equal(await app.call('agent:answer', ev1.questionId, [{ id: 'sec-key', selected: [], custom: answer1 }], randomUUID()), true)
   assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev1.taskId && task.endedAt)))
 
-  // Case 3 (R3 P2-1): worker explicitly rejects secret-bearing question -> must NOT publish unbacked source_id in history!
-  const evOffset3 = app.events.length
-  await app.ask(`后台做：${brief3}`)
-  const ev3 = await eventually(() => app.events.slice(evOffset3).find(item => item.type === 'task_question'))
-  assert.ok(ev3 && 'questionId' in ev3 && typeof ev3.questionId === 'string' && 'taskId' in ev3 && typeof ev3.taskId === 'string')
-  const answer3 = '这是敏感问题的回答文本'
-  assert.equal(await app.call('agent:answer', ev3.questionId, [{ id: 'sec-key', selected: [], custom: answer3 }], randomUUID()), true)
-  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev3.taskId && task.endedAt)))
+  // Case 2: Kill worker, wait for recovery, then submit a valid custom answer -> native fold + exact history join!
+  const oldPid = app.memoryOwnerPid()
+  assert.ok(typeof oldPid === 'number' && oldPid > 0)
+  process.kill(oldPid, 'SIGKILL')
+  assert.ok(await eventually(() => app.memoryOwnerPid() !== null && app.memoryOwnerPid() !== oldPid, { timeoutMs: 10_000 }))
 
-  // Case 2 (R2 P2-1): commit succeeds in worker, then unavailable arrives before ACK -> sourceId must still match memory_sources.id!
-  mode = 'disconnect-after-commit'
-  const evOffset = app.events.length
+  const evOffset2 = app.events.length
   await app.ask(`后台做：${brief2}`)
-  const ev2 = await eventually(() => app.events.slice(evOffset).find(item => item.type === 'task_question'))
+  const ev2 = await eventually(() => app.events.slice(evOffset2).find(item => item.type === 'task_question'))
   assert.ok(ev2 && 'questionId' in ev2 && typeof ev2.questionId === 'string' && 'taskId' in ev2 && typeof ev2.taskId === 'string')
-  const answer2 = '提交后断连在苏州进行'
-  assert.equal(await app.call('agent:answer', ev2.questionId, [{ id: 'disc-city', selected: [], custom: answer2 }], randomUUID()), true)
+  const answer2 = '恢复后在南京进行'
+  assert.equal(await app.call('agent:answer', ev2.questionId, [{ id: 'rec-city', selected: [], custom: answer2 }], randomUUID()), true)
   assert.ok(await eventually(() => app.tasks().some(task => task.task.id === ev2.taskId && task.endedAt)))
-  assert.equal(injectedDisconnect, true, 'must have injected post-commit unavailable disconnect')
 
   const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   try {
-    const src1 = await eventually(() => memory.prepare("SELECT id, conversation FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer1)))
-    assert.ok(src1, 'answer submitted during unavailable(A)->recovering(B)->ready(B) within budget must persist in memory_sources')
-    assert.equal(history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer1)?.source_id, src1.id)
-
-    assert.equal(memory.prepare("SELECT id FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer3)), undefined,
-      'secret-bearing question answer rejected by worker must not exist in memory_sources')
-    const hist3 = history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer3) as { source_id: string | null } | undefined
-    assert.ok(hist3, 'rejected answer text must still be recorded in conversation history')
-    assert.equal(hist3.source_id, null, 'explicit worker rejection must NOT publish an unbacked source_id in history')
+    assert.equal(memory.prepare("SELECT id FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer1)), undefined,
+      'secret-bearing question answer must not exist in memory_sources')
+    const hist1 = history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer1) as { source_id: string | null } | undefined
+    assert.ok(hist1, 'rejected answer text must still be recorded in conversation history')
+    assert.equal(hist1.source_id, null, 'locally rejected secret card must NOT publish an unbacked source_id in history')
 
     const src2 = await eventually(() => memory.prepare("SELECT id, conversation FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer2)))
-    assert.ok(src2, 'post-commit disconnect answer must exist in memory_sources')
-    assert.equal(history.prepare('SELECT source_id FROM messages WHERE text = ?').get(answer2)?.source_id, src2.id,
-      'history message must keep deterministic source_id when disconnect occurs after send/commit')
+    assert.ok(src2, 'recovered worker must natively settle the human custom answer')
+    assert.equal(history.prepare('SELECT source_id FROM messages WHERE conversation_id = ? AND text = ?').get(src2.conversation, answer2)?.source_id, src2.id,
+      'history message must match the deterministic native source_id on the Viva segment')
   } finally { memory.close(); history.close() }
 })

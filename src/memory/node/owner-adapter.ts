@@ -8,7 +8,15 @@ export type OwnerCallOptions = { signal?: AbortSignal, budgetMs?: number, deadli
 export type AutomaticRecallResponse = { epoch: string, revision: number, stale: boolean, result: AutomaticRecallResult }
 export type OwnerAdapterApi = Pick<
   Owner,
-  'intakeCursor' | 'advanceIntakeCursor' | 'beginTurn' | 'stageOpenTurnSources' | 'bindIntakeSession' | 'rememberStandaloneFile'
+  | 'intakeCursor'
+  | 'advanceIntakeCursor'
+  | 'beginTurn'
+  | 'recordQuestionReceipt'
+  | 'retireSessionQuestionReceipts'
+  | 'pruneExpiredQuestionReceipts'
+  | 'stageOpenTurnSources'
+  | 'bindIntakeSession'
+  | 'rememberStandaloneFile'
 > & {
   forgetStandaloneFile(session: string, id: string, operationId: string): ReturnType<Owner['forgetStandaloneFile']>
   settleTurn(input: Parameters<Owner['settleTurn']>[0]): ReturnType<Owner['settleTurn']>

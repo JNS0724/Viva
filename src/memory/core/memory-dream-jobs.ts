@@ -398,9 +398,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   ): boolean => {
     if (!item.question) return true
     if (watermark === null && delGen === 0) return true
-    // Once a profile deletion has occurred, require BOTH a current deletion generation AND questionAt > watermark.
+    // Once a profile deletion has occurred, require BOTH an exact current deletion generation AND questionAt > watermark.
     if (delGen > 0) {
-      if (typeof item.questionProfileGen !== 'number' || item.questionProfileGen < delGen) return false
+      if (typeof item.questionProfileGen !== 'number' || item.questionProfileGen !== delGen) return false
     }
     return watermark === null || (typeof item.questionAt === 'number' && item.questionAt > watermark)
   }

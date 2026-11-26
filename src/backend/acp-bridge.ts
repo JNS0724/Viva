@@ -196,7 +196,8 @@ export function createAcpBridge({
     send: toPlugins,
     onReady: readyMemory,
     onChanged: state => {
-      if (state.profileDeletionGen !== undefined) currentProfileDeletionGen = state.profileDeletionGen
+      if (state.state === 'unavailable') currentProfileDeletionGen = undefined
+      else if (state.profileDeletionGen !== undefined) currentProfileDeletionGen = state.profileDeletionGen
       currentMemoryOwnerPid = state.state === 'unavailable' ? null : (state.pid ?? currentMemoryOwnerPid)
       memoryStateChanged?.(state)
     },
@@ -205,7 +206,6 @@ export function createAcpBridge({
   })
   const memory = {
     call: ownerChannel.call,
-    callIntake: ownerChannel.callIntake,
     state: ownerChannel.state,
     readBatch: ownerChannel.readBatch,
     ready: ownerChannel.ready,
@@ -774,7 +774,12 @@ export function createAcpBridge({
   }
 
   /** @returns false when the question is no longer waiting; throws when the answer does not fit it */
-  const answerQuestion = (questionId: string, answers: unknown, operation?: string, options?: { recordMemory?: boolean }): Promise<boolean> =>
+  const answerQuestion = (
+    questionId: string,
+    answers: unknown,
+    operation?: string,
+    options?: { recordMemory?: boolean, onSourceIds?: (sourceIds: Readonly<Record<string, string>>) => void },
+  ): Promise<boolean> =>
     questions.answer(questionId, answers, operation, options)
   /** What a background task waits on the user for, still: its approvals and its questions (a reloaded window shows them). */
   const taskWaits = taskSessions.waits

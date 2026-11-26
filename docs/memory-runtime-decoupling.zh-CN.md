@@ -543,53 +543,62 @@ export type AutomaticRecallResult =
    - 阶段四新摄取的 Viva 后台任务四类可见来源（`task-human-steer`、`task-question-answer`、`task-brief`、`task-assistant`）均落在全局 `userWorkspace`（`scope: { kind: 'user' }, context: { kind: 'user' }, project: null`），以 `source_kind` 与 `profile_eligible` 区分任务归属与画像准入，天然进入主对话全局召回与 Dream；
    - `isPureUserSource(item)` 要求 `item.profileEligible === true && item.scope.kind === 'user' && (item.project ?? null) === null && (item.author === 'user' || item.author === 'answer')`，确保只有合法的全局真人原话与经认证真人开放题回答能进入常驻画像。
 
-### 5.5 `ask_user_question` 开放题原生消费（单张轻量表 + 公开 DSH API，不劫持 `acp-bridge`）（PR 4B）
+### 5.5 `ask_user_question` 开放题原生消费（极简标量回执 + 阻塞/PTC 原生折叠，不劫持 `acp-bridge`）（PR 4B）
 
-彻底移除 `acceptQuestionAnswer` 异步旁路，完全基于已锁定 `@deepseek-ai/dsh-*` 的公开受支持 API 实现阻塞、限时续答与 PTC 消费，并用 **1 张轻量表**同时解决人/机归属区分与 `dsh-spill` 截断问题：
+彻底移除 `acceptQuestionAnswer` 异步旁路，基于 Viva 实际启用的默认阻塞模式（`mode: 'legacy'`）与 PTC，用 **1 张纯标量回执表 `owner_question_receipts`**（绝不存卡片正文、回答正文或原始 `callId`）实现零弹卡前磁盘 I/O、零 UI ACK 等待的开放题原生消费（Viva 当前未启用 `timed` / `continued` 续答模式，折叠器自然忽略 `isPendingResult`、`TOOL_OUTCOME_UNKNOWN`、`isError`、`dsh-spill` 截断预览与 `user-question-reply`）：
 
-1. **单张轻量表 `owner_question_answers`（带 TTL 清理与落库前隐私过滤）**：
-   - 在 SQLite 新增唯一一张开放题辅助表 **`owner_question_answers (session, occurrence_key, call_seq, call_id_hash, delivery_kind, message_id, cards_json, answers_json, answer_origin, conversation_id, question_at, question_profile_gen, created_at, PRIMARY KEY (session, occurrence_key))`**（消费后立即删除，未消费的孤立/过期行由定期 TTL 任务如 7 天清理，不再引入 `owner_pending_questions`、`owner_session_incarnations`、`owner_terminal_question_messages` 三张重表或 `inbox.ts` 内部折叠清理）；
-   - 卡片投影为严格白名单 `{ id, question, header, multiSelect, options: [{ label, description? }] }`；SQLite `memory.db` 中仅存 `call_id_hash = sha256(callId)`（不存原始提供方 `callId`），写入前对 `cards_json` 与 `answers_json` 中的**全部持久化字符串字段（包括提供方传入的 `card.id`、`question`、`header`、每个选项的 `label` / `description` 与回答文本）**执行 `looksSecret` 过滤（任一命中即拒绝落库）。
-2. **基于公开 DSH API 的实时等待、超时续答与 PTC 流程（不劫持主循环与 `acp-bridge`，且记忆拒收/离线不阻塞有效作答）**：
-   - **执行作用域 `callSeq` 与落盘核验**：在 [plugins/questions/index.ts](../plugins/questions/index.ts) 中通过 `@deepseek-ai/dsh-tools` 公开的 `ctx.on('tools/execute', ...)` 解析本次 `ask_user_question`（含 PTC `tool/ptc-dispatch-start`）的持久化 `callSeq` 与**原始调用事件时间戳 `event.time`**，并在发布给前端前经 `flush() + open(id, 'read')` 确认该调用事件已真落盘（防无写句柄 `flush() === true` 陷阱），以 `AsyncLocalStorage` 传递 `(callSeq, callId, eventTime)` 随提问请求发往前端；
-   - **实时等待路径（`legacy` `ask()`、未超时 `askTimed()`、PTC 立即返回）明确区分三类结果**：受信任交互前端收到提交后、在 resolve `channel.ask()` 之前，按以下分支处理（**绝不因记忆拒收、worker 离线或回执超时阻塞或失败正常的用户作答**）：
-     - ① **合格非敏感回答（正常确认）**：发起有界超时（如 `500ms`）的 `owner_question_answers` 持久化写入（`delivery_kind = 'tool-result'`，`occurrence_key = \`call:${callSeq}:${callIdHash}\``），**严格保留真实发起归属 `answer_origin: 'human' | 'agent'`**（UI 卡片提交写 `'human'`，主模型 `answer_background_task` 代答写 `'agent'`），并同步记录原始调用事件时间 `question_at` 与提问时刻 `question_profile_gen`，收到确认后正常 resolve `channel.ask()`；
-     - ② **命中 `looksSecret` 隐私拦截，或派发前已确认 `memory-worker` 离线**：不派发也不写入 SQLite（保证零敏感落库与零来源入库），**立即正常 resolve `channel.ask()` 完成经校验的 DSH 作答**；
-     - ③ **已派发的合格写入在有界时限内 ACK 超时**：超时视为**未知写入结果**——到时立即正常 resolve `channel.ask()` 不阻塞用户回合，最终是否入库以 SQLite 中实际是否已持久提交该 `owner_question_answers` 行为准（若已提交但仅 ACK 延迟，折叠时仍正常按已提交回执接纳；若未提交则自然 fail-closed）；
-   - **超时转续答路径（`state === 'continued'`）**：
-     - [plugins/questions/lib/channel.ts](../plugins/questions/lib/channel.ts) 观察后续已提交的 `session/event` / `userQuestions` 投影跃迁——转为 `continued` 时保持 UI 卡片打开，仅真正取消/报错时发 `question_closed`；
-     - 无论活跃 agent 还是重启后空闲会话，统一通过公开 API **`ctx.sessionProjections.snapshot(session, ['userQuestions'])`** 枚举 `continued` 提问（不调用私有 `ctx.userQuestions.continued(agent)`），[acp-bridge.ts](../src/backend/acp-bridge.ts) 与 `question-channel.ts` 为 `continued: true` 卡片提供独立于活跃 ACP 回合的准入路径；**重开卡片绝不使用当前时间 `Date.now()` 或当前最新 `profileDeletionGen` 覆盖提问元数据**——`question_at` 始终取自该 `callSeq` 持久化调用起始事件的 `event.time`，`question_profile_gen` 仅在同生命周期内存中保留有原采样值时沿用，**跨重启丢失时一律置 `null`**（从而触发下方真值表第 2 行 fail-closed，绝不把删画像前的旧问题误标为删后合格）；
-     - **简单稳健的复用 `callId` 防护**：当同一会话出现复用相同 `callId` 的新调用 B（`callSeqB > callSeqA`）时，立即发 `question_closed` 退场旧卡片 A；在调用 `ctx.userQuestions.answer(agent, callId, answer)` 之前先核对当前活跃 `callId` 的 `callSeq === expectedCallSeq`（过期点击直接拒绝）；**绝不调用 `agent.cancel({ kind: 'hook' })` 中止主循环、不手工重排 `next-step` 队列，也不改造 `acp-bridge.ts` 跨两回合接管逻辑 `prompt()` Promise**（极端竞态下记忆折叠端找不到有效匹配即 fail-closed 丢弃该条记忆）；
-     - **真正空闲态 `message.id` 捕获**：因 `ctx.userQuestions.answer()` 返回前会同步入队并在空闲态立即被 `preStep()` 认领，在调用 `ctx.userQuestions.answer(...)` **之前**注册作用域限定的 `agent/inbox/inserted` 监听器同步捕获精确 `message.id`（`finally` 中卸载）；仅当 `answer() === true` 且捕获到 `message.id` 后，将回答写入 `owner_question_answers`（`delivery_kind = 'user-message'`，`occurrence_key = \`msg:${messageId}\``，保留真实 `answer_origin: 'human' | 'agent'`）。
-3. **确定性事件折叠、防 `dsh-spill` 截断与统一 fail-closed 归属边界**：
-   - 在会话日志折叠 `tool/result`、`tool/ptc-dispatch`（`name === 'ask_user_question'`）与 `user/message`（`source.kind === 'user-question-reply'`，消息 ID 在顶层 **`event.data.id`**）时：
-     - 忽略 `isPendingResult`、`TOOL_OUTCOME_UNKNOWN` 及报错结果（避免将未结算或失败调用写入记忆）；
-     - 凭 `(session, call_seq, call_id_hash)`（工具结果）或 `(session, event.data.id)`（续答 `user/message`）查询 `owner_question_answers`；
-     - **防 `dsh-spill-policy` 截断与统一 fail-closed**：因已锁定 `SpillStore` 仅提供只写 `saveText`，折叠器直接读取 `owner_question_answers` 中经隐私过滤的结构化 `answers_json`（不从截断预览猜测原文，也不调用不存在的 `SpillStore` 读接口）；若查无匹配行或 `answer_origin !== 'human'`（包括 Viva `answer_background_task` 的 `'agent'` 代答与独立 DSH 下未接入受信任交互回执的 SDK JSON-RPC 程序化回答），一律 **fail-closed 跳过入库**（绝不升格为 `author: 'answer'` 或进入 L2）；成功结算后在同一事务内删除已消费的 `owner_question_answers` 行；
-     - 共享纯函数 **`questionAnswerSourceId(sessionId, callSeq, callId, questionId)`**（`src/shared/`）将 `callSeq` 纳入确定性 UUID，既避免同会话复用 `callId`/`questionId` 碰撞，又完整保留 [memory-ipc.ts](../src/backend/memory-ipc.ts) UI 时间线链接与 `memory-handoff.test.ts` 跨库连接。
-4. **两层独立决策与统一删除水位真值表**：
-   - **自定义回答接纳**：要求 `owner_question_answers` 匹配且 `answer_origin === 'human'` + `!looksSecret(customText)`；
-   - **向 L2 画像暴露问题正文的统一真值表**（对齐 [memory-dream-jobs.ts](../src/memory/core/memory-dream-jobs.ts)）：
+1. **内存级调用身份绑定（零弹卡前磁盘 `flush`、零已弃用日志扫描）**：
+   - 在 [plugins/questions/index.ts](../plugins/questions/index.ts) 中仅订阅 `ctx.on('session/event', ...)` 观察两类 `ask_user_question` 起始事件，记入按 `sessionId` 分组的极小内存 FIFO Map：
+     - 原生调用：`tool/call`（`name === 'ask_user_question'`）记录 `{ callSeq, callId, turn, kind: 'native', openingProfileGen }`；
+     - PTC 调用：`tool/ptc-dispatch-start`（`name === 'ask_user_question'`）记录 `{ callSeq, callId: subCallId, turn, kind: 'ptc', parentCallId, rootCallId, openingProfileGen }`；
+   - 其中 `openingProfileGen` 在观测起始事件当下由同进程 `viva-memory`（`host: true`）缓存的 `profileDeletionGen` 同步采样（与 `questionAt = event.time` 同源；未就绪时为 `null`，删画像后自然 fail-closed）；
+   - 当对应 `tool/result` / `tool/ptc-dispatch`（含 `isError: true` 或 `prepare()` 拒绝）到达或 `step/end` / `turn/end` / 插件卸载时清理未认领条目，防止被拒调用污染后续步骤 FIFO；
+   - 在 `ctx.on('tools/execute', ...)`（`exec.name === 'ask_user_question'`）中认领该起始记录，通过 `AsyncLocalStorage` 传给 `user-questions/request`（`channel.ask`）绑定到唯一 pending 卡片 ID，并在显示截断（8 选项 / 200 字符标题）之前用共享纯 Node 模块 [src/memory/node/question-answer-memory.ts](../src/memory/node/question-answer-memory.ts) 计算 `memoryEligible = areRawCardsMemoryEligible(rawCards)`，随既有 `question` IPC 消息一并向宿主透传 `{ callId, callSeq, memoryEligible }`（缺失或歧义时卡片照常问答，记忆自动 fail-closed 跳过）。
+2. **宿主统一资格决策、前置隐私过滤与零等待提交（[question-channel.ts](../src/backend/question-channel.ts)、[compose.ts](../src/backend/compose.ts)）**：
+   - `question-channel.ts` 在界面展示时保持现有截断规则不变，同时在内存 `Pending` 上保留原始 `header` 字符串（`rawHeaders`），确保宿主与 DSH 对超 200 字符原始标题做出完全一致的判定；
+   - 共享模块 [src/memory/node/question-answer-memory.ts](../src/memory/node/question-answer-memory.ts)（位于 `src/memory/node/`，自动随独立记忆插件打包，同时避免在渲染器共享文件引入 `node:crypto`）提供统一过滤函数 `eligibleQuestionAnswers(cards, answers)`：
+     - 校验 1:1 唯一卡片/回答对应，剔除含 SQLite 不保真字符（NUL `\u0000` 或孤立 UTF-16 代理项）的卡片或回答（UI 仍正常向 DSH 交付）；
+     - 任一原始卡片字段（`card.id`、`question`、`header`、全部选项含第 9+ 项的 `label` / `description`）命中 `looksSecret` 或非法字符时整批返回空；
+     - 对每张带非空 `custom.trim()` 的卡片，除单字段 `looksSecret` 外，用**线性 O(n) 逆向字符扫描**去除 `question` / `header` 末尾空白与问句标点后，联合检测 `looksSecret(\`${stem}: ${custom}\`)`（拦截 `"What is your OTP?"` / `"请输入验证码："` / `"Password?"` + 凭据值等拆分凭据）；仅保留合格卡片按 `id` 规范排序，零敏感词摘要入库，同批安全兄弟卡片仍正常存活；
+   - 校验人类 UI 提交（`recordMemory !== false`）时，立即在提交当下同步捕获 `answeredAt = Date.now()` 与提交时刻 `answerProfileGen`，由宿主做**单一资格决策**：当 `entry.memoryEligible === true`、具备有效 `(callId, callSeq, conversationId)`（主对话取 `entry.context.conversationId`，后台任务取 Viva `segmentId`）、`bridge.memory.ready()` 为真且 `eligible.length > 0` 时，**同时**下发 `provenance` 与确定性 `sourceIds`（由 `questionAnswerSourceId(sessionId, callSeq, callId, questionId)` 零 RPC 算出）；否则**两者同时抑制**（保持隐私拒收与已知离线时历史表 `source_id` 为 `null`）。`answer_background_task`（`recordMemory: false`）不下发 `provenance` 与 `sourceIds`；`agent:answer` IPC 保持 `Promise<boolean>` 返回契约不变，内部将 `{ accepted, sourceIds }` 直接交给 `taskWords.holdQuestion` 回调，彻底删除 `taskAnswerSources` 与 500ms 等待。
+3. **单张纯标量回执表 `owner_question_receipts`、同会话串行有序落盘与显式持久性权衡**：
+   - 在 `memory.db` 中以 **`owner_question_receipts (session, turn, call_seq, call_id_hash, conversation_id, answered_at, question_profile_gen, answer_profile_gen, answer_batch_digest, created_at, PRIMARY KEY (session, call_seq, call_id_hash))`** 替换旧 `owner_answer_sources`（保留 `owner_active_turns` 供 `foregroundTurn`、`canCommit` 与 `memory_remember` 使用）：
+     - `call_id_hash = sha256(callId)`，不存原始 `callId`；
+     - `answer_batch_digest = sha256(JSON.stringify(eligible.map(({ id, custom }) => ({ id, custom }))))`，只对通过前置隐私过滤的合格 `{ id, custom }` 投影计算，既不保存被拒敏感词的可爆破摘要，又能拒绝被 `tools/post-execute` 篡改合格自定义文本的结果；
+   - `plugins/questions/lib/channel.ts` 在 `entry.resolve(answer)` 之前以 `try/catch` + `finally`（绝不因监听器异常卡死回答）同步发出本地 Cordis 事件；`plugins/memory/lib/adapter.ts`（仅 `config.host === true`）立即将 `recordQuestionReceipt` 排入该会话现有的 `intake` 串行队列（附加 `.catch(report)` 防未处理拒绝）；
+   - **严格有序性保证（零竞态、零 UI 阻塞）**：[ingestion.ts](../plugins/memory/lib/ingestion.ts) 中所有活跃扫描入口（`synchronize`、`stageOpenTurn` 及重试）均在**入队当下**锁定 `targetEndSeq = Number(session.seq)` 传入 `scanLive`（使更早入队的扫描绝不越界吞掉后续回执之后的 `turn/end`）；`scanCold` 在函数入口（`enqueue` 之前）捕获单调 `liveEpoch` 并在队列启动、`intakeCursor` 后、`readAllPersistedFrom` 后与所有 CAS 重试中复核（即使冷读期间会话打开又关闭也会丢弃过时冷读）；
+   - **显式持久性权衡**：为保持 UI 提交零 worker ACK 等待，若 `memory-worker` 在提交后、回执落盘前意外崩溃或离线，冷回放见不到回执将 fail-closed 跳过该条记忆（普通问答不受影响，历史行上的确定性 `source_id` 仅作无害关联键）；
+   - **安全退场**：回执在 `stageOpenTurnSources`（回合中 `memory_remember`）期间保持不删；在任意终态 `settleTurn`（`completed`、`aborted`、`interrupted`、`error`）同事务内按 `WHERE session = ? AND (turn <= ? OR call_seq < ?)` 清理（覆盖 PTC 尾部缓冲丢失被 `repair.ts` 在更小 seq 闭合的场景）；冷补扫仅在 `persistence.open('read')` 确认抛出 `SessionPersistenceNotFoundError` 时按 `session` 清理（瞬时 I/O 报错保留重试）；超龄兜底 TTL（30 天）仅在初始冷补扫完成后执行，覆盖长期废弃未闭合会话。
+4. **原生与 PTC 确定性折叠、同轮 `eventSeq` 依赖与两层删除水位校验**：
+   - [ingestion.ts](../plugins/memory/lib/ingestion.ts) 共享折叠逻辑同时服务 `stageOpenTurn`、`settleTurn` 与冷补扫：
+     - 原生匹配仅接受 `surfaceOp === 'append'`（排除 compaction 替换）、`isError !== true`、`error === undefined`（排除 `repair.ts` 合成的 `TOOL_OUTCOME_UNKNOWN`）且 `sourceEventSeqs` 唯一指向对应 `tool/call` 的 `tool/result`；
+     - PTC 匹配仅接受 `name === 'ask_user_question'`、`isError !== true`、`error === undefined` 且唯一匹配 `(subCallId, parentCallId, rootCallId)` 的 `tool/ptc-dispatch`（注：PTC 程序在异步日志追加完成前立即嵌套调用 `memory_remember` 时可能合法缺少证明，fail-closed 等待结算）；
+     - 严格解析完整 legacy `{ answers: [...] }` JSON（天然跳过 `dsh-spill` 截断预览、`pending`、纯选项与 `user-question-reply`），复用 `eligibleQuestionAnswers` 与 `canonicalEligibleAnswersDigest` 生成按 `callSeq` 升序排列的候选批次，同批兄弟卡片共享稳定 `requestId = \`q:${callSeq}:${callIdHash.slice(0, 16)}\``；
+   - [owner.ts](../src/memory/node/owner.ts) 在 `stageOpenTurnSources` 与 `settleTurn` 事务内直接按 `(session, turn, call_seq, call_id_hash)` 校验 `owner_question_receipts` 及 `answer_batch_digest`（零额外读 RPC），即使回合内 `sources` 为空（如后台任务仅含 `viva-task-brief` + 开放题回答）也能正常进入接纳：
+     - 两条路径均向 `runtime.accept(...)` 传入完整类型化 `AnswerSource`（含 `custom: true`、`question`、`requestId`、`questionId`、`questionAt`、`questionProfileGen`），并在**第 5 参数 `options`** 传入 `{ at: receipt.answered_at, timezone }`（绝不放在 `origin`）；
+     - **防时钟回拨的回答提交代数守卫**：首次入库时若 `currentDelGen > 0` 且 `receipt.answer_profile_gen === null || receipt.answer_profile_gen !== currentDelGen`，以 `profileEligible: false` 入库（阻止时钟回拨令删画像前的回答复活进 L2）；
+     - **同轮撤销依赖按持久化 `eventSeq` 排序**：`settleTurn` → `recordNoteRangeInTx` → `addRange` 在内存中传递各来源的持久化 `eventSeq`（人类消息取 `user/message.seq`，回答取起始 `callSeq`），同轮前置依赖按 `sourceEventSeq < answerCallSeq` 判定而非墙钟时间（墙钟 `questionAt` 仅用于删除水位校验），避免时钟回拨漏记同轮依赖；
+   - **向 L2 画像暴露问题正文的统一真值表**（[memory-dream-jobs.ts](../src/memory/core/memory-dream-jobs.ts) 收紧为严格 `item.questionProfileGen !== delGen`）：
 
    | 条件 | 是否允许向 L2 画像暴露 `question` 正文 | 说明 |
    |---|---|---|
    | 尚未发生过画像删除（`profile_deleted_at === null && profile_deletion_generation === 0`） | ✅ **允许** | 首次删画像前正常允许 |
-   | 已发生过画像删除（`profile_deletion_generation > 0`），且 `questionProfileGen` 缺失/`null` | ❌ **拒绝**（`questionUnavailable: true`） | 缺失提问时刻代数时 fail-closed |
+   | 已发生过画像删除（`profile_deletion_generation > 0`），且 `questionProfileGen` 缺失/`null` | ❌ **拒绝**（`questionUnavailable: true`） | 缺失起始事件采样代数时 fail-closed |
    | 已发生过画像删除，且 `questionProfileGen !== profile_deletion_generation`（无论 `<` 还是 `>`） | ❌ **拒绝**（`questionUnavailable: true`） | 双向失配均 fail-closed |
    | 已发生过画像删除，`questionProfileGen === profile_deletion_generation`，且 `profile_deleted_at === null \|\| questionAt > profile_deleted_at` | ✅ **允许** | 证明提问发生在最近一次删除之后 |
-   | 其余情况（如 `questionAt <= profile_deleted_at`） | ❌ **拒绝**（`questionUnavailable: true`） | 晚到 `custom` 回答本身可按删除后时间戳接纳，删除前的问题正文扣留不暴露给 L2 |
+   | 其余情况（如 `questionAt <= profile_deleted_at`） | ❌ **拒绝**（`questionUnavailable: true`） | 删画像后提交的合法 `custom` 回答可接纳，删除前的问题正文扣留不暴露给 L2 |
 
 ### 5.6 回合中 `memory_remember` 暂存对齐与异步旁路清理（PR 4A / PR 4B）
 
 - **移除清单**：
   - PR 4A 删除 [compose.ts](../src/backend/compose.ts) 与 [acp-bridge.ts](../src/backend/acp-bridge.ts) 中的 `recordSource`、`sourceAlias`，删除 [host.ts](../src/memory/contracts/host.ts) 与 [owner.ts](../src/memory/node/owner.ts) 中的 `sourceAlias` 与 `owner_aliases`，删除 `memory-note-store.ts` 的 `session/dialog/*.jsonl` 新写入维护；
-  - PR 4B 删除 `onQuestionAnswer -> acceptQuestionAnswer` 异步调用与 `host.ts` / `owner.ts` 中的 `acceptQuestionAnswer`（仅保留 `onQuestionAnswer` 本地纯计算 `questionAnswerSourceId(sessionId, callSeq, callId, questionId)` 供 `history.db` UI 时间线链接使用，零记忆 RPC）。
-- **回合中 `memory_remember` 开放回合暂存（PR 4A）**：
+  - PR 4B 删除 `onQuestionAnswer -> acceptQuestionAnswer` 异步调用、`compose.ts` 的 500ms 等待与 `taskAnswerSources`、以及 `host.ts` / `owner.ts` 中的 `acceptQuestionAnswer` 与 `owner_answer_sources`（保留 `owner_active_turns`；仅保留本地纯计算 `questionAnswerSourceId(sessionId, callSeq, callId, questionId)` 供 `history.db` UI 时间线链接使用，零记忆 RPC）。
+- **回合中 `memory_remember` 开放回合暂存（PR 4A / PR 4B）**：
   - 引入 **`owner_open_turn_sources (session, turn, source_id)`**：
-    1. 模型调用 `memory_remember` 时，`adapter.ts` 先调用 `intake.synchronize(agent.session)`（内部走 `readVerifiedDurableSlice` 确认已落盘；若无写句柄 `flush() === true` 抛 `SessionPersistenceNotFoundError` 或读核验失败，`memory_remember` 立即以 `{"status":"unavailable"}` 中止且不写入规范来源或回执）；
-    2. 核验通过后，仅将已落盘且经 `humanSpans` / 人类 `ask_user_question` 校验、`author IN ('user', 'answer')` 的本回合事件幂等写入 `memory_sources` 并登记 `owner_open_turn_sources (session, turn, source_id)`（保持 `owner_intake_cursors.next_seq` 停在上一已完成回合不动）；
-    3. `memory-worker` 凭 `owner_open_turn_sources` 校验当轮归属与精确原文 span（自动拒绝 `task-brief`、模型代答 `task-agent-answer`、Feed 生成正文与助手输出），在 `owner_operations` 中以确定性回执完成受管文档写入；
-    4. 待 `turn/end` 到达时，原子事务清理 `owner_open_turn_sources` 并按 CAS 推进 `next_seq`；仅当 `reason.kind === 'completed'` 时在同一事务内幂等写入/复用本回合全部过滤后的规范 `memory_sources`（包括未暂存的普通提示与已暂存的 `source_id`）并登记 `memory_note_ranges`。
+    1. 模型调用 `memory_remember` 时，`adapter.ts` 先调用 `intake.stageOpenTurn(agent.session)`（入队时锁定 `targetEndSeq = Number(session.seq)` 并走 `readVerifiedDurableSlice` 确认已落盘；若无写句柄 `flush() === true` 抛 `SessionPersistenceNotFoundError` 或读核验失败，`memory_remember` 立即以 `{"status":"unavailable"}` 中止且不写入规范来源或回执）；
+    2. 核验通过后，仅将已落盘且经 `humanSpans` 或 `owner_question_receipts` 认证、`author IN ('user', 'answer')` 的本回合事件幂等写入 `memory_sources`（传入完整 `AnswerSource` 元数据且保持回执不删）并登记 `owner_open_turn_sources (session, turn, source_id)`（保持 `owner_intake_cursors.next_seq` 停在上一已完成回合不动）；
+    3. `memory-worker` 凭 `owner_open_turn_sources` 校验当轮归属与精确原文（自动拒绝 `task-brief`、模型代答 `task-agent-answer`、Feed 生成正文与助手输出），在 `owner_operations` 中以确定性回执完成受管文档写入；
+    4. 待 `turn/end` 到达时，原子事务清理 `owner_open_turn_sources` 与已结算回执并按 CAS 推进 `next_seq`；仅当 `reason.kind === 'completed'` 时在同一事务内幂等写入/复用本回合全部过滤后的规范 `memory_sources` 并登记 `memory_note_ranges`。
 
 ### 5.7 阶段四验收标准
 
@@ -604,13 +613,12 @@ export type AutomaticRecallResult =
    - **入口拆包与零模型暴露**：断言持久化后的 `user/message.content` 以及实际发往模型的请求（`llm/stream`）中均**不含 `【Viva 元数据：`** 前缀；人类 ACP 提示落盘保持 `source.kind === 'user'` 且 `source.vivaProvenance` 经 `flush` 与冷只读 `open('read')` 完整往返（保持 `dsh-web-deepseek-api` / `dsh-session-title` 兼容）；非人类 ACP 提示（`viva-report-batch`、`viva-unattended`、`viva-task-brief`）以非 `'user'` 的 `source.kind` 落盘；重复调用幂等 `liftProvenance` 不会误剥用户在首行键入的仿冒 `【Viva 元数据：...】`；独立 DSH 模式（`host: false`）绝不解析或剥离 `【Viva 元数据：...】`；
    - 无 `sourceAlias` 下，当轮内 `memory_remember` 写入成功并立即可召回；尝试用 `memory_remember` 保存 `task-brief` 或 Feed 生成正文被拒绝（`no-explicit-user-source`）；
    - **区间结清与日志删除后的有效/撤销问题双验**：在 `memory_note_ranges` 被 `WRITE_NOTE` 结清且源 DSH 会话日志物理删除之后，分别验证：① 有效问题仍经 `memory_sources` 直接元数据进入 Dream 画像输入；② 撤销仅被问题正文引用的前置来源时，独立合法的人类自定义回答正文仍保留可用，仅问题正文被扣留。
-3. **PR 4B — 开放题真实 DSH 折叠（阻塞/续答/PTC）、非阻塞拒收/离线、防 `dsh-spill` 截断、防冒充与重开删除水位**：
-   - 在真实 DSH 栈下验证阻塞模式（`tools/execute` 先 `flush + open('read')` 再发布 `callSeq`）、超时→回合结束→重启空闲态经公开 `sessionProjections.snapshot` 重开卡片→`agent/inbox/inserted` + `ctx.userQuestions.answer()` 经真实 `user/message`（`event.data.id`）折叠入库，以及 PTC（立即返回 `answers[]`、`pending` 与报错清理）；
-   - **阻塞作答遇隐私拒收、worker 离线与提交后 ACK 延迟超时均不阻塞**：在阻塞 `ask_user_question` 工具上分别验证：① 命中 `looksSecret` 的卡片/回答（含敏感 `card.id`）与派发前 `memory-worker` 已离线：DSH 正常收到经校验的用户回答且回合完成，`memory.db` 保留零来源与零敏感字段；② **已提交 SQLite 但刻意延迟 ACK 超过有界时限（`500ms`）**：`channel.ask()` 到时正常完成不阻塞，随后折叠按已落库回执正常接纳该合法回答；
-   - 用相同自定义回答文本对照用户 UI 卡片提交（`answer_origin: 'human'`）vs. 主模型 `answer_background_task` 代答（`answer_origin: 'agent'`）vs. 独立 DSH 未提供受信任回执的 SDK JSON-RPC 回答：仅经认证的人类 UI 回答入库并进 L2，代答与未证明程序化回答一律 fail-closed 拒绝且绝不进 L2 或 `memory_remember`；
-   - 复用 `callId` 过期点击防护：新调用 B 进入 `continued` 时旧卡片 A 收到 `question_closed`，过期点击在 `answer()` 前被 `callSeq` 复核拒绝；
-   - `dsh-spill-policy` 溢出截断冷回放（512-token 上限下大段自定义回答）凭 `owner_question_answers` 完整无损入库，且 **SQLite `memory.db` 中零敏感文本（含 `card.id`）与零原始 `callId`**；
-   - **更新 [memory-handoff.test.ts](../test/memory-handoff.test.ts)**（移除 4B 废弃的 `acceptQuestionAnswer` RPC 拦截与旧任务域隔离断言，改为走原生回答结算并断言全局 `user` 可召回），完整保留 `(conversation_id, source_id)` 跨库连接与真实新任务（Viva 段 ID ≠ DSH `sessionId`）时间线跳转断言；验证 `profile_deleted_at` / `profile_deletion_generation` 统一真值表全部 5 行边界，**并专项验证 `提问超时 → 删除常驻画像 → 重启 Viva → 重开卡片提交有效自定义回答` 序列中，真实 Dream 画像步输入包含该合法自定义回答且扣留删除前的旧问题正文**。
+3. **PR 4B — 开放题真实 DSH 折叠（阻塞/PTC）、极简标量回执、非阻塞离线/拒收、拆分凭据防护与删除水位**：
+   - 在真实 DSH 栈下验证阻塞原生 `tool/call` + `tool/result` 与 PTC `tool/ptc-dispatch-start` + `tool/ptc-dispatch` 的实时结算与重启冷回放；断言 compaction `replace`、`TOOL_OUTCOME_UNKNOWN`、`isError`、`dsh-spill` 截断预览、`pending`、纯选项与 `user-question-reply` 均 fail-closed 跳过；
+   - **策略改写与离线/崩溃非阻塞**：验证 `tools/post-execute` 改动合格 `{ id, custom }` 投影时被 `answer_batch_digest` 失配拒绝，而仅改写 `selected` 保留相同合格 `{ id, custom }` 投影时正常接纳；验证提交后回执落盘前 `memory-worker` 离线或崩溃时，问答照常完成无阻塞且冷回放 fail-closed 零泄漏；验证 `scanLive` 入队锁定 `maxSeq` 与 `scanCold` 入口锁定 `liveEpoch` 防止抢跑结算；
+   - **隐私与拆分凭据防护**：覆盖原始第 9+ 选项敏感词、超 200 字符原始 `header` 结尾 `OTP`、含 NUL / 孤立代理项字符的卡片/回答，以及 `"OTP"` / `"What is your OTP?"` / `"请输入验证码："` / `"Password?"` 搭配凭据值的拆分凭据，断言敏感项不入库且 `owner_question_receipts` 零敏感词摘要、历史 `source_id` 为 `null`，同批安全兄弟卡片正常保留；
+   - **人/机隔离与同轮 `memory_remember`**：用相同自定义回答文本对照用户 UI 卡片提交（`author: 'answer'`、`profileEligible: true`）vs. 主模型 `answer_background_task`（`recordMemory: false`）vs. 独立 DSH SDK JSON-RPC 回答：仅带有效标量回执的真人 UI 回答入库并支持同轮 `memory_remember`（经 `stageOpenTurnSources` → `settleTurn` 校验 `custom: true` 且回执在结算事务按 `(session, turn)` 清理），代答与未认证回答一律 fail-closed；
+   - **更新 [memory-handoff.test.ts](../test/memory-handoff.test.ts)**（移除废弃的 `acceptQuestionAnswer` RPC 拦截与旧任务域隔离断言，改为原生回答结算并断言全局 `user` 可召回），保留真实新任务（Viva `segmentId` ≠ DSH `sessionId`）的 `(conversation_id, source_id)` 跨库连接；验证 `profile_deleted_at` / `profile_deletion_generation` 统一真值表全部 5 行边界、卡片打开期间删画像、提交在删画像前而晚结算（含时钟回拨）以及同轮 `eventSeq` 撤销依赖在时钟回拨下仍保持健全。
 
 ---
 
@@ -619,8 +627,8 @@ export type AutomaticRecallResult =
 拆分为独立渐进 PR，每批均可独立验证与回滚：
 
 1. **PR #178（阶段一 + 阶段二 · 已合入 `5e96068`）**：自动注入三层拆分（L1/L2/L3）+ 5 态协议 + 向量快慢分离 + 关闭手工画像一步切换为 Dream 自动常驻画像及完整检查点恢复。
-2. **PR 3（阶段三 · 收口版）**：将 `memory-worker` 托管权从 Viva 主进程收回 `viva-memory` DSH 插件（删除 `desktop-memory-owner.ts`、`memory-prefetch.ts`、`fromViva()`，收敛为单路径 `standaloneOwner`），补全父进程 IPC 协议（`memory_host_result`、`memory_host_cancel`、`memoryHostFailure`、跨两跳执行选项与旧连接围栏）、轻量 `ready` 过渡重放、worker 权威版本夹检、`recovering → profile → ready` 三段推送与晚订阅回放，以及全链路 429/5xx `Retry-After`（在既有 `effects` 行新增单列 `cooldown_until`，跨重启防覆盖且不新增表/JOIN）与轻量前台软让路。
-3. **PR 4A（阶段四上 · 单一日志事实源与后台任务归属）**：以 DSH `session-persistence` 持久化会话日志为单一事实源（`flush + open('read')`、防跳洞 CAS 游标、只读冷补扫、递增 `MEMORY_CONTRACT` 干净建库），移除 `session/dialog/*.jsonl` 与 `sourceAlias`，实现发起动作显式归属、无损 `humanSpans`、统一人类消息 L3 提取器、三路时间线链接、后台任务记忆打通全局召回与回合中 `memory_remember` 暂存（对 `fork`、`history`、`tasks`、`routing`、`compaction` 保持零侵入）。
-4. **PR 4B（阶段四下 · `ask_user_question` 原生消费）**：移除 `acceptQuestionAnswer` 异步旁路，基于 DSH 公开 API（`tools/execute`、`sessionProjections.snapshot`、`userQuestions.answer`）与单张轻量表 `owner_question_answers`（带 TTL 与隐私过滤）实现阻塞/续答/PTC 原生消费、人/机归属 fail-closed 隔离、防 `dsh-spill` 截断恢复与 `profile_deleted_at` 水位校验（不劫持 `acp-bridge` 回合生命周期）。
+2. **PR #180（阶段三 · 已合入 `57ab6a8`）**：将 `memory-worker` 托管权从 Viva 主进程收回 `viva-memory` DSH 插件（删除 `desktop-memory-owner.ts`、`memory-prefetch.ts`、`fromViva()`，收敛为单路径 `standaloneOwner`），补全父进程 IPC 协议（`memory_host_result`、`memory_host_cancel`、`memoryHostFailure`、跨两跳执行选项与旧连接围栏）、轻量 `ready` 过渡重放、worker 权威版本夹检、`recovering → profile → ready` 三段推送与晚订阅回放，以及全链路 429/5xx `Retry-After`（在既有 `effects` 行新增单列 `cooldown_until`，跨重启防覆盖且不新增表/JOIN）与轻量前台软让路。
+3. **PR #181（阶段四上 · 已合入 `b37c7e9d`）**：以 DSH `session-persistence` 持久化会话日志为单一事实源（`flush + open('read')`、防跳洞 CAS 游标、只读冷补扫、递增 `MEMORY_CONTRACT` 干净建库），移除 `session/dialog/*.jsonl` 与 `sourceAlias`，实现发起动作显式归属、`agent/pre-step` `liftProvenance` 传输头拆包、无损 `humanSpans`、统一人类消息 L3 提取器、三路时间线链接、后台任务记忆打通全局召回与回合中 `memory_remember` 暂存（对 `fork`、`history`、`tasks`、`routing`、`compaction` 保持零侵入）。
+4. **PR 4B（阶段四下 · `ask_user_question` 极简原生消费）**：移除 `acceptQuestionAnswer` 异步旁路、`compose.ts` 500ms 等待、`owner_answer_sources` 与 `taskAnswerSources`，基于 Viva 默认阻塞模式（`mode: 'legacy'`）与 PTC 实现原生日志折叠、单张纯标量回执表 `owner_question_receipts`（零正文、零敏感摘要、同会话串行队列有序落盘）、前置拆分凭据过滤、持久化 `eventSeq` 同轮依赖与双代数删除水位校验（不引入未启用的 `timed`/`continued` 续答，不劫持 `acp-bridge` 回合生命周期）。
 
 依据 [AGENTS.md](../AGENTS.md) 冒烟门槛，PR 3、PR 4A 与 PR 4B 均涉及主进程、DSH 生命周期、IPC 或存储架构变更，合入前均须本地运行 `npm run typecheck`、`npm test`、`npm run check:i18n`、`npm run build`、`npm run test:memory-plugin`、`npm run smoke:memory` 与完整 **`npm run smoke`**，并通过 GitHub macOS + Windows 双平台 CI。

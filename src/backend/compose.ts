@@ -24,10 +24,9 @@ import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { createVivaMemoryClient } from './memory-client.ts'
 import { MemoryOwnerUnavailable } from './remote-memory-channel.ts'
-import { createRequestBudget } from '../shared/request-budget.ts'
+import { eligibleQuestionAnswers, questionAnswerSourceId } from '../memory/node/question-answer-memory.ts'
 import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod } from '../memory/contracts/host.ts'
 import type { TaskDispatchMeta } from './acp-task-sessions.ts'
-import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
 import { resolveMemoryProject } from '../memory/node/project-scope.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
 import { carriedRecords, type HistoryCarry } from './history-carry.ts'
@@ -186,7 +185,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   let taskStore: ReturnType<typeof createTaskStore> | null = null
   /** The background tasks, their one writer (task-runtime.ts); set once the history is open. */
   let taskRuntime: TaskRuntime | null = null
-  const taskAnswerSources = new Map<string, Record<string, string>>()
   const historyPurgeTimers = new Set<ReturnType<typeof setTimeout>>()
   /** The main conversation's requests and their decisions (request-runtime.ts); set once the history is open. */
   let requests!: RequestRuntime
@@ -520,57 +518,18 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         const slot = taskRuntime?.dsh.reserveWaitResume(kind, id)
         return !slot || !('problem' in slot)
       },
-      onQuestionAnswer: async (entry, answers, operation) => {
+      onQuestionAnswer: (entry, answers, _operation, meta) => {
         const conversation = entry.taskId ? historyDb.bySession(entry.sessionId)?.id : entry.context?.conversationId
         if (!conversation) return
-        const answerContext: MemoryScope = entry.taskId ? { kind: 'task', id: entry.sessionId } : { kind: 'user' }
-        const answerSources = Object.create(null) as Record<string, string>
-        const requestOperation = operation ?? randomUUID()
         const bridge = lifetime.isCurrent() ? dsh.current : null
-        const items: Array<{ id: string, operationId: string, text: string }> = []
-        for (const answer of answers) {
-          const text = answer.custom?.trim(), question = entry.question.questions.find(card => card.id === answer.id)
-          if (!text || !question) continue
-          const digest = createHash('sha256').update(JSON.stringify([requestOperation, answer.id])).digest('hex')
-          const operationId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
-          items.push({ id: answer.id, operationId, text })
+        if (!entry.memoryEligible || !entry.callId || entry.callSeq === undefined || !bridge?.memory.ready()) return
+        const eligible = eligibleQuestionAnswers(meta?.rawCards ?? entry.question.questions, answers)
+        if (eligible.length === 0) return
+        const sourceIds = Object.create(null) as Record<string, string>
+        for (const item of eligible) {
+          sourceIds[item.id] = questionAnswerSourceId(entry.sessionId, entry.callSeq, entry.callId, item.id)
         }
-        if (items.length && entry.turn !== undefined && bridge) {
-          const budget = createRequestBudget(500)
-          try {
-            if (!bridge.memory.ready()) {
-              try { await bridge.memory.waitReady(budget.remainingMs()) }
-              catch (error) { emitDiagnosticFailure('memory.intake', error) }
-            }
-            if (bridge.memory.ready()) {
-              let budgetMs = 0
-              try { budgetMs = budget.remainingMs() } catch { budgetMs = 0 }
-              if (budgetMs > 0) {
-                for (const item of items) answerSources[item.id] = item.operationId
-                await Promise.all(items.map(item =>
-                  bridge.memory.callIntake('acceptQuestionAnswer', {
-                    operationId: item.operationId, text: item.text,
-                    session: entry.sessionId, turn: entry.turn!, conversation, cards: entry.question.questions,
-                    requestId: entry.question.id, questionId: item.id,
-                    context: answerContext, questionAt: entry.askedAt,
-                    ...(entry.questionProfileGen !== undefined ? { questionProfileGen: entry.questionProfileGen } : {}),
-                  }, { budgetMs })
-                    .catch(error => {
-                      emitDiagnosticFailure('memory.intake', error)
-                      const err = objectOf(error)
-                      // Delete sourceId only when definitely unsent or explicitly rejected by worker;
-                      // keep deterministic ID when outcome is unknown (timeout or disconnect after send).
-                      if (err?.unsent === true || (err?.code !== 'timeout' && err?.code !== 'unavailable')) {
-                        delete answerSources[item.id]
-                      }
-                    }),
-                ))
-              }
-            }
-          } finally { budget.close() }
-        }
-        if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
-        return { sourceIds: answerSources }
+        return { conversationId: conversation, sourceIds }
       },
       historySearch: async (query, range, session) =>
         historyRecall(historyDb, historyForProject(projectScopeKey(workspaceOfSession(session)), isMainSession(session))).search(query, range),
@@ -1036,13 +995,15 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       // Held first: dsh closes the question while it takes the answer, and what was asked goes with it.
       const keep = taskRuntime?.dsh.holdQuestion(id) ?? null
       let accepted = false
+      let sourceIds: Readonly<Record<string, string>> | undefined
       try {
-        accepted = await dsh.current?.answerQuestion(id, answers, operation) ?? false
-        if (accepted) keep?.(answers, taskAnswerSources.get(id))
+        accepted = await dsh.current?.answerQuestion(id, answers, operation, {
+          onSourceIds: ids => { sourceIds = ids },
+        }) ?? false
+        if (accepted) keep?.(answers, sourceIds)
         return accepted
       } finally {
         if (!accepted) slot?.release()
-        taskAnswerSources.delete(id)
       }
     })
     // Keys the user typed for a server the model set up: straight to the encrypted store, never to dsh.

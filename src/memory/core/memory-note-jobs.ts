@@ -58,10 +58,11 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     turn: number
     ids: readonly string[]
     assistant: string
+    sourceEventSeqs?: Readonly<Record<string, number>>
     flush?: boolean
   }) {
     if (!capture) return null
-    const { session, fromSeq, toSeq, turn, ids, assistant, flush = false } = input
+    const { session, fromSeq, toSeq, turn, ids, assistant, sourceEventSeqs, flush = false } = input
     const sources = [...new Set(ids)].flatMap(id => {
       const source = sourceOf(id)
       return source?.session === session ? [source] : []
@@ -78,6 +79,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       assistantSources: safeAssistant && dependencies ? dependencies : [],
       questionSources: dependencies ?? [],
       questionCurrent: dependencies !== null,
+      ...(sourceEventSeqs ? { sourceEventSeqs } : {}),
     })
     if (!key) return null
     let pendingCount = 0

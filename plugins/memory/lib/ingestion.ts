@@ -3,8 +3,18 @@ import { SessionId, type Session, type SessionEvent, type SessionHeader } from '
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ReadSessionRangeResult } from '../../../src/memory/core/ports/notes.ts'
-import type { TurnSourceCandidate } from '../../../src/memory/node/owner.ts'
+import type { QuestionReceiptInput, TurnQuestionAnswerCandidate, TurnSourceCandidate } from '../../../src/memory/node/owner.ts'
 import { looksSecret } from '../../../src/memory/core/memory-sensitive.ts'
+import {
+  canonicalEligibleAnswersDigest,
+  eligibleQuestionAnswers,
+  questionAnswerSourceId,
+  questionCallIdHash,
+  questionOccurrenceRequestId,
+  type RawQuestionAnswer,
+  type RawQuestionCard,
+  type RawQuestionOption,
+} from '../../../src/memory/node/question-answer-memory.ts'
 import { requestsIn } from '../../../src/shared/request-routing/header.ts'
 import { leadingTaskRequestId, stripLeadingTaskHeader, withoutTaskHeaders } from '../../../src/shared/request-routing/task-header.ts'
 import {
@@ -21,7 +31,10 @@ import type {} from './source.ts'
 type Owner = Pick<
   ReturnType<typeof createRemoteMemoryOwner>,
   'epoch' | 'inEpoch' | 'intakeCursor' | 'advanceIntakeCursor' | 'beginTurn' | 'stageOpenTurnSources' | 'settleTurn'
->
+> & Partial<Pick<
+  ReturnType<typeof createRemoteMemoryOwner>,
+  'recordQuestionReceipt' | 'retireSessionQuestionReceipts' | 'pruneExpiredQuestionReceipts'
+>>
 
 type PersistenceLike = Pick<SessionPersistence, 'open' | 'list'>
 type SessionsLike = {
@@ -270,8 +283,9 @@ export async function readVerifiedDurableSlice(
       const limit = Math.min(READ_CHUNK_SIZE, endSeq - offset)
       const batch = await handle.read(offset, limit)
       if (!batch.events.length) break
-      for (const event of batch.events) events.push(event)
-      offset += batch.events.length
+      const capped = batch.events.slice(0, limit)
+      for (const event of capped) events.push(event)
+      offset += capped.length
     }
     if (events.length < endSeq - fromSeq) return { ok: false, reason: 'short-read' }
     return { ok: true, events }
@@ -302,8 +316,9 @@ async function readHandleRange(
       const limit = Math.min(READ_CHUNK_SIZE, toSeq - offset)
       const batch = await handle.read(offset, limit)
       if (!batch.events.length) break
-      for (const event of batch.events) events.push(event)
-      offset += batch.events.length
+      const capped = batch.events.slice(0, limit)
+      for (const event of capped) events.push(event)
+      offset += capped.length
     }
     if (events.length < toSeq - fromSeq) return { status: 'unavailable' }
     return { status: 'ok', events }
@@ -384,6 +399,203 @@ export async function readPersistedSessionRange(
   return { status: 'ok', assistant: looksSecret(assistant) ? '' : assistant }
 }
 
+function parseRawQuestionCards(rawArgs: unknown): RawQuestionCard[] | null {
+  let obj: unknown = rawArgs
+  if (typeof obj === 'string') {
+    try { obj = JSON.parse(obj) } catch { return null }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
+  const questions = (obj as { questions?: unknown }).questions
+  if (!Array.isArray(questions) || questions.length === 0) return null
+  const cards: RawQuestionCard[] = []
+  for (const item of questions) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+    const rec = item as Record<string, unknown>
+    if (typeof rec.id !== 'string' || typeof rec.question !== 'string') return null
+    let options: RawQuestionOption[] | undefined
+    if (rec.options !== undefined) {
+      if (!Array.isArray(rec.options)) return null
+      options = []
+      for (const opt of rec.options) {
+        if (!opt || typeof opt !== 'object' || Array.isArray(opt)) return null
+        const o = opt as Record<string, unknown>
+        if (typeof o.label !== 'string') return null
+        if (o.description !== undefined && typeof o.description !== 'string') return null
+        options.push({ label: o.label, ...(o.description !== undefined ? { description: o.description } : {}) })
+      }
+    }
+    if (rec.header !== undefined && typeof rec.header !== 'string') return null
+    const multiSelect = typeof rec.multiSelect === 'boolean'
+      ? rec.multiSelect
+      : typeof rec.multi_select === 'boolean'
+        ? rec.multi_select
+        : undefined
+    cards.push({
+      id: rec.id,
+      question: rec.question,
+      ...(rec.header !== undefined ? { header: rec.header } : {}),
+      ...(multiSelect !== undefined ? { multiSelect } : {}),
+      ...(options !== undefined ? { options } : {}),
+    })
+  }
+  return cards
+}
+
+function parseLegacyQuestionAnswers(content: unknown): RawQuestionAnswer[] | null {
+  if (!Array.isArray(content) || content.length === 0) return null
+  let text = ''
+  for (const block of content) {
+    if (!block || typeof block !== 'object' || (block as { type?: unknown }).type !== 'text' || typeof (block as { text?: unknown }).text !== 'string') {
+      return null
+    }
+    text += (block as { text: string }).text
+  }
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { return null }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const rec = parsed as Record<string, unknown>
+  if (rec.pending === true || !Array.isArray(rec.answers)) return null
+  const answers: RawQuestionAnswer[] = []
+  for (const item of rec.answers) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+    const a = item as Record<string, unknown>
+    if (typeof a.id !== 'string' || !Array.isArray(a.selected) || !a.selected.every(s => typeof s === 'string')) return null
+    if (a.custom !== undefined && typeof a.custom !== 'string') return null
+    answers.push({ id: a.id, selected: a.selected, ...(a.custom !== undefined ? { custom: a.custom } : {}) })
+  }
+  return answers
+}
+
+type FoldedQuestionStart = {
+  callSeq: number
+  callId: string
+  questionAt: number
+  cards: RawQuestionCard[]
+}
+
+/**
+ * Deterministically fold blocking native (`tool/call` + `tool/result`) and PTC
+ * (`tool/ptc-dispatch-start` + `tool/ptc-dispatch`) `ask_user_question` occurrences in one turn slice.
+ * Naturally fails closed on compaction replacements, errors, `TOOL_OUTCOME_UNKNOWN`,
+ * `dsh-spill` previews, `pending` results, selected-only items, and `user-question-reply`.
+ */
+export function foldQuestionAnswersForTurn(
+  turnEvents: readonly SessionEvent[],
+  sessionId: string,
+  tz: string,
+): TurnQuestionAnswerCandidate[] {
+  const nativeStarts = new Map<number, FoldedQuestionStart>()
+  const ptcStarts = new Map<string, FoldedQuestionStart | 'malformed' | 'ambiguous'>()
+  const settledKeys = new Set<string>()
+  const candidates: TurnQuestionAnswerCandidate[] = []
+
+  const admitMatch = (start: FoldedQuestionStart, content: unknown) => {
+    const callIdHash = questionCallIdHash(start.callId)
+    const key = `${start.callSeq}:${callIdHash}`
+    if (settledKeys.has(key)) return
+    const answers = parseLegacyQuestionAnswers(content)
+    if (!answers) return
+    const eligible = eligibleQuestionAnswers(start.cards, answers)
+    if (eligible.length === 0) return
+    settledKeys.add(key)
+    const requestId = questionOccurrenceRequestId(start.callSeq, callIdHash)
+    candidates.push({
+      callSeq: start.callSeq,
+      callIdHash,
+      requestId,
+      questionAt: start.questionAt,
+      answerBatchDigest: canonicalEligibleAnswersDigest(eligible),
+      timezone: tz,
+      items: eligible.map(item => ({
+        sourceId: questionAnswerSourceId(sessionId, start.callSeq, start.callId, item.id),
+        questionId: item.id,
+        question: item.question,
+        text: item.custom,
+      })),
+    })
+  }
+
+  for (const event of turnEvents) {
+    if (event.type === 'step/end') {
+      // DSH drains all tool/PTC dispatches before emitting step/end, so clearing
+      // per-step PTC start markers prevents an earlier failed/ambiguous dispatch
+      // from suppressing a valid call reusing the same tuple in a later step.
+      ptcStarts.clear()
+      continue
+    }
+    if (event.type === 'tool/call' && event.data.name === 'ask_user_question') {
+      const cards = parseRawQuestionCards(event.data.arguments)
+      if (cards && typeof event.data.callId === 'string' && event.data.callId.length > 0) {
+        nativeStarts.set(Number(event.seq), {
+          callSeq: Number(event.seq),
+          callId: String(event.data.callId),
+          questionAt: event.time,
+          cards,
+        })
+      }
+      continue
+    }
+    if ((event.type as string) === 'tool/ptc-dispatch-start') {
+      const data = event.data as { name?: unknown, subCallId?: unknown, parentCallId?: unknown, rootCallId?: unknown, arguments?: unknown }
+      if (data?.name === 'ask_user_question'
+        && typeof data.subCallId === 'string' && data.subCallId.length > 0
+        && typeof data.parentCallId === 'string' && data.parentCallId.length > 0
+        && typeof data.rootCallId === 'string' && data.rootCallId.length > 0) {
+        const ptcKey = `${data.subCallId}\0${data.parentCallId}\0${data.rootCallId}`
+        const cards = parseRawQuestionCards(data.arguments)
+        if (ptcStarts.has(ptcKey)) {
+          ptcStarts.set(ptcKey, 'ambiguous')
+        } else if (!cards) {
+          ptcStarts.set(ptcKey, 'malformed')
+        } else {
+          ptcStarts.set(ptcKey, {
+            callSeq: Number(event.seq),
+            callId: data.subCallId,
+            questionAt: event.time,
+            cards,
+          })
+        }
+      }
+      continue
+    }
+    if (event.type === 'tool/result') {
+      if (event.surfaceOp !== 'append') continue
+      if (event.data.message.isError === true || event.data.error !== undefined) continue
+      const refs = event.sourceEventSeqs
+      if (!Array.isArray(refs) || refs.length === 0) continue
+      const callId = String(event.data.message.toolCallId)
+      const matches: FoldedQuestionStart[] = []
+      for (const ref of refs) {
+        const start = nativeStarts.get(Number(ref))
+        if (start && start.callId === callId) matches.push(start)
+      }
+      if (matches.length !== 1) continue
+      admitMatch(matches[0]!, event.data.message.content)
+      continue
+    }
+    if ((event.type as string) === 'tool/ptc-dispatch') {
+      const data = event.data as {
+        name?: unknown, subCallId?: unknown, parentCallId?: unknown, rootCallId?: unknown,
+        isError?: unknown, error?: unknown, content?: unknown,
+      }
+      if (data?.name !== 'ask_user_question') continue
+      if (typeof data.subCallId !== 'string' || typeof data.parentCallId !== 'string' || typeof data.rootCallId !== 'string') continue
+      const ptcKey = `${data.subCallId}\0${data.parentCallId}\0${data.rootCallId}`
+      const start = ptcStarts.get(ptcKey)
+      // Retire a matched or single-malformed start on terminal dispatch so sequential PTC
+      // executions reusing the same (subCallId, parentCallId, rootCallId) tuple fold cleanly;
+      // concurrent collisions stay 'ambiguous' until step/end drains the step.
+      if (start && start !== 'ambiguous') ptcStarts.delete(ptcKey)
+      if (data.isError === true || data.error !== undefined) continue
+      if (!start || start === 'ambiguous' || start === 'malformed') continue
+      admitMatch(start, data.content)
+    }
+  }
+
+  candidates.sort((a, b) => a.callSeq - b.callSeq)
+  return candidates
+}
+
 type TurnClassification = {
   sessionKind: SessionKind
   conversation?: string
@@ -394,6 +606,7 @@ type TurnClassification = {
 
 function classifyUserMessageForTurn(
   message: UserMessage,
+  eventSeq: number,
   at: number,
   tz: string,
   sessionId: string,
@@ -429,6 +642,7 @@ function classifyUserMessageForTurn(
         profileEligible: false,
         text: briefText,
         conversation: provenance?.conversationId ?? acc.conversation,
+        eventSeq,
         at,
         timezone: tz,
       })
@@ -448,6 +662,7 @@ function classifyUserMessageForTurn(
         profileEligible: false,
         text: body,
         conversation: src.conversationId ?? acc.conversation,
+        eventSeq,
         at,
         timezone: tz,
       })
@@ -466,6 +681,7 @@ function classifyUserMessageForTurn(
       profileEligible: item.profileEligible,
       text: item.text,
       conversation: item.conversationId ?? acc.conversation,
+      eventSeq,
       at,
       timezone: tz,
     })
@@ -499,6 +715,7 @@ function classifyUserMessageForTurn(
           profileEligible: false,
           text: briefText,
           conversation: provenance.conversationId ?? acc.conversation,
+          eventSeq,
           at,
           timezone: tz,
         })
@@ -567,10 +784,43 @@ export function createSessionIngestion(
   const getPersistence = (): PersistenceLike | undefined =>
     typeof sessionPersistence === 'function' ? sessionPersistence() : sessionPersistence
   const queues = new Map<string, SessionQueue>()
+  // Monotonic per-session live epoch retained across release/disposal so an in-flight
+  // scanCold cannot race a session that opened (and possibly closed) mid-read (§5.5).
+  const liveEpoch = new Map<string, number>()
   let closed = false
   let listRetryTimer: ReturnType<typeof setTimeout> | null = null
   let listEpoch: string | undefined
   let listFailures = 0
+  let coldPassId = 0
+  let coldPassEpoch: string | undefined
+  let coldPassPersistence: PersistenceLike | undefined
+  let coldPassDetached = false
+  let coldPassScanned = false
+  let coldPassPruned = false
+  let coldPassActiveIds = new Set<string>()
+  const pendingColdRetries = new Set<string>()
+
+  function maybePruneColdReceipts(passId: number) {
+    if (closed || passId <= 0 || passId !== coldPassId || !coldPassEpoch) return
+    if (owner.epoch !== coldPassEpoch || listEpoch !== coldPassEpoch) return
+    if (coldPassDetached || !coldPassPersistence || getPersistence() !== coldPassPersistence) return
+    if (!coldPassScanned || coldPassPruned || pendingColdRetries.size > 0) return
+    coldPassPruned = true
+    const excludeSessions = [...new Set([
+      ...coldPassActiveIds,
+      ...(sessions.list?.() ?? []).map(session => String(session.id)),
+      ...queues.keys(),
+    ])]
+    void owner.pruneExpiredQuestionReceipts?.(undefined, excludeSessions).catch(err => onError?.(err))
+  }
+
+  const markLive = (sessionId: string) => {
+    liveEpoch.set(sessionId, (liveEpoch.get(sessionId) ?? 0) + 1)
+    if (coldPassId > 0 && coldPassEpoch && owner.epoch === coldPassEpoch) {
+      coldPassActiveIds.add(sessionId)
+      if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(coldPassId)
+    }
+  }
 
   function clearListRetry() {
     if (listRetryTimer !== null) {
@@ -635,11 +885,19 @@ export function createSessionIngestion(
     sliceFromSeq: number
     sliceEndSeq: number
     collectOpenTurn?: boolean
+    shouldAbort?: () => boolean
   }): Promise<{
-    openTurn?: { turn: number, sessionKind: SessionKind, conversation: string | null, sources: TurnSourceCandidate[] }
+    openTurn?: {
+      turn: number
+      sessionKind: SessionKind
+      conversation: string | null
+      sources: TurnSourceCandidate[]
+      questionAnswers: TurnQuestionAnswerCandidate[]
+    }
     casRetry?: boolean
+    aborted?: boolean
   }> {
-    const { sessionId, cwd, inheritedSeq, createdAt, events, sliceFromSeq, sliceEndSeq, collectOpenTurn = false } = input
+    const { sessionId, cwd, inheritedSeq, createdAt, events, sliceFromSeq, sliceEndSeq, collectOpenTurn = false, shouldAbort } = input
     let expectedNextSeq = input.cursorNextSeq
     let currentSeq = sliceFromSeq
     let sessionKind: SessionKind = input.sessionKind
@@ -674,6 +932,7 @@ export function createSessionIngestion(
         }
       }
       if (skipToSeq !== null && skipToSeq > sliceFromSeq) {
+        if (shouldAbort?.()) return { aborted: true }
         const res = await owner.advanceIntakeCursor({
           sessionId, expectedNextSeq: null, nextSeq: skipToSeq, inheritedSeq, sessionKind, conversation, cwd,
         })
@@ -705,7 +964,7 @@ export function createSessionIngestion(
       }
       turnEvents.push(event)
       if (event.type === 'user/message') {
-        classifyUserMessageForTurn(event.data, event.time, tz, sessionId, host, acc)
+        classifyUserMessageForTurn(event.data, Number(event.seq), event.time, tz, sessionId, host, acc)
         if (acc.sessionKind !== 'main') sessionKind = acc.sessionKind
         if (acc.conversation) conversation = acc.conversation
         continue
@@ -721,6 +980,9 @@ export function createSessionIngestion(
         // so stored assistant_digest and on-demand range reads always agree (including task goal turns).
         const assistantText = selectTurnAssistantText(turnEvents, host, turnStartSessionKind)
         const turnSources = [...acc.sources]
+        const questionAnswers = host && reasonKind === 'completed' && acc.sessionKind !== 'unattended'
+          ? foldQuestionAnswersForTurn(turnEvents, sessionId, tz)
+          : []
         if (reasonKind === 'completed' && acc.sessionKind === 'task' && assistantText.trim() && !looksSecret(assistantText)) {
           turnSources.push({
             sourceId: deterministicSourceUuid('task-assistant', sessionId, event.seq),
@@ -729,10 +991,12 @@ export function createSessionIngestion(
             profileEligible: false,
             text: assistantText,
             conversation: acc.conversation ?? conversation,
+            eventSeq: Number(event.seq),
             at: event.time,
             timezone: tz,
           })
         }
+        if (shouldAbort?.()) return { aborted: true }
         const res = await owner.settleTurn({
           sessionId,
           cwd,
@@ -745,6 +1009,7 @@ export function createSessionIngestion(
           turn: event.data.turn,
           reasonKind,
           sources: turnSources,
+          ...(questionAnswers.length > 0 ? { questionAnswers } : {}),
           assistantText: reasonKind === 'completed' ? assistantText : '',
           at: event.time,
           timezone: tz,
@@ -769,6 +1034,9 @@ export function createSessionIngestion(
             sessionKind: acc.sessionKind,
             conversation: acc.conversation ?? conversation,
             sources: acc.sources.filter(src => src.author === 'user' || src.author === 'answer'),
+            questionAnswers: host && acc.sessionKind !== 'unattended'
+              ? foldQuestionAnswersForTurn(turnEvents, sessionId, tz)
+              : [],
           },
         }
       }
@@ -794,7 +1062,8 @@ export function createSessionIngestion(
       entry.liveRetryTimer = null
       if (closed || entry.epoch !== owner.epoch) return
       if (sessions.get && sessions.get(session.id) !== session) return
-      void enqueue(sessionId, () => scanLive(session, false)).catch(err => {
+      const targetEndSeq = Number(session.seq)
+      void enqueue(sessionId, () => scanLive(session, false, targetEndSeq)).catch(err => {
         onError?.(err)
         scheduleLiveSessionRetry(session)
       })
@@ -802,10 +1071,12 @@ export function createSessionIngestion(
     entry.liveRetryTimer.unref?.()
   }
 
-  async function scanLive(session: Session, stageOpenTurn: boolean): Promise<void> {
+  async function scanLive(session: Session, stageOpenTurn: boolean, maxEndSeq: number): Promise<void> {
     const sessionId = String(session.id)
     const inherited = session.inheritedEventCount
-    const end = session.seq
+    // Bound each live scan to the enqueue-time seq so an earlier queued scan never
+    // swallows a later turn/end appended after a subsequent queued receipt slot (§5.5).
+    const end = Math.min(Number(session.seq), maxEndSeq)
     const entry = queues.get(sessionId)
     for (let attempt = 0; attempt < 2; attempt++) {
       let cursor
@@ -869,6 +1140,7 @@ export function createSessionIngestion(
           conversation: outcome.openTurn.conversation,
           cwd: session.header.cwd,
           sources: outcome.openTurn.sources,
+          ...(outcome.openTurn.questionAnswers.length > 0 ? { questionAnswers: outcome.openTurn.questionAnswers } : {}),
         })
       }
       if (entry) {
@@ -881,33 +1153,59 @@ export function createSessionIngestion(
     }
   }
 
-  function scheduleColdSessionRetry(sessionId: string, header: SessionHeader) {
+  function scheduleColdSessionRetry(
+    sessionId: string,
+    header: SessionHeader,
+    catchupPassId?: number,
+    entryPassId: number = catchupPassId ?? coldPassId,
+    boundPersistence?: PersistenceLike,
+  ) {
     if (closed) return
+    if (entryPassId !== coldPassId) return
+    if (boundPersistence !== undefined && getPersistence() !== boundPersistence) return
     const entry = queues.get(sessionId)
     if (!entry || entry.epoch !== owner.epoch) return
-    if (sessions.get?.(SessionId(sessionId))) return
+    if (sessions.get?.(SessionId(sessionId))) {
+      if (catchupPassId !== undefined && catchupPassId === coldPassId) {
+        coldPassActiveIds.add(sessionId)
+        if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(catchupPassId)
+      }
+      return
+    }
+    if (catchupPassId !== undefined && catchupPassId === coldPassId) pendingColdRetries.add(sessionId)
     clearColdRetry(entry)
     entry.coldFailures++
     const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(entry.coldFailures - 1, 6))
     entry.coldRetryTimer = setTimeout(() => {
       entry.coldRetryTimer = null
       if (closed || entry.epoch !== owner.epoch) return
-      if (sessions.get?.(SessionId(sessionId))) return
-      void scanCold(sessionId, header).catch(err => {
+      if (entryPassId !== coldPassId) return
+      if (boundPersistence !== undefined && getPersistence() !== boundPersistence) return
+      if (sessions.get?.(SessionId(sessionId))) {
+        if (catchupPassId !== undefined && catchupPassId === coldPassId) {
+          coldPassActiveIds.add(sessionId)
+          if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(catchupPassId)
+        }
+        return
+      }
+      void scanCold(sessionId, header, catchupPassId).catch(err => {
         onError?.(err)
-        scheduleColdSessionRetry(sessionId, header)
+        scheduleColdSessionRetry(sessionId, header, catchupPassId, entryPassId, boundPersistence)
       })
     }, delayMs)
     entry.coldRetryTimer.unref?.()
   }
 
-  async function readAllPersistedFrom(sessionId: string, cursorNextSeq: number | null): Promise<
+  async function readAllPersistedFrom(
+    sessionId: string,
+    cursorNextSeq: number | null,
+    persistence: PersistenceLike | undefined = getPersistence(),
+  ): Promise<
     | { status: 'ok', events: SessionEvent[], inheritedSeq: number, fromSeq: number, endSeq: number }
     | { status: 'not-found' }
     | { status: 'error', error: unknown }
   > {
-    const persistence = getPersistence()
-    if (!persistence) return { status: 'not-found' }
+    if (!persistence) return { status: 'error', error: new Error('Session persistence service unavailable') }
     let handle
     try {
       handle = await persistence.open(SessionId(sessionId), 'read')
@@ -935,19 +1233,40 @@ export function createSessionIngestion(
     }
   }
 
-  function scanCold(sessionId: string, header: SessionHeader): Promise<void> {
+  function scanCold(sessionId: string, header: SessionHeader, catchupPassId?: number): Promise<void> {
+    // Capture liveEpoch, coldPassId, and bound persistence identity at entry so any live
+    // reopen, newer catch-up pass, or persistence rebind (including for disposal-initiated
+    // scans) supersedes stale reads before retiring receipts or settling turns.
+    const startEpoch = liveEpoch.get(sessionId) ?? 0
+    const entryPassId = catchupPassId ?? coldPassId
+    const entryPersistence = getPersistence()
+    const stale = () => closed
+      || Boolean(sessions.get?.(SessionId(sessionId)))
+      || (liveEpoch.get(sessionId) ?? 0) !== startEpoch
+      || coldPassId !== entryPassId
+      || (entryPersistence !== undefined && getPersistence() !== entryPersistence)
+    let transientFailure = false
     const work = enqueue(sessionId, async () => {
-      if (closed) return
-      // Yield immediately to live session if it opened while queued.
-      if (sessions.get?.(SessionId(sessionId))) return
+      if (stale()) return
       for (let attempt = 0; attempt < 2; attempt++) {
-        if (closed || sessions.get?.(SessionId(sessionId))) return
+        if (stale()) return
         const cursor = await owner.intakeCursor(sessionId)
-        const read = await readAllPersistedFrom(sessionId, cursor.nextSeq)
-        if (read.status === 'not-found') return
+        if (stale()) return
+        const readPersistence = getPersistence()
+        const read = await readAllPersistedFrom(sessionId, cursor.nextSeq, readPersistence)
+        const detached = (entryPersistence !== undefined && getPersistence() !== entryPersistence)
+          || (readPersistence !== undefined && getPersistence() !== readPersistence)
+        if (detached && catchupPassId && catchupPassId === coldPassId) coldPassDetached = true
+        if (stale() || detached) return
+        if (read.status === 'not-found') {
+          await owner.retireSessionQuestionReceipts?.(sessionId)
+          return
+        }
         if (read.status === 'error') {
+          transientFailure = true
+          if (catchupPassId && catchupPassId === coldPassId) pendingColdRetries.add(sessionId)
           onError?.(read.error)
-          scheduleColdSessionRetry(sessionId, header)
+          scheduleColdSessionRetry(sessionId, header, catchupPassId, entryPassId, readPersistence)
           return
         }
         if (read.events.length === 0) return
@@ -963,7 +1282,14 @@ export function createSessionIngestion(
           sliceFromSeq: read.fromSeq,
           sliceEndSeq: read.endSeq,
           collectOpenTurn: false,
+          shouldAbort: () => {
+            const changed = (entryPersistence !== undefined && getPersistence() !== entryPersistence)
+              || (readPersistence !== undefined && getPersistence() !== readPersistence)
+            if (changed && catchupPassId && catchupPassId === coldPassId) coldPassDetached = true
+            return stale() || changed
+          },
         })
+        if (outcome.aborted) return
         if (outcome.casRetry) continue
         const entry = queues.get(sessionId)
         if (entry) {
@@ -980,6 +1306,9 @@ export function createSessionIngestion(
         && !sessions.get?.(SessionId(sessionId))) {
         queues.delete(sessionId)
       }
+      if (!transientFailure && catchupPassId && catchupPassId === coldPassId && pendingColdRetries.delete(sessionId)) {
+        maybePruneColdReceipts(catchupPassId)
+      }
     }).catch(() => {})
     return work
   }
@@ -989,17 +1318,25 @@ export function createSessionIngestion(
     if (closed || !owner.epoch || !persistence) return
     clearListRetry()
     const targetEpoch = owner.epoch
+    const passId = ++coldPassId
     listEpoch = targetEpoch
     listFailures = 0
+    coldPassEpoch = targetEpoch
+    coldPassPersistence = persistence
+    coldPassDetached = false
+    coldPassScanned = false
+    coldPassPruned = false
+    coldPassActiveIds = new Set()
+    pendingColdRetries.clear()
 
     const runList = async () => {
-      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId || getPersistence() !== persistence) return
       let snapshots
       try {
         snapshots = await persistence.list()
       } catch (error) {
         onError?.(error)
-        if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+        if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId || getPersistence() !== persistence) return
         listFailures++
         const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(listFailures - 1, 6))
         listRetryTimer = setTimeout(() => {
@@ -1009,15 +1346,25 @@ export function createSessionIngestion(
         listRetryTimer.unref?.()
         return
       }
-      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId || getPersistence() !== persistence) return
       const activeIds = new Set((sessions.list?.() ?? []).map(session => String(session.id)))
+      for (const id of activeIds) coldPassActiveIds.add(id)
+      const coldTasks: Promise<void>[] = []
       for (const snap of snapshots) {
         const sid = String(snap.header.id)
         if (activeIds.has(sid) || sessions.get?.(snap.header.id)) continue
-        void scanCold(sid, snap.header).catch(err => {
+        const task = scanCold(sid, snap.header, passId).catch(err => {
+          if (passId === coldPassId && getPersistence() === persistence) pendingColdRetries.add(sid)
           onError?.(err)
-          scheduleColdSessionRetry(sid, snap.header)
+          scheduleColdSessionRetry(sid, snap.header, passId, passId, persistence)
         })
+        coldTasks.push(task)
+      }
+      await Promise.allSettled(coldTasks)
+      if (!closed && owner.epoch === targetEpoch && listEpoch === targetEpoch && coldPassId === passId
+        && !coldPassDetached && getPersistence() === persistence) {
+        coldPassScanned = true
+        maybePruneColdReceipts(passId)
       }
     }
     void runList()
@@ -1026,21 +1373,26 @@ export function createSessionIngestion(
   return {
     synchronize(session: Session) {
       const sessionId = String(session.id)
+      markLive(sessionId)
+      const targetEndSeq = Number(session.seq)
       const entry = queues.get(sessionId)
       if (entry) {
         clearColdRetry(entry)
         clearLiveRetry(entry)
       }
-      return enqueue(sessionId, () => scanLive(session, false))
+      return enqueue(sessionId, () => scanLive(session, false, targetEndSeq))
     },
     stageOpenTurn(session: Session) {
       const sessionId = String(session.id)
+      markLive(sessionId)
+      const targetEndSeq = Number(session.seq)
       const entry = queues.get(sessionId)
       if (entry) clearColdRetry(entry)
-      return enqueue(sessionId, () => scanLive(session, true))
+      return enqueue(sessionId, () => scanLive(session, true, targetEndSeq))
     },
     beginTurn(session: Session, turn: number, messages: readonly UserMessage[]) {
       const sessionId = String(session.id)
+      markLive(sessionId)
       const { sessionKind, conversation } = detectTurnMetaFromMessages(messages, host)
       return enqueue(sessionId, () => owner.beginTurn({
         sessionId,
@@ -1049,6 +1401,17 @@ export function createSessionIngestion(
         conversation: conversation ?? null,
         cwd: session.header.cwd,
       }))
+    },
+    enqueueQuestionReceipt(receipt: QuestionReceiptInput) {
+      markLive(receipt.sessionId)
+      return enqueue(receipt.sessionId, async () => {
+        if (closed || !owner.recordQuestionReceipt) return
+        try {
+          await owner.recordQuestionReceipt(receipt)
+        } catch (error) {
+          onError?.(error)
+        }
+      })
     },
     scanCold,
     startColdCatchup,
@@ -1087,6 +1450,14 @@ export function createSessionIngestion(
     async drain() {
       closed = true
       clearListRetry()
+      coldPassId++
+      pendingColdRetries.clear()
+      coldPassEpoch = undefined
+      coldPassPersistence = undefined
+      coldPassDetached = false
+      coldPassScanned = false
+      coldPassPruned = false
+      coldPassActiveIds = new Set()
       for (const entry of queues.values()) {
         clearColdRetry(entry)
         clearLiveRetry(entry)

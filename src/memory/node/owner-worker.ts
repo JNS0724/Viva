@@ -129,6 +129,17 @@ async function boot(raw: unknown, signal: AbortSignal) {
   }
 }
 
+const questionReceiptSchema = z.strictObject({
+  sessionId: idSchema,
+  turn: z.number().int().positive(),
+  callSeq: z.number().int().nonnegative(),
+  callIdHash: z.string().regex(/^[0-9a-f]{64}$/u),
+  conversationId: idSchema,
+  answeredAt: z.number().int().positive(),
+  questionProfileGen: z.number().int().nonnegative().nullable(),
+  answerProfileGen: z.number().int().nonnegative().nullable(),
+  answerBatchDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+})
 const inputFrame = z.strictObject({ method: z.string(), args: z.array(z.unknown()).max(8) })
 function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
   const { method, args } = inputFrame.parse(raw)
@@ -137,6 +148,12 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
     intakeCursor: session => current.intakeCursor(idSchema.parse(session)),
     advanceIntakeCursor: input => current.advanceIntakeCursor(input),
     beginTurn: input => current.beginTurn(input),
+    recordQuestionReceipt: input => current.recordQuestionReceipt(questionReceiptSchema.parse(input)),
+    retireSessionQuestionReceipts: session => current.retireSessionQuestionReceipts(idSchema.parse(session)),
+    pruneExpiredQuestionReceipts: (maxAgeMs, excludeSessions) => current.pruneExpiredQuestionReceipts(
+      z.number().int().positive().nullish().parse(maxAgeMs) ?? undefined,
+      z.array(idSchema).nullish().parse(excludeSessions) ?? undefined,
+    ),
     stageOpenTurnSources: input => current.stageOpenTurnSources(input),
     settleTurn: input => current.settleTurn(input, signal),
     bindIntakeSession: (session, cwd) => current.bindIntakeSession(idSchema.parse(session), z.string().nullish().parse(cwd)),
