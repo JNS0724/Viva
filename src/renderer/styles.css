@@ -1,4 +1,4 @@
-/* A 方案 · 工业饱和 Bento · 深海蓝：蓝调深底 + 一个亮蓝；橙/红只在状态出现时用 */
+/* A 方案 · 工业饱和 Bento · 深海蓝（默认深色）与 B 方案 · 工业清透 Bento · 晴海瓷白（浅色） */
 :root {
   color-scheme: dark;
   --bg: #060B16;
@@ -26,6 +26,18 @@
   --error-ink: #FF9AA4;
   /* The maid's own cream (view/maid.ts): her pictures come on it, so her disc is it. Used for her and nothing else. */
   --maid-paper: #FAF7F2;
+  /* Hero saucer outer rim, modal scrim, quiet-section styling, and floating layer shadows: overridden in light mode for crisp daylight elevation. */
+  --saucer-rim: color-mix(in srgb, var(--maid-paper) 26%, transparent);
+  --quiet-opacity: .75;
+  --quiet-bg: transparent;
+  --overlay-bg: rgba(6, 11, 22, .82);
+  --shadow-tip: 0 10px 28px rgba(0, 0, 0, .45);
+  --shadow-toast: 0 16px 40px rgba(0, 0, 0, .5);
+  --shadow-menu: 0 20px 50px rgba(0, 0, 0, .5);
+  --shadow-composer: 0 0 0 4px color-mix(in srgb, var(--accent) 8%, transparent), 0 20px 50px rgba(0, 0, 0, .45);
+  --shadow-island: 0 24px 60px rgba(0, 0, 0, .6);
+  --shadow-sheet: 0 30px 80px rgba(0, 0, 0, .7);
+  --shadow-drawer: -24px 0 60px rgba(0, 0, 0, .45);
   --font-sans: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', Consolas, Menlo, Monaco, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', ui-monospace, monospace;
   --font-dot: 'Doto', 'JetBrains Mono', ui-monospace, monospace;
@@ -76,6 +88,43 @@
   --memory-file-search-min: 12rem;
   --cap-tab-gap: 4px; --cap-tab-padding: 6px;
   --toast-max-width: 560px; --toast-edge: 12px;
+}
+
+/* B 方案 · 工业清透 Bento · 晴海瓷白 (Daylight Porcelain): cool sea-mist surfaces + saturated cobalt/amber semantics, keeping --maid-paper warm cream distinct. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F2F5FA;
+  --panel: #FFFFFF;
+  --panel-2: #F7F9FD;
+  --raised: #E4ECF7;
+  --line: #DAE2EF;
+  --line-2: #C0CEE2;
+  --ink: #0F172A;
+  --ink-2: #3B4C68;
+  --ink-3: #51627C;
+  --mute: #7988A3;
+  --accent: #1050B5;
+  --white: #0F172A;
+  --orange: #AB3F03;
+  --red: #D42336;
+  --drawer-bg: #E9EFF7;
+  --island-bg: #FFFFFF;
+  --line-3: #A4B6D1;
+  --user-line: #C2D4EC;
+  --line-focus: #2A6DD4;
+  --error-ink: #9E1423;
+  --maid-paper: #FAF7F2;
+  --saucer-rim: var(--line-2);
+  --quiet-opacity: 1;
+  --quiet-bg: color-mix(in srgb, var(--panel-2) 70%, var(--bg));
+  --overlay-bg: rgba(15, 23, 42, .38);
+  --shadow-tip: 0 8px 24px rgba(15, 23, 42, .10);
+  --shadow-toast: 0 12px 32px rgba(15, 23, 42, .12);
+  --shadow-menu: 0 16px 40px rgba(15, 23, 42, .12);
+  --shadow-composer: 0 0 0 4px color-mix(in srgb, var(--accent) 7%, transparent), 0 14px 36px rgba(15, 23, 42, .08), 0 2px 6px rgba(15, 23, 42, .04);
+  --shadow-island: 0 20px 48px rgba(15, 23, 42, .14);
+  --shadow-sheet: 0 24px 60px rgba(15, 23, 42, .16);
+  --shadow-drawer: -18px 0 44px rgba(15, 23, 42, .10);
 }
 
 * { box-sizing: border-box; }
@@ -185,7 +234,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
   content: attr(data-tip); position: absolute; left: calc(100% + 6px); top: 50%; transform: translateY(-50%);
   width: max-content; max-width: 280px; padding: 7px 11px; border-radius: 10px; border: 1px solid var(--line-2);
   background: var(--raised); color: var(--ink); font-size: 12px; line-height: 1.5; text-align: left;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, .45); opacity: 0; pointer-events: none; transition: opacity .1s;
+  box-shadow: var(--shadow-tip); opacity: 0; pointer-events: none; transition: opacity .1s;
 }
 .turn-mark:hover::after, .turn-mark:focus-visible::after { opacity: 1; }
 .msg-user-row, .msg-answer { scroll-margin-top: 24px; }
@@ -210,7 +259,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 /* Back to the latest (view/scroll-follow.ts): an arrow only, a quiet way down while reading further up. */
 .jump-latest {
   align-self: center; flex: none; display: grid; place-items: center; width: 36px; height: 36px; margin: 0 0 4px; padding: 0;
-  border: none; border-radius: 50%; background: var(--accent); color: var(--bg); cursor: pointer; box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  border: none; border-radius: 50%; background: var(--accent); color: var(--bg); cursor: pointer; box-shadow: var(--shadow-tip);
 }
 .home { width: 100%; max-width: 1240px; min-height: 100%; padding: 24px 0; box-sizing: border-box; }
 .thread { width: 100%; max-width: var(--col, 760px); display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
@@ -251,7 +300,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .topic-head:hover .topic-back, .topic-head .topic-back:focus-visible, .topic-old[open] .topic-back { opacity: 1; }
 .topic-chevron { flex: none; width: 8px; height: 8px; border-right: 1.5px solid var(--ink-3); border-bottom: 1.5px solid var(--ink-3); transform: rotate(45deg) translateY(-2px); transition: transform .15s; }
 .topic-old[open] .topic-chevron { transform: rotate(225deg) translateY(-2px); }
-.topic-body { display: flex; flex-direction: column; gap: 28px; padding: 20px 18px; opacity: .75; }
+.topic-body { display: flex; flex-direction: column; gap: 28px; padding: 20px 18px; background: var(--quiet-bg); border-radius: 0 0 14px 14px; opacity: var(--quiet-opacity); }
 .topic-back {
   height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel);
   color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
@@ -281,7 +330,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .ctx-chip[data-tone="full"] .ctx-bar i { background: var(--orange); }
 .ctx-menu {
   position: absolute; left: 0; bottom: 36px; z-index: 30; width: 290px; max-height: min(360px, calc(100vh - 180px)); overflow-y: auto;
-  padding: 6px; border: 1px solid var(--line-2); border-radius: 14px; background: var(--panel-2); box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+  padding: 6px; border: 1px solid var(--line-2); border-radius: 14px; background: var(--panel-2); box-shadow: var(--shadow-menu);
 }
 .ctx-menu-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.6; color: var(--ink-3); }
 .ctx-menu-info b { color: var(--ink); font-weight: 600; }
@@ -298,7 +347,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 /* ---------- composer ---------- */
 .composer {
   width: 100%; max-width: var(--col, 760px); margin-top: 12px; background: var(--panel); border: 1px solid var(--line-2);
-  border-radius: 22px; padding: 16px 12px 12px 18px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 8%, transparent), 0 20px 50px rgba(0, 0, 0, .45);
+  border-radius: 22px; padding: 16px 12px 12px 18px; box-shadow: var(--shadow-composer);
 }
 .composer:focus-within { border-color: var(--line-focus); }
 .composer textarea {
@@ -356,7 +405,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 /* Shorter windows keep the greeting, the card and the input in view without sub-pixel zoom blurring her ring: 200px becomes 120px, then 90px. */
 @media (max-height: 820px) { .maid-hero .maid, .maid-hero .maid-image { width: var(--hero-maid-medium) !important; height: var(--hero-maid-medium) !important; } }
 @media (max-height: 680px) { .maid-hero .maid, .maid-hero .maid-image { width: var(--hero-maid-short) !important; height: var(--hero-maid-short) !important; } }
-.maid-hero .maid { box-shadow: 0 0 0 2px var(--maid-ring), 0 0 0 13px var(--panel), 0 0 0 14px color-mix(in srgb, var(--maid-paper) 26%, transparent); }
+.maid-hero .maid { box-shadow: 0 0 0 2px var(--maid-ring), 0 0 0 13px var(--panel), 0 0 0 14px var(--saucer-rim); }
 
 .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; background: var(--mute); }
 .dot[data-tone="working"] { background: var(--accent); }
@@ -497,7 +546,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 /* A folded path opened in place: read-only, set off from the conversation it hangs in. */
 .fold-body {
   display: flex; flex-direction: column; gap: 22px; margin-top: -14px; padding: 18px 16px 18px 20px;
-  border: 1px dashed var(--line-2); border-top: none; border-radius: 0 0 12px 12px; opacity: .7;
+  border: 1px dashed var(--line-2); border-top: none; border-radius: 0 0 12px 12px; background: var(--quiet-bg); opacity: var(--quiet-opacity);
 }
 .msg-via-failed { color: var(--error-ink); }
 /* A file: a white page with two blue lines. */
@@ -606,7 +655,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .ask-option[aria-pressed="true"] { border-color: var(--accent); }
 .ask-option { height: 40px; padding: 0 18px; font-size: 14px; }
 .msg-answer { display: flex; flex-direction: column; gap: 4px; }
-.msg-asked { font-size: 12px; opacity: .6; white-space: pre-wrap; }
+.msg-asked { font-size: 12px; color: var(--ink-2); white-space: pre-wrap; }
 .btn { height: 46px; padding: 0 24px; border-radius: 12px; font-size: 15px; font-weight: 700; cursor: pointer; }
 /* A card's buttons by role (prompt-card.js), as on the island: the main one filled, the others outlined, the least a link. */
 .btn-primary { background: var(--orange); color: var(--bg); border: none; }
@@ -674,7 +723,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .app-icon { width: 16px; height: 16px; flex: none; }
 .open-menu {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 10; min-width: 220px; max-height: 320px; overflow-y: auto;
-  display: flex; flex-direction: column; padding: 6px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: 0 16px 40px rgba(0, 0, 0, .5);
+  display: flex; flex-direction: column; padding: 6px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--shadow-toast);
 }
 .open-item { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 10px; border: none; border-radius: 6px; background: none; color: var(--ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
 .open-item:hover, .open-item:focus-visible { background: var(--raised); }
@@ -696,6 +745,15 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .hljs-deletion { color: #FF7A86; }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 700; }
+/* Daylight Porcelain code highlighting (all >= 4.7:1 on #FFFFFF). */
+:root[data-theme="light"] .hljs-comment, :root[data-theme="light"] .hljs-quote { color: #64748B; }
+:root[data-theme="light"] .hljs-keyword, :root[data-theme="light"] .hljs-selector-tag, :root[data-theme="light"] .hljs-built_in, :root[data-theme="light"] .hljs-type { color: #C2490A; }
+:root[data-theme="light"] .hljs-string, :root[data-theme="light"] .hljs-regexp, :root[data-theme="light"] .hljs-addition, :root[data-theme="light"] .hljs-attribute, :root[data-theme="light"] .hljs-template-tag { color: #127A4B; }
+:root[data-theme="light"] .hljs-number, :root[data-theme="light"] .hljs-literal, :root[data-theme="light"] .hljs-symbol, :root[data-theme="light"] .hljs-bullet { color: #A86200; }
+:root[data-theme="light"] .hljs-title, :root[data-theme="light"] .hljs-section, :root[data-theme="light"] .hljs-function .hljs-title, :root[data-theme="light"] .hljs-title.class_ { color: #145CC9; }
+:root[data-theme="light"] .hljs-attr, :root[data-theme="light"] .hljs-variable, :root[data-theme="light"] .hljs-property, :root[data-theme="light"] .hljs-name, :root[data-theme="light"] .hljs-tag { color: #1E4E9E; }
+:root[data-theme="light"] .hljs-meta, :root[data-theme="light"] .hljs-doctag { color: #6D3CC4; }
+:root[data-theme="light"] .hljs-deletion { color: #B91C2C; }
 
 
 .trace { list-style: none; margin: 0; padding: 0; }
@@ -779,7 +837,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .perm-chip[data-level="danger-full-access"] { color: var(--orange); }
 .perm-menu {
   position: absolute; left: 0; bottom: 40px; z-index: 30; width: min(340px, calc(100vw - 32px)); max-height: min(360px, calc(100vh - 180px)); overflow-y: auto;
-  padding: 6px; border: 1px solid var(--line-2); border-radius: 14px; background: var(--panel-2); box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+  padding: 6px; border: 1px solid var(--line-2); border-radius: 14px; background: var(--panel-2); box-shadow: var(--shadow-menu);
 }
 .perm-menu-head { padding: 8px 10px 6px; font-size: 12px; color: var(--ink-3); }
 .perm-item {
@@ -800,7 +858,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .model-btn[aria-expanded="true"] > svg, .workdir-chip[aria-expanded="true"] > svg { transform: rotate(180deg); }
 .workdir-menu {
   position: absolute; left: 0; bottom: calc(100% + 10px); width: min(340px, calc(100vw - 32px)); max-height: min(360px, calc(100vh - 180px)); overflow-y: auto; z-index: 30; padding: 6px;
-  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 20px 50px rgba(0, 0, 0, .6);
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow-menu);
   display: flex; flex-direction: column;
 }
 @media (max-width: 960px) {
@@ -824,10 +882,10 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .workdir-sep { height: 1px; margin: 5px 4px; background: var(--line); }
 /* A toast over the open menu would cover what the user is picking from; it waits until the menu closes. */
 body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibility: hidden; }
-.workdir-scrim { position: fixed; inset: 0; z-index: 60; background: color-mix(in srgb, var(--bg) 60%, transparent); }
+.workdir-scrim { position: fixed; inset: 0; z-index: 60; background: var(--overlay-bg); }
 .workdir-sheet {
   position: fixed; left: 50%; top: 50%; z-index: 61; transform: translate(-50%, -50%); width: min(440px, calc(100vw - 48px));
-  padding: 22px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: 0 30px 80px rgba(0, 0, 0, .7);
+  padding: 22px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--shadow-sheet);
   display: flex; flex-direction: column; gap: 12px;
 }
 .workdir-sheet-title { font-size: 17px; font-weight: 700; }
@@ -848,7 +906,7 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 .model-menu {
   position: absolute; left: 0; bottom: calc(100% + 10px); width: min(320px, calc(100vw - 32px)); max-height: min(360px, calc(100vh - 180px)); overflow-y: auto; z-index: 30;
   background: var(--panel); border: 1px solid var(--line-2); border-radius: 20px; padding: 10px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, .55); display: flex; flex-direction: column; gap: 8px;
+  box-shadow: var(--shadow-island); display: flex; flex-direction: column; gap: 8px;
 }
 .model-menu .label { color: var(--ink-3); margin-top: 4px; }
 .model-option {
@@ -869,7 +927,7 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 .overlay {
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px;
   /* No backdrop blur: with it, every repaint behind the panel made scrolling stutter. */
-  background: rgba(6, 11, 22, .82);
+  background: var(--overlay-bg);
 }
 /* The 设置 and 关于你 pages of the hub: a column of sections, the page around them scrolls. */
 .settings { display: flex; flex-direction: column; gap: 18px; }
@@ -894,6 +952,8 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 .btn-accent { background: var(--accent); color: var(--bg); border: none; }
 .btn-field { height: 48px; padding: 0 16px; }
 .help { margin: 0; font-size: 13px; line-height: 1.7; color: var(--ink-3); }
+/* view/settings.ts: failed preference save sets a state attribute on the persistent help line. */
+.help[data-error="true"] { color: var(--error-ink); }
 .pref-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; }
 .pref-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .switch { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); cursor: pointer; }
@@ -1242,7 +1302,7 @@ body:not(:has(.overlay)) .app:has(.hub[data-open="true"][data-page="profile"]) >
 }
 .toast {
   display: flex; align-items: center; gap: 16px; padding: 10px 12px 10px 18px; border-radius: 999px;
-  background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 16px 40px rgba(0, 0, 0, .5);
+  background: var(--raised); border: 1px solid var(--line-2); box-shadow: var(--shadow-toast);
   font-size: 13px; color: var(--ink); max-width: min(var(--toast-max-width), 90vw);
 }
 .toast > span { min-width: 0; overflow-wrap: anywhere; }
@@ -1256,7 +1316,7 @@ body:not(:has(.overlay)) .app:has(.hub[data-open="true"][data-page="profile"]) >
 @media (max-width: 1100px) {
   .drawer[data-open="true"] {
     position: absolute; top: 0; right: 0; bottom: 0; z-index: 30; width: min(var(--drawer-width), 100vw) !important;
-    box-shadow: -24px 0 60px rgba(0, 0, 0, .45);
+    box-shadow: var(--shadow-drawer);
   }
   .drawer-request:not([hidden]) {
     display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px;
@@ -1308,6 +1368,7 @@ body:not(:has(.overlay)) .app:has(.hub[data-open="true"][data-page="profile"]) >
 @media (prefers-reduced-motion: reduce) { .fu-card .pulse-dot { animation: none; } }
 .home-today { border-color: var(--accent); }
 
-/* Reveal only after the persisted interface language is available. */
+/* Reveal only after the persisted interface language and theme are available; keep html transparent so the window's theme backgroundColor paints without flashing dark. */
+html[data-language-loading], html[data-language-loading] body { background: transparent; }
 html[data-language-loading] body { visibility: hidden; }
 .pref-row select { max-width: 45%; min-width: 8em; }

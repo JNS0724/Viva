@@ -1,6 +1,9 @@
 import { createConversationActions } from './conversation-actions.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { initializeLanguage, registerLanguageDocument } from './language.ts'
+import { applyThemeDocument, registerThemeDocument } from './theme.ts'
+import { createThemeActions } from './theme-actions.ts'
+import type { ThemePreference } from '../shared/theme.ts'
 import { icon } from './view/icons.ts'
 import { withFiles } from '../shared/attachments.ts'
 import { IMAGE_TYPES } from '../shared/images.ts'
@@ -474,6 +477,16 @@ doneNotice = createDoneNotice({
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer, loadPlugins: () => pluginActions.loadPlugins() })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const diagnosticActions = createDiagnosticsActions({ api, getState: () => state, dispatch })
+const themeActions = createThemeActions({
+  api,
+  getState: () => state,
+  dispatch,
+  seed: (action) => { state = reduce(state, action) },
+  applyDocument: applyThemeDocument,
+  isFocused: () => document.activeElement instanceof HTMLSelectElement && document.activeElement.name === 'theme',
+  canRestoreFocus: () => document.activeElement == null || document.activeElement === document.body || document.activeElement === document.documentElement,
+  focusControl: () => { dom.settings.querySelector<HTMLSelectElement>('select[name="theme"]')?.focus({ preventScroll: true }) },
+})
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
 const importFlowActions = createImportFlowActions({ api, getState: () => state, dispatch, errorMessage })
 const capabilityActions = createCapabilityActions({
@@ -688,6 +701,7 @@ const handlers = {
     }
     return undefined
   },
+  setTheme: (theme: ThemePreference) => themeActions.setTheme(theme),
   /** 联网搜索 switched: dsh starts again with or without web_search, keeping the conversation on screen. */
   async setWebSearch(on: boolean) {
     if (state.switching || state.newTopicPending || state.settings.webSearchBusy) return
@@ -1071,7 +1085,10 @@ async function initializeConversation() {
 }
 
 async function boot() {
-  if (api) await initializeLanguage(api, () => { render(dom, state, handlers); publishIsland() })
+  if (api) {
+    try { await themeActions.initialize() } catch (err) { console.error('[theme] initialization failed:', errorMessage(err)) }
+    await initializeLanguage(api, () => { render(dom, state, handlers); publishIsland() })
+  }
   labelShortcuts()
   render(dom, state, handlers)
   if (!api) {
@@ -1100,6 +1117,7 @@ async function boot() {
   void mountHistorySearchFrame(dom.historySearch).then((searchDocument) => {
     if (searchDocument) {
       registerLanguageDocument(searchDocument)
+      registerThemeDocument(searchDocument)
       const frame = document.getElementById('history-search-frame')
       if (frame) frame.dataset.i18nTitle = 'shell.search.conversations'
       wireDismissal(searchDocument)

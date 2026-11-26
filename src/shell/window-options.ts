@@ -1,5 +1,6 @@
 import path from 'node:path'
 import type { BrowserWindowConstructorOptions } from 'electron'
+import type { ResolvedTheme } from '../shared/theme.ts'
 
 /** Window chrome, size and icon per platform. Pure, so the choices can be tested on any OS. */
 
@@ -9,8 +10,10 @@ import type { BrowserWindowConstructorOptions } from 'electron'
  * in step with styles.css --titlebar-h.
  */
 export const TITLEBAR_HEIGHT = 72
-const BACKGROUND = '#060B16'
-const SYMBOL_COLOR = '#A3B0CC'
+const CHROME_PALETTE: Readonly<Record<ResolvedTheme, Readonly<{ background: string, symbolColor: string }>>> = Object.freeze({
+  dark: Object.freeze({ background: '#060B16', symbolColor: '#A3B0CC' }),
+  light: Object.freeze({ background: '#F2F5FA', symbolColor: '#3B4C68' }),
+})
 const TRAFFIC_LIGHT_HEIGHT = 14
 const TRAFFIC_LIGHT_X = 18
 const PREFERRED = { width: 1360, height: 860 }
@@ -18,11 +21,19 @@ const MINIMUM = { width: 880, height: 600 }
 /** Leave some desktop around the window on small or scaled screens. */
 const SCREEN_SHARE = 0.9
 
+export const windowBackground = (theme: ResolvedTheme = 'dark'): string => CHROME_PALETTE[theme].background
+
+export const titleBarOverlay = (theme: ResolvedTheme = 'dark') => ({
+  color: CHROME_PALETTE[theme].background,
+  symbolColor: CHROME_PALETTE[theme].symbolColor,
+  height: TITLEBAR_HEIGHT,
+})
+
 /**
  * macOS keeps its traffic lights on the left; Windows and Linux get system-drawn buttons on the right
  * (`titleBarOverlay`), which the page makes room for via `env(titlebar-area-width)`.
  */
-export function windowChrome(platform: string): Partial<BrowserWindowConstructorOptions> {
+export function windowChrome(platform: string, theme: ResolvedTheme = 'dark'): Partial<BrowserWindowConstructorOptions> {
   if (platform === 'darwin') {
     return {
       titleBarStyle: 'hiddenInset',
@@ -31,7 +42,7 @@ export function windowChrome(platform: string): Partial<BrowserWindowConstructor
   }
   return {
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: BACKGROUND, symbolColor: SYMBOL_COLOR, height: TITLEBAR_HEIGHT },
+    titleBarOverlay: titleBarOverlay(theme),
   }
 }
 

@@ -22,7 +22,7 @@ import { renderModelPicker } from './model-picker.ts'
 import { renderProfilePanel } from './profile-panel.ts'
 import { renderRewindConfirm } from './rewind.ts'
 import { renderResumeDialog } from './resume-dialog.ts'
-import { renderSettings } from './settings.ts'
+import { renderSettings, updateThemeControl } from './settings.ts'
 import { renderCapabilitiesPage } from './capabilities.ts'
 import { capabilityProblems } from '../capabilities-state.ts'
 import { renderThread } from './thread.ts'
@@ -81,10 +81,12 @@ function renderPermissionIfChanged(area: HTMLElement | null, state: State, handl
 }
 
 function renderSettingsIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
-  const inputs = [localeRevision(), state.settings, state.models, state.diagnostics]
+  const inputs = [localeRevision(), state.settings, state.models, state.diagnostics, state.theme.theme, state.theme.pending, state.theme.failed]
   if (inputs.every((value, i) => value === renderedSettings[i])) return
+  const onlyThemeChanged = renderedSettings.length === inputs.length && inputs.slice(0, 4).every((value, i) => value === renderedSettings[i])
   renderedSettings = inputs
-  renderSettings(container, state.settings, state.models, handlers, state.diagnostics)
+  if (onlyThemeChanged && updateThemeControl(container, state.theme)) return
+  renderSettings(container, state.settings, state.models, handlers, state.diagnostics, state.theme)
 }
 let renderedCapabilities: unknown[] = []
 /** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins, how the servers stand now, and on itself. */

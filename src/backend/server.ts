@@ -8,6 +8,7 @@ import { imageResponse } from './image-protocol.ts'
 import { checkedIpc } from '../shared/ipc-contract.ts'
 import { createBackend } from './compose.ts'
 import { createEnvelope } from './envelope.ts'
+import { SHELL_PREFERENCES } from './preferences.ts'
 import { createRemoteHost } from './remote-host.ts'
 import { type ChannelListener, createRpcServer } from './rpc-server.ts'
 import { type ChannelKind, type FailedMessage, MIRROR, type ReadyMessage, START, type StartMessage } from './wire.ts'
@@ -20,8 +21,6 @@ import { type ChannelKind, type FailedMessage, MIRROR, type ReadyMessage, START,
  */
 /** The signals the shell may send; the others come from inside the backend. */
 const SHELL_SIGNALS = new Set(['window.foreground', 'system.woke'])
-/** The preferences the shell writes (the desktop island's switch and places). */
-const SHELL_PREFERENCES = new Set(['deskIsland', 'deskPlaces'])
 
 function reply(message: ReadyMessage) {
   process.send?.(message)

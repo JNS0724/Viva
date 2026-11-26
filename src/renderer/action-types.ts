@@ -231,6 +231,10 @@ export interface ActionPayloads extends ConversationPayloads {
   tasks_page_steps: { open?: boolean }
   tasks_page_all_steps: {}
   task_closed: { taskId: string }
+  theme_applied: { theme: import('../shared/theme.ts').ThemeState }
+  theme_synced: { theme: import('../shared/theme.ts').ThemeState }
+  theme_saving: { theme: import('../shared/theme.ts').ThemePreference }
+  theme_failed: {}
 }
 
 export interface TaskStream { taskId: string, runId: string, seq: number, at: number }

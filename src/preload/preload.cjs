@@ -69,6 +69,13 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
     ipcRenderer.on('language:changed', listener)
     return () => ipcRenderer.removeListener('language:changed', listener)
   },
+  getTheme: () => ipcRenderer.invoke('theme:get'),
+  setTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
+  onTheme: (callback) => {
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {import('../shared/theme.ts').ThemeState} */ state) => callback(state)
+    ipcRenderer.on('theme:changed', listener)
+    return () => ipcRenderer.removeListener('theme:changed', listener)
+  },
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: process.platform,
   getInfo: () => ipcRenderer.invoke('agent:info'),

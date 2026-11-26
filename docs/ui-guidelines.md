@@ -6,40 +6,40 @@ These are the visual and interaction rules of Viva's current interface, taken fr
 
 ## Direction
 
-The code calls it "Plan A · industrial saturated Bento · deep-sea blue":
+The interface ships with two switchable themes sharing the same geometric Bento structure and semantic colour rules: the default "Plan A · industrial saturated Bento · deep-sea blue" and the light counterpart "Plan B · industrial crisp Bento · daylight porcelain" (or follow the system setting in Settings):
 
-- **Dark only.** `color-scheme: dark`. There is no light theme, and it does not follow the system setting.
-- **One accent.** Blue-tinted dark surfaces with a single bright blue, `--accent`. Orange and red appear only when there is a state to show; normally you don't see them.
-- **Flat and geometric.** Depth comes from surface steps and 1px borders. Only things that float (menus, tips, toasts, the open island) get shadows. No gradient backgrounds and no frosted glass: `backdrop-filter` made every repaint behind it stutter, so scrims are translucent solid colors.
-- **The only cream is the maid.** Her pictures come on cream (`--maid-paper`), so her disc is that cream and a round crop shows no square edge. Nothing else in the interface uses it, the way orange is only ever waiting on you.
+- **Switchable dark and light themes.** `:root` defaults to `color-scheme: dark`, while `:root[data-theme="light"]` switches to `color-scheme: light`. Changing the preference updates `nativeTheme`, window background, Windows/Linux `titleBarOverlay`, the desktop island, and the isolated history search frame together.
+- **One accent.** Blue-tinted dark surfaces pair with bright sky blue `--accent`; cool sea-mist and porcelain light surfaces pair with saturated cobalt `--accent`. Orange and red appear only when there is a state to show; normally you don't see them.
+- **Flat and geometric.** Depth comes from surface steps and 1px borders. Only things that float (menus, tips, toasts, the open island) get shadows, defined via `:root` shadow tokens. No gradient backgrounds and no frosted glass: `backdrop-filter` made every repaint behind it stutter, so scrims are translucent solid colors (`--overlay-bg`).
+- **The only cream is the maid.** Her pictures come on cream (`--maid-paper`), so her disc is that cream and a round crop shows no square edge. Light surfaces deliberately stay cool sea-mist and porcelain white so her warm cream disc remains distinct; nothing else in the interface uses cream, the way orange is only ever waiting on you.
 
 ## Color
 
-Everything is defined on `:root` in `styles.css`. Use only tokens. If you need a new color, add a token first and say what it is for.
+Everything is defined on `:root` (dark) and `:root[data-theme="light"]` (light) in `styles.css`. Use only tokens. If you need a new color, add a token first and say what it is for.
 
-| Token | Value | Use |
-| --- | --- | --- |
-| `--bg` | `#060B16` | Window background; also the inside of fields (`.field`), one step below the card they sit on |
-| `--panel` | `#0D1526` | Cards, the composer, icon buttons |
-| `--panel-2` | `#111B30` | Menus, tab group backgrounds, hovered rows |
-| `--raised` | `#15203A` | Small raised pieces: chips, badges, tips, toasts, code blocks |
-| `--line` | `#1B2742` | Default borders and dividers |
-| `--line-2` | `#263557` | One step stronger: secondary buttons, menu edges, hovered borders |
-| `--ink` | `#EEF3FF` | Primary text |
-| `--ink-2` | `#A3B0CC` | Secondary text, unselected controls |
-| `--ink-3` | `#7686A6` | Help text, metadata, placeholders, disabled items |
-| `--mute` | `#3C4A68` | The faintest marks (turn rail ticks and the like) |
-| `--accent` | `#5AA9FF` | Actionable, selected, focused, done |
-| `--orange` | `#FF8A3D` | **Waiting on the user**: confirmation cards, waiting tasks, a nearly full context |
-| `--red` | `#FF4D5E` | Errors and destructive actions |
-| `--white` | `#EEF3FF` | The send button's busy background |
-| `--drawer-bg` | `#0A1120` | The drawer beside the conversation |
-| `--island-bg` | `#070C18` | The island (title bar and desktop) |
-| `--line-3` | `#2E3D5E` | Dashed and outline borders: empty states, `.btn-outline` |
-| `--user-line` | `#1F2C49` | The border of the user's own messages |
-| `--line-focus` | `#3A4C72` | The composer's border while focused |
-| `--error-ink` | `#FF9AA4` | Error text |
-| `--maid-paper` | `#FAF7F2` | Her disc, and nothing else (view/maid.ts) |
+| Token | Dark (Deep-Sea Blue) | Light (Daylight Porcelain) | Use |
+| --- | --- | --- | --- |
+| `--bg` | `#060B16` | `#F2F5FA` | Window background; also the inside of fields (`.field`), one step below the card they sit on |
+| `--panel` | `#0D1526` | `#FFFFFF` | Cards, the composer, icon buttons |
+| `--panel-2` | `#111B30` | `#F7F9FD` | Menus, tab group backgrounds, hovered rows |
+| `--raised` | `#15203A` | `#E4ECF7` | Small raised pieces: chips, badges, user bubbles, tips, toasts, code blocks |
+| `--line` | `#1B2742` | `#DAE2EF` | Default borders and dividers |
+| `--line-2` | `#263557` | `#C0CEE2` | One step stronger: secondary buttons, menu edges, hovered borders |
+| `--ink` | `#EEF3FF` | `#0F172A` | Primary text |
+| `--ink-2` | `#A3B0CC` | `#3B4C68` | Secondary text, unselected controls |
+| `--ink-3` | `#7686A6` | `#51627C` | Help text, metadata, placeholders, disabled items |
+| `--mute` | `#3C4A68` | `#7988A3` | The faintest marks (turn rail ticks and the like) |
+| `--accent` | `#5AA9FF` | `#1050B5` | Actionable, selected, focused, done |
+| `--orange` | `#FF8A3D` | `#AB3F03` | **Waiting on the user**: confirmation cards, waiting tasks, a nearly full context |
+| `--red` | `#FF4D5E` | `#D42336` | Errors and destructive actions |
+| `--white` | `#EEF3FF` | `#0F172A` | The send button's busy background (inverts to deep ink in light mode for contrast) |
+| `--drawer-bg` | `#0A1120` | `#E9EFF7` | The drawer beside the conversation |
+| `--island-bg` | `#070C18` | `#FFFFFF` | The island (title bar and desktop) |
+| `--line-3` | `#2E3D5E` | `#A4B6D1` | Dashed and outline borders: empty states, `.btn-outline` |
+| `--user-line` | `#1F2C49` | `#C2D4EC` | The border of the user's own messages |
+| `--line-focus` | `#3A4C72` | `#2A6DD4` | The composer's border while focused |
+| `--error-ink` | `#FF9AA4` | `#9E1423` | Error text |
+| `--maid-paper` | `#FAF7F2` | `#FAF7F2` | Her disc, and nothing else (view/maid.ts) |
 
 Each color has one meaning, and it stays the same wherever it appears:
 
@@ -47,9 +47,9 @@ Each color has one meaning, and it stays the same wherever it appears:
 - **Orange = waiting on you.** The island's rim and dot, her ring, the confirmation card's edge and pulse dot, and `.btn-primary`. Use an orange button only on a card that waits for the user's decision. A page's ordinary main action is blue, `.btn-accent`.
 - **Red = something went wrong.** Use it for borders, a 3px left bar, or a faint background mixed with `color-mix`. Error text uses `--error-ink`; plain `--red` text doesn't have enough contrast.
 
-Mix alpha variants from the token, for example `color-mix(in srgb, var(--accent) 12%, transparent)` or `color-mix(in srgb, var(--orange) 16%, var(--panel))`, never `rgba(90, 169, 255, .12)`. The black `rgba(0, 0, 0, …)` used for shadows isn't covered by this rule.
+Mix alpha variants from the token, for example `color-mix(in srgb, var(--accent) 12%, transparent)` or `color-mix(in srgb, var(--orange) 16%, var(--panel))`, never `rgba(90, 169, 255, .12)`. Shadows and modal scrims switch through `--shadow-*` and `--overlay-bg` tokens on `:root`.
 
-`test/renderer-css.test.ts` checks these rules: no hex color values outside `:root`, and no `rgba` for the accent, orange or red. Syntax highlighting (`.hljs-*`) has its own palette and is a deliberate exception.
+`test/renderer-css.test.ts` checks these rules: no hex color values outside `:root` and `:root[data-theme="light"]`, and no `rgba` for the accent, orange or red. Syntax highlighting (`.hljs-*`, with its light override) has its own palette and is a deliberate exception.
 
 ## Type
 
@@ -178,7 +178,7 @@ Reuse existing components before writing similar styles of your own.
 - **Cards.** `--panel` background, `--line` border, 14px radius. A card that needs the user to act gets a 22px radius and a state-colored border: the confirmation card `.confirm` is orange, the home to-do card is blue.
 - **Empty states, `.empty`.** Dashed border, 16px radius, centered 13px `--ink-3` text that says what will appear here and how to make it appear.
 - **Toasts.** A pill at the bottom center, with at most one blue action. The message can wrap and the action stays on one line. A toast moves to the top while a dialog or hub page is open. On About You it takes its own row above the page to keep the memory fields accessible. Show one with `showToast`.
-- **Modal dialogs, `.overlay`.** A solid `rgba(6, 11, 22, .82)` scrim with no blur. Needs `aria-modal`; Esc closes it.
+- **Modal dialogs, `.overlay` / `.workdir-scrim`.** A solid `--overlay-bg` scrim (`rgba(6, 11, 22, .82)` in dark, `rgba(15, 23, 42, .38)` in light) with no blur. Needs `aria-modal`; Esc closes it.
 - **Errors and notices.** Under a form, use `.form-error` (light red) or `.form-notice` (blue), 13px. Help text is `.help`.
 
 ## State lives in attributes
@@ -194,13 +194,15 @@ Express state with attributes and select on them in CSS. Don't add state classes
 
 Elevation (only for things that float):
 
-| Where | Shadow |
-| --- | --- |
-| Tips | `0 10px 28px rgba(0, 0, 0, .45)` |
-| Toasts | `0 16px 40px rgba(0, 0, 0, .5)` |
-| Menus, the composer | `0 20px 50px rgba(0, 0, 0, .5)` (.45 for the composer) |
-| The open island | `0 24px 60px rgba(0, 0, 0, .6)` |
-| Focus or drop glow | `0 0 0 3–6px` of the accent at .08–.18 opacity |
+| Where | Token | Dark / Light value |
+| --- | --- | --- |
+| Tips, jump-to-latest | `--shadow-tip` | `0 10px 28px rgba(0, 0, 0, .45)` / `0 8px 24px rgba(15, 23, 42, .10)` |
+| Toasts, open-with menu | `--shadow-toast` | `0 16px 40px rgba(0, 0, 0, .5)` / `0 12px 32px rgba(15, 23, 42, .12)` |
+| Menus | `--shadow-menu` | `0 20px 50px rgba(0, 0, 0, .5)` / `0 16px 40px rgba(15, 23, 42, .12)` |
+| The composer | `--shadow-composer` | Accent halo + drop shadow (switched per theme) |
+| The open island, model menu | `--shadow-island` | `0 24px 60px rgba(0, 0, 0, .6)` / `0 20px 48px rgba(15, 23, 42, .14)` |
+| Modal sheets, narrow drawer | `--shadow-sheet` / `--shadow-drawer` | Switched per theme |
+| Focus or drop glow | — | `0 0 0 3–6px` of the accent at .08–.18 opacity |
 
 Motion:
 
