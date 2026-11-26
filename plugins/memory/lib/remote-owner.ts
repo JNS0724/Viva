@@ -50,7 +50,8 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection) {
     beginTurn: (input: Parameters<OwnerAdapterApi['beginTurn']>[0]) => call('beginTurn', [input]),
     recordQuestionReceipt: (input: Parameters<OwnerAdapterApi['recordQuestionReceipt']>[0]) => call('recordQuestionReceipt', [input]),
     retireSessionQuestionReceipts: (session: string) => call('retireSessionQuestionReceipts', [session]),
-    pruneExpiredQuestionReceipts: (maxAgeMs?: number) => call('pruneExpiredQuestionReceipts', maxAgeMs === undefined ? [] : [maxAgeMs]),
+    pruneExpiredQuestionReceipts: (maxAgeMs?: number, excludeSessions?: readonly string[]) =>
+      call('pruneExpiredQuestionReceipts', excludeSessions !== undefined ? [maxAgeMs, excludeSessions] : maxAgeMs === undefined ? [] : [maxAgeMs]),
     stageOpenTurnSources: (input: Parameters<OwnerAdapterApi['stageOpenTurnSources']>[0]) => call('stageOpenTurnSources', [input]),
     settleTurn: (input: Parameters<OwnerAdapterApi['settleTurn']>[0]) => call('settleTurn', [input]),
     bindIntakeSession: (...args: Parameters<OwnerAdapterApi['bindIntakeSession']>) => call('bindIntakeSession', args),

@@ -60,10 +60,12 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     [],
   )
 
-  // 2. Contextual split credentials across bare & punctuated question/header + custom answer, while safe sibling survives.
+  // 2. Contextual split credentials across bare, punctuated, formatted, & qualified OTP prompts, while safe sibling survives.
   const cards = [
     { id: 'c-bare', question: 'OTP', header: 'Auth' },
     { id: 'c-en', question: 'What is your OTP?', header: 'Login' },
+    { id: 'c-fmt', question: 'What is your OTP?', header: 'SMS' },
+    { id: 'c-qual', question: 'What is the OTP sent to your phone?', header: 'Verify' },
     { id: 'c-zh', question: '请输入验证码：', header: '安全验证' },
     { id: 'c-pwd', question: 'Password?', header: 'Account' },
     { id: 'c-hdr', question: 'Enter value', header: `${' '.repeat(210)}OTP` },
@@ -72,6 +74,8 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
   const answers = [
     { id: 'c-bare', selected: [], custom: '123456' },
     { id: 'c-en', selected: [], custom: '123456' },
+    { id: 'c-fmt', selected: [], custom: '123 456' },
+    { id: 'c-qual', selected: [], custom: '123456' },
     { id: 'c-zh', selected: [], custom: '123456' },
     { id: 'c-pwd', selected: [], custom: 'hunter2' },
     { id: 'c-hdr', selected: [], custom: '123456' },
@@ -102,13 +106,21 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     [{ id: 'c2', question: 'B?', custom: 'clean answer' }],
   )
 
-  // 4. Linear O(n) backward punctuation scan (no ReDoS on 32,000-char padded headers).
+  // 4. Linear O(n) timing across BOTH punctuation strip AND full eligibility/looksSecret on 32,000-char padded OTP headers.
   const paddedLeading = `${' '.repeat(32_000)}OTP`
   const paddedTrailing = `OTP${' '.repeat(32_000)}`
   const t0 = performance.now()
   assert.equal(stripTrailingPromptPunctuation(paddedLeading), paddedLeading)
   assert.equal(stripTrailingPromptPunctuation(paddedTrailing), 'OTP')
-  assert.ok(performance.now() - t0 < 50, 'backward scan must run in linear time without regex backtracking')
+  assert.equal(areRawCardsMemoryEligible([{ id: 'pad1', question: 'Value?', header: paddedTrailing }]), true)
+  assert.deepEqual(
+    eligibleQuestionAnswers(
+      [{ id: 'pad1', question: 'Value?', header: paddedTrailing }],
+      [{ id: 'pad1', selected: [], custom: '123456' }],
+    ),
+    [],
+  )
+  assert.ok(performance.now() - t0 < 100, 'full eligibility + OTP matcher must run in linear time without regex backtracking')
 })
 
 test('Phase 4B §5.5: host question-channel retains >200-char rawHeaders for unified eligibility and channel.ask never strands on receipt throw', async () => {
@@ -690,4 +702,148 @@ test('Phase 4B §5.5: viva-questions plugin observes starts, evicts denied calls
   assert.equal(receipts[0]!.questionProfileGen, 4, 'openingProfileGen must be sampled at start-event observation time')
   assert.equal(receipts[0]!.answerProfileGen, 4)
   assert.equal(receipts[0]!.conversationId, 'conv-plugin')
+})
+
+test('Phase 4B Codex R1 P2-2..P2-4: sequential PTC callId reuse across live/cold replay, absent persistence retry, and TTL exclusion for active sessions', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4b-r1-fixes-')
+  const tz = 'UTC'
+  const nowMs = Date.parse('2026-11-26T00:00:00Z')
+
+  // 1. Sequential PTC calls reusing identical (subCallId, parentCallId, rootCallId) fold BOTH human answers in live + cold replay!
+  const ptcCard1 = [{ id: 'p1', question: 'First PTC choice?' }]
+  const ptcCard2 = [{ id: 'p2', question: 'Second PTC choice?' }]
+  const ptcEvents = [
+    { seq: 0, time: nowMs, type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: nowMs + 1, type: 'tool/ptc-dispatch-start', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: ptcCard1 } } },
+    { seq: 2, time: nowMs + 2, type: 'tool/ptc-dispatch', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: ptcCard1 }, isError: false, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'p1', selected: [], custom: 'Alpha answer' }] }) }] } },
+    { seq: 3, time: nowMs + 3, type: 'tool/ptc-dispatch-start', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: ptcCard2 } } },
+    { seq: 4, time: nowMs + 4, type: 'tool/ptc-dispatch', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: ptcCard2 }, isError: false, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'p2', selected: [], custom: 'Beta answer' }] }) }] } },
+    { seq: 5, time: nowMs + 5, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ] as unknown as SessionEvent[]
+
+  const foldedPtc = foldQuestionAnswersForTurn(ptcEvents, 'sess-ptc-seq', tz)
+  assert.equal(foldedPtc.length, 2, 'both sequential PTC calls reusing the same subCallId tuple must fold')
+  assert.deepEqual(foldedPtc.map(c => [c.callSeq, c.items[0]!.text]), [[1, 'Alpha answer'], [3, 'Beta answer']])
+
+  // Verify end-to-end cold replay settlement of both sequential PTC answers through openMemoryOwner + createSessionIngestion!
+  const rootPtc = path.join(dir, 'mem-ptc-seq')
+  const ownerPtc = openMemoryOwner({
+    root: rootPtc, hostNamespace: 'viva', now: () => nowMs - 1000, dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => null, compute: () => null,
+  })
+  defer(() => ownerPtc.close())
+  await ownerPtc.recover()
+  const ptcSid = 'sess-ptc-seq'
+  for (const cand of foldedPtc) {
+    ownerPtc.recordQuestionReceipt({
+      sessionId: ptcSid, turn: 1, callSeq: cand.callSeq, callIdHash: cand.callIdHash, conversationId: 'conv-ptc-seq',
+      answeredAt: nowMs + cand.callSeq + 10, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: cand.answerBatchDigest,
+    })
+  }
+  const coldPtcIntake = createSessionIngestion(
+    {
+      epoch: ownerPtc.epoch,
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async sid => ownerPtc.intakeCursor(sid),
+      advanceIntakeCursor: async input => ownerPtc.advanceIntakeCursor(input),
+      beginTurn: async input => ownerPtc.beginTurn(input),
+      recordQuestionReceipt: async input => ownerPtc.recordQuestionReceipt(input),
+      retireSessionQuestionReceipts: async sid => ownerPtc.retireSessionQuestionReceipts(sid),
+      pruneExpiredQuestionReceipts: async (maxAgeMs, exclude) => ownerPtc.pruneExpiredQuestionReceipts(maxAgeMs, exclude),
+      stageOpenTurnSources: async input => ownerPtc.stageOpenTurnSources(input),
+      settleTurn: async input => ownerPtc.settleTurn(input),
+    },
+    { flush: async () => true, get: () => undefined },
+    {
+      open: async () => ({
+        inheritedEventCount: 0,
+        read: async (offset: number, limit: number) => ({ events: ptcEvents.slice(offset, offset + limit) }),
+        close: async () => {},
+      }) as never,
+      list: async () => [],
+    },
+    { host: true },
+  )
+  await coldPtcIntake.scanCold(ptcSid, { id: SessionId(ptcSid), cwd: dir, version: 4, createdAt: nowMs - 10, isSeeded: false } as SessionHeader)
+  await coldPtcIntake.drain()
+  const dbPtc = new DatabaseSync(path.join(rootPtc, 'memory.db'), { readOnly: true })
+  defer(() => dbPtc.close())
+  const rows = dbPtc.prepare("SELECT text FROM memory_sources WHERE session=? AND author='answer' ORDER BY text").all(ptcSid) as Array<{ text: string }>
+  assert.deepEqual(rows.map(r => r.text), ['Alpha answer', 'Beta answer'], 'cold replay must admit both sequential PTC answers')
+
+  // 2. Temporary absence of sessionPersistence service MUST NOT retire receipts!
+  const retiredOnAbsent: string[] = []
+  let persistenceAvailable = false
+  const absentIntake = createSessionIngestion(
+    {
+      epoch: 'e-abs',
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async () => ({ createdAt: 0, nextSeq: null, inheritedSeq: 0, sessionKind: 'main', conversation: null }),
+      advanceIntakeCursor: async input => ({ status: 'ok', nextSeq: input.nextSeq }),
+      beginTurn: async () => {},
+      retireSessionQuestionReceipts: async sid => { retiredOnAbsent.push(sid) },
+      stageOpenTurnSources: async () => ({ staged: [] }),
+      settleTurn: async input => ({ status: 'ok', nextSeq: input.toSeq }),
+    },
+    { flush: async () => true, get: () => undefined },
+    () => persistenceAvailable ? ({ open: async () => { throw new Error('unexpected') }, list: async () => [] }) : undefined,
+    { host: true },
+  )
+  await absentIntake.scanCold('s-temp-absent', { id: SessionId('s-temp-absent'), cwd: dir, version: 4, createdAt: nowMs, isSeeded: false } as SessionHeader)
+  assert.deepEqual(retiredOnAbsent, [], 'absent persistence service must route to transient retry, never retire receipts')
+  await absentIntake.drain()
+
+  // 3. Post-cold-catchup TTL pruning MUST exclude active/reopened sessions awaiting live catch-up!
+  let ttlClock = nowMs
+  const rootTtl = path.join(dir, 'mem-ttl')
+  const ownerTtl = openMemoryOwner({
+    root: rootTtl, hostNamespace: 'viva', now: () => ttlClock, dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => null, compute: () => null,
+  })
+  defer(() => ownerTtl.close())
+  await ownerTtl.recover()
+  ownerTtl.recordQuestionReceipt({
+    sessionId: 'sess-reopened-old', turn: 1, callSeq: 2, callIdHash: '1'.repeat(64), conversationId: 'conv-old',
+    answeredAt: ttlClock, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: '2'.repeat(64),
+  })
+  ownerTtl.recordQuestionReceipt({
+    sessionId: 'sess-abandoned-old', turn: 1, callSeq: 2, callIdHash: '3'.repeat(64), conversationId: 'conv-aband',
+    answeredAt: ttlClock, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: '4'.repeat(64),
+  })
+  // Advance clock by 35 days; 'sess-reopened-old' is currently active/live while 'sess-abandoned-old' is not.
+  ttlClock += 35 * 24 * 60 * 60 * 1000
+  const pruneDone = deferred<void>()
+  const reopenedSession = {
+    id: SessionId('sess-reopened-old'),
+    seq: SessionSeq(0),
+    inheritedEventCount: 0,
+    header: { id: SessionId('sess-reopened-old'), cwd: dir, version: 4, createdAt: nowMs, isSeeded: false } as SessionHeader,
+  } as unknown as Session
+  const ttlIntake = createSessionIngestion(
+    {
+      epoch: ownerTtl.epoch,
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async sid => ownerTtl.intakeCursor(sid),
+      advanceIntakeCursor: async input => ownerTtl.advanceIntakeCursor(input),
+      beginTurn: async input => ownerTtl.beginTurn(input),
+      pruneExpiredQuestionReceipts: async (maxAgeMs, exclude) => {
+        ownerTtl.pruneExpiredQuestionReceipts(maxAgeMs, exclude)
+        pruneDone.resolve()
+      },
+      stageOpenTurnSources: async input => ownerTtl.stageOpenTurnSources(input),
+      settleTurn: async input => ownerTtl.settleTurn(input),
+    },
+    { flush: async () => true, get: id => String(id) === 'sess-reopened-old' ? reopenedSession : undefined, list: () => [reopenedSession] },
+    { open: async () => ({ inheritedEventCount: 0, read: async () => ({ events: [] }), close: async () => {} }) as never, list: async () => [] },
+    { host: true },
+  )
+  ttlIntake.startColdCatchup()
+  await pruneDone.promise
+  await ttlIntake.drain()
+  const dbTtl = new DatabaseSync(path.join(rootTtl, 'memory.db'), { readOnly: true })
+  defer(() => dbTtl.close())
+  assert.equal(dbTtl.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get('sess-reopened-old')?.n, 1,
+    'active reopened session must be excluded from TTL pruning while awaiting live catch-up')
+  assert.equal(dbTtl.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get('sess-abandoned-old')?.n, 0,
+    'abandoned >30-day unclosed session receipt should be pruned after clean cold catch-up')
 })

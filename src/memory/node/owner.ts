@@ -406,11 +406,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     db.prepare('DELETE FROM owner_question_receipts WHERE session=?').run(session)
   }
 
-  function pruneExpiredQuestionReceipts(maxAgeMs = 30 * 24 * 60 * 60 * 1000) {
+  function pruneExpiredQuestionReceipts(maxAgeMs = 30 * 24 * 60 * 60 * 1000, excludeSessions: readonly string[] = []) {
     requireReady()
     if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs <= 0) return
     const cutoff = now() - maxAgeMs
-    db.prepare('DELETE FROM owner_question_receipts WHERE created_at<?').run(cutoff)
+    const excluded = [...new Set(excludeSessions.filter(id => id.length > 0))]
+    if (excluded.length === 0) {
+      db.prepare('DELETE FROM owner_question_receipts WHERE created_at<?').run(cutoff)
+      return
+    }
+    const placeholders = excluded.map(() => '?').join(',')
+    db.prepare(`DELETE FROM owner_question_receipts WHERE created_at<? AND session NOT IN (${placeholders})`).run(cutoff, ...excluded)
   }
 
   function admitQuestionAnswersInTx(

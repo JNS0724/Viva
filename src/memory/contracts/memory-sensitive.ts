@@ -10,7 +10,7 @@ const KNOWN_CREDENTIAL = /(?:^|[^\p{L}\p{N}])(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_
 const SECRET_PATTERNS = [
   KNOWN_CREDENTIAL,
   /(密码|口令|\b(?:password|passwd|pwd)\b)\s*(?:是|为|[:：=]|\bis\b)\s*\S/iu,
-  /(验证码|动态码|otp)\s*(是|为|[:：=])?\s*\d{4,}/i,
+  /(验证码|动态码|otp)\s*(?:(?:是|为|[:：=])\s*)?\d{4,}/i,
   /\b(token|secret|api[_ -]?key|access[_ -]?key)\s*[:：=]\s*\S{6,}/i,
   /\b(?:proxy[-_ ]?)?authorization\s*[:：=]\s*(?:bearer|basic)\s+\S+/iu,
   /\b\d{17}[\dXx]\b/,

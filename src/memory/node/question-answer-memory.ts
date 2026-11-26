@@ -31,6 +31,7 @@ export type EligibleQuestionAnswer = {
 }
 
 const TRAILING_PROMPT_CHAR = /[\s?？:：!！。.,，;；]/u
+const EXPLICIT_OTP_PROMPT = /(?:验证码|动态码|\b(?:otp|one[- ]time[- ]pass(?:code|word)|verification[- ]code)\b)/iu
 
 /**
  * Reject NUL bytes and unpaired UTF-16 surrogates that SQLite (`node:sqlite`)
@@ -105,6 +106,11 @@ function answerHitsContextualSecret(card: RawQuestionCard, custom: string): bool
   if (card.header) {
     const headerStem = stripTrailingPromptPunctuation(card.header)
     if (looksSecret(`${headerStem}: ${custom}`) || looksSecret(`${card.header}: ${custom}`)) return true
+  }
+  if (EXPLICIT_OTP_PROMPT.test(card.question) || (card.header ? EXPLICIT_OTP_PROMPT.test(card.header) : false)) {
+    // Screen digit groups with spaces or hyphens (e.g., "123 456", "123-456") on explicit OTP prompts.
+    const collapsedDigits = custom.replace(/(?<=\d)[\s-]+(?=\d)/gu, '')
+    if (/\d{4,}/u.test(collapsedDigits)) return true
   }
   return false
 }

@@ -150,7 +150,10 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
     beginTurn: input => current.beginTurn(input),
     recordQuestionReceipt: input => current.recordQuestionReceipt(questionReceiptSchema.parse(input)),
     retireSessionQuestionReceipts: session => current.retireSessionQuestionReceipts(idSchema.parse(session)),
-    pruneExpiredQuestionReceipts: maxAgeMs => current.pruneExpiredQuestionReceipts(z.number().int().positive().optional().parse(maxAgeMs)),
+    pruneExpiredQuestionReceipts: (maxAgeMs, excludeSessions) => current.pruneExpiredQuestionReceipts(
+      z.number().int().positive().nullish().parse(maxAgeMs) ?? undefined,
+      z.array(idSchema).nullish().parse(excludeSessions) ?? undefined,
+    ),
     stageOpenTurnSources: input => current.stageOpenTurnSources(input),
     settleTurn: input => current.settleTurn(input, signal),
     bindIntakeSession: (session, cwd) => current.bindIntakeSession(idSchema.parse(session), z.string().nullish().parse(cwd)),

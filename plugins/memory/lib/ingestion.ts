@@ -569,10 +569,14 @@ export function foldQuestionAnswersForTurn(
         name?: unknown, subCallId?: unknown, parentCallId?: unknown, rootCallId?: unknown,
         isError?: unknown, error?: unknown, content?: unknown,
       }
-      if (data?.name !== 'ask_user_question' || data.isError === true || data.error !== undefined) continue
+      if (data?.name !== 'ask_user_question') continue
       if (typeof data.subCallId !== 'string' || typeof data.parentCallId !== 'string' || typeof data.rootCallId !== 'string') continue
       const ptcKey = `${data.subCallId}\0${data.parentCallId}\0${data.rootCallId}`
       const start = ptcStarts.get(ptcKey)
+      // Retire a matched start on terminal dispatch so sequential PTC executions
+      // reusing the same (subCallId, parentCallId, rootCallId) tuple fold cleanly.
+      if (start && start !== 'ambiguous') ptcStarts.delete(ptcKey)
+      if (data.isError === true || data.error !== undefined) continue
       if (!start || start === 'ambiguous') continue
       admitMatch(start, data.content)
     }
@@ -1134,7 +1138,7 @@ export function createSessionIngestion(
     | { status: 'error', error: unknown }
   > {
     const persistence = getPersistence()
-    if (!persistence) return { status: 'not-found' }
+    if (!persistence) return { status: 'error', error: new Error('Session persistence service unavailable') }
     let handle
     try {
       handle = await persistence.open(SessionId(sessionId), 'read')
@@ -1260,7 +1264,12 @@ export function createSessionIngestion(
       }
       await Promise.allSettled(coldTasks)
       if (!hadTransientError && !closed && owner.epoch === targetEpoch && listEpoch === targetEpoch) {
-        void owner.pruneExpiredQuestionReceipts?.().catch(err => onError?.(err))
+        const excludeSessions = [...new Set([
+          ...activeIds,
+          ...(sessions.list?.() ?? []).map(session => String(session.id)),
+          ...queues.keys(),
+        ])]
+        void owner.pruneExpiredQuestionReceipts?.(undefined, excludeSessions).catch(err => onError?.(err))
       }
     }
     void runList()
