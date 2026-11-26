@@ -34,13 +34,15 @@ const TRAILING_PROMPT_CHAR = /[\s?？:：!！。.,，;；]/u
 const EXPLICIT_OTP_PROMPT = /(?:验证码|动态码|\b(?:otp|totp|hotp|one[- ]time[- ]pass(?:code|word)|verification[- ]code)\b)/iu
 const EXPLICIT_CREDENTIAL_PROMPT = /(?:密码|口令|密钥|私钥|访问令牌|\b(?:password|passwd|pwd|passphrase|api[_ -]?key|access[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|bearer[_ -]?token|client[_ -]?secret|webhook[_ -]?secret)\b)/iu
 const CREDENTIAL_COMPOUND_NOUN = /(?:(?:密码|口令|密钥|私钥|令牌)(?:管理器|管理|策略|规则|强度|长度|要求|规范|方案)|\b(?:password|passwd|pwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|access[_ -]?token|auth[_ -]?token)\s+(?:manager|managers|policy|policies|strength|length|requirement|requirements|rule|rules|hashing|storage|vault)\b)/giu
-const EN_ROTATION_CADENCE_START = /^(?:how\s+often\s+(?:should|do|does|will|must|can|to)\b|what(?:'s|\s+is)\s+the\b)/iu
-const EN_ROTATION_TOPIC = /\b(?:rotate|rotation|change|renew|refresh|cycle|expiry|expiration)\b/iu
+const EN_HOW_OFTEN_START = /^how\s+often\s+(?:should|do|does|will|must|can|to)\b/iu
+const EN_ROTATION_VERB = /\b(?:rotate|change|renew|refresh|cycle)\b/iu
+const EN_POLICY_Q_START = /^what(?:'s|\s+is)\s+the\b/iu
+const EN_ROTATION_POLICY_PHRASE = /\b(?:rotation|expiry|expiration)\s+(?:policy|policies|schedule|interval|cadence|period|window)\b/iu
 const ZH_CADENCE_TERM = /(?:多久|多长时间|多频繁)/u
 const ZH_ROTATION_VERB = /(?:轮换|更换|更新)/u
 const VALUE_SMUGGLE_CUE = /(?:[,;，；]|\b(?:and|which|enter|input|provide|paste|share|give|current|new|value)\b|以及|并且|请输入|粘贴|提供|当前值|新值)/iu
-const EXPLICIT_VALUE_SUBMIT = /(?:\b(?:paste|enter|input|provide|supply|type)\b|\b(?:new|current)\s+value\b|请输入|粘贴|填写|当前值|新值)/iu
-const CADENCE_ONLY_ANSWER = /^(?:(?:every|each|once\s+(?:a|every|per))\s+(?:\d{1,4}\s+)?(?:day|days|week|weeks|month|months|quarter|quarters|year|years|hour|hours)|\d{1,4}\s*(?:d|w|mo|y|day|days|week|weeks|month|months|quarter|quarters|year|years|天|日|周|星期|个月|月|季度|年)|daily|weekly|biweekly|monthly|quarterly|semiannually|annually|yearly|never|每\s*(?:\d{1,4}\s*)?(?:天|日|周|星期|个月|月|季度|半年|年)(?:一次)?|每天|每周|每月|每季|每季度|每半年|每年|从不|不轮换)[.。!！\s]*$/iu
+const EXPLICIT_VALUE_PASTE = /(?:\bpaste\b|\b(?:new|current)\s+value\b|粘贴|当前值|新值)/iu
+const CADENCE_ONLY_ANSWER = /^(?:(?:every|each|once\s+(?:a|every|per))\s+(?:\d{1,4}\s+)?(?:day|days|week|weeks|month|months|quarter|quarters|year|years|hour|hours)|\d{1,4}\s*(?:d|w|mo|y|day|days|week|weeks|month|months|quarter|quarters|year|years|天|日|周|星期|个月|月|季度|年)|daily|weekly|biweekly|monthly|quarterly|semiannually|annually|yearly|never|每\s*(?:\d{1,4}\s*)?(?:天|日|周|星期|个月|月|季度|半年|年)(?:一次)?|每天|每周|每月|每季|每季度|每半年|每年|从不|不轮换)[.。\s]*$/iu
 
 /**
  * Reject NUL bytes and unpaired UTF-16 surrogates that SQLite (`node:sqlite`)
@@ -113,13 +115,14 @@ function isPureRotationCadence(question: string, custom: string): boolean {
   const trimmed = question.trim()
   if (trimmed.length > 200 || custom.length > 64) return false
   if (VALUE_SMUGGLE_CUE.test(trimmed)) return false
-  const matchesQuestion = (EN_ROTATION_CADENCE_START.test(trimmed) && EN_ROTATION_TOPIC.test(trimmed))
+  const matchesQuestion = (EN_HOW_OFTEN_START.test(trimmed) && EN_ROTATION_VERB.test(trimmed))
+    || (EN_POLICY_Q_START.test(trimmed) && EN_ROTATION_POLICY_PHRASE.test(trimmed))
     || (ZH_CADENCE_TERM.test(trimmed) && ZH_ROTATION_VERB.test(trimmed))
   return matchesQuestion && CADENCE_ONLY_ANSWER.test(custom)
 }
 
 function asksForCredentialValue(card: RawQuestionCard): boolean {
-  const allowCompoundStrip = !EXPLICIT_VALUE_SUBMIT.test(card.question)
+  const allowCompoundStrip = !EXPLICIT_VALUE_PASTE.test(card.question)
   const cleanedQuestion = allowCompoundStrip ? card.question.replace(CREDENTIAL_COMPOUND_NOUN, ' ') : card.question
   const cleanedHeader = card.header
     ? (allowCompoundStrip ? card.header.replace(CREDENTIAL_COMPOUND_NOUN, ' ') : card.header)
