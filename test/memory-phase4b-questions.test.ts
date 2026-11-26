@@ -63,6 +63,8 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
 
   // 2. Contextual split credentials across bare, punctuated, formatted, & qualified OTP/password prompts, while safe siblings survive.
   assert.equal(looksSecret('OTP: 123 456'), true)
+  assert.equal(looksSecret('TOTP: 123456'), true)
+  assert.equal(looksSecret('OTP123456'), true)
   assert.equal(looksSecret('Your OTP is 123456'), true)
   assert.equal(looksSecret('Did OTP: 123 456 work?'), true)
   assert.equal(looksSecret('verification code: 123456'), true)
@@ -84,6 +86,10 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-pwd-mgr-pw', question: 'What is the password for the password manager?', header: 'Login' },
     { id: 'c-api-qual', question: 'What is the API key for staging?', header: 'Deploy' },
     { id: 'c-api-rot-val', question: 'What is the new API key after rotation?', header: 'Deploy' },
+    { id: 'c-api-rot-short', question: 'New API key after rotation?', header: 'Deploy' },
+    { id: 'c-pwd-rot-which', question: 'Which password should I use after rotation?', header: 'Login' },
+    { id: 'c-totp-custom', question: 'Any additional information?', header: 'Notes' },
+    { id: 'c-otp-compact', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-hdr', question: 'Enter value', header: `${' '.repeat(210)}OTP` },
     { id: 'c-pref-mgr', question: 'Which password manager do you prefer?', header: 'Security' },
     { id: 'c-pref-rot', question: 'How often should we rotate the API key?', header: 'Security' },
@@ -104,6 +110,10 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-pwd-mgr-pw', selected: [], custom: 'masterpw' },
     { id: 'c-api-qual', selected: [], custom: 'my-staging-key' },
     { id: 'c-api-rot-val', selected: [], custom: 'new-key-123' },
+    { id: 'c-api-rot-short', selected: [], custom: 'short-key' },
+    { id: 'c-pwd-rot-which', selected: [], custom: 'shortpw2' },
+    { id: 'c-totp-custom', selected: [], custom: 'TOTP: 123456' },
+    { id: 'c-otp-compact', selected: [], custom: 'OTP123456' },
     { id: 'c-hdr', selected: [], custom: '123456' },
     { id: 'c-pref-mgr', selected: [], custom: 'Bitwarden' },
     { id: 'c-pref-rot', selected: [], custom: 'Every 90 days' },
@@ -1054,4 +1064,67 @@ test('Phase 4B Codex R2 P2-3..P2-4: malformed/colliding PTC step recovery and TT
   defer(() => dbRebind.close())
   const rebindRows = dbRebind.prepare("SELECT text FROM memory_sources WHERE session=? AND author='answer'").all(rebindSid) as Array<{ text: string }>
   assert.deepEqual(rebindRows.map(r => r.text), [rebindCustom], 'newer cold catch-up pass must still admit the 40-day-old answered question')
+
+  // 4. Superseded in-flight cold read returning SessionPersistenceNotFoundError after rebind
+  //    MUST NOT delete the fresh receipt before the replacement provider replays the turn!
+  const rootOldNotFound = path.join(dir, 'mem-rebind-notfound')
+  const ownerOldNf = openMemoryOwner({
+    root: rootOldNotFound, hostNamespace: 'viva', now: () => baseMs, dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => null, compute: () => null,
+  })
+  defer(() => ownerOldNf.close())
+  await ownerOldNf.recover()
+  const nfSid = 'sess-rebind-nf'
+  ownerOldNf.recordQuestionReceipt({
+    sessionId: nfSid, turn: 1, callSeq: 1, callIdHash: questionCallIdHash(rebindCallId), conversationId: 'conv-nf',
+    answeredAt: baseMs + 2, questionProfileGen: 0, answerProfileGen: 0,
+    answerBatchDigest: canonicalEligibleAnswersDigest([{ id: 'q1', question: rebindQuestion, custom: rebindCustom }]),
+  })
+  const enteredOldOpen = deferred<void>()
+  const oldOpen = deferred<never>()
+  const nfPruned = deferred<void>()
+  let nfProvider: { list: () => Promise<Array<{ header: SessionHeader }>>, open: () => Promise<never> } = {
+    list: async () => [{ header: { id: SessionId(nfSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader }],
+    open: () => {
+      enteredOldOpen.resolve()
+      return oldOpen.promise
+    },
+  }
+  const nfIntake = createSessionIngestion(
+    {
+      epoch: ownerOldNf.epoch,
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async sid => ownerOldNf.intakeCursor(sid),
+      advanceIntakeCursor: async input => ownerOldNf.advanceIntakeCursor(input),
+      beginTurn: async input => ownerOldNf.beginTurn(input),
+      retireSessionQuestionReceipts: async sid => ownerOldNf.retireSessionQuestionReceipts(sid),
+      pruneExpiredQuestionReceipts: async (maxAgeMs, exclude) => {
+        ownerOldNf.pruneExpiredQuestionReceipts(maxAgeMs, exclude)
+        nfPruned.resolve()
+      },
+      stageOpenTurnSources: async input => ownerOldNf.stageOpenTurnSources(input),
+      settleTurn: async input => ownerOldNf.settleTurn(input),
+    },
+    { flush: async () => true, get: () => undefined, list: () => [] },
+    () => nfProvider as never,
+    { host: true },
+  )
+  nfIntake.startColdCatchup()
+  await enteredOldOpen.promise
+  nfProvider = {
+    list: async () => [{ header: { id: SessionId(nfSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader }],
+    open: async () => ({
+      inheritedEventCount: 0,
+      read: async (offset: number, limit: number) => ({ events: rebindEvents.slice(offset, offset + limit) }),
+      close: async () => {},
+    }) as never,
+  }
+  nfIntake.startColdCatchup()
+  oldOpen.reject(new SessionPersistenceNotFoundError(SessionId(nfSid)))
+  await nfPruned.promise
+  await nfIntake.drain()
+  const dbOldNf = new DatabaseSync(path.join(rootOldNotFound, 'memory.db'), { readOnly: true })
+  defer(() => dbOldNf.close())
+  const nfRows = dbOldNf.prepare("SELECT text FROM memory_sources WHERE session=? AND author='answer'").all(nfSid) as Array<{ text: string }>
+  assert.deepEqual(nfRows.map(r => r.text), [rebindCustom], 'superseded cold read not-found must not retire receipt before replacement pass replays')
 })

@@ -34,7 +34,7 @@ const TRAILING_PROMPT_CHAR = /[\s?？:：!！。.,，;；]/u
 const EXPLICIT_OTP_PROMPT = /(?:验证码|动态码|\b(?:otp|one[- ]time[- ]pass(?:code|word)|verification[- ]code)\b)/iu
 const EXPLICIT_CREDENTIAL_PROMPT = /(?:密码|口令|密钥|私钥|访问令牌|\b(?:password|passwd|pwd|passphrase|api[_ -]?key|access[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|bearer[_ -]?token|client[_ -]?secret|webhook[_ -]?secret)\b)/iu
 const CREDENTIAL_COMPOUND_NOUN = /(?:(?:密码|口令|密钥|私钥|令牌)(?:管理器|管理|策略|规则|轮换|更换|过期|强度|长度|要求|规范|方案)|\b(?:password|passwd|pwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|access[_ -]?token|auth[_ -]?token)\s+(?:manager|managers|policy|policies|rotation|expiry|expiration|strength|length|requirement|requirements|rule|rules|hashing|storage|vault)\b)/giu
-const META_POLICY_QUESTION = /(?:(?:多久|多长时间|频率|轮换|更换|策略|规范)|\b(?:how\s+(?:often|long|many)|rotate|rotation|policy|policies|expiry|expiration|interval|cadence|schedule)\b)/iu
+const CADENCE_QUESTION = /(?:(?:多久|多长时间|多频繁|频率)|\b(?:how\s+(?:often|long|many\s+(?:days|weeks|months|hours|minutes|seconds)))\b)/iu
 const VALUE_REQUEST_CUE = /(?:(?:请输入|输入|提供|填写|粘贴|告知|是什么|是多少)|\b(?:what\s+is|what's|enter|input|provide|paste|type|supply|share|give\s+me)\b)/iu
 
 /**
@@ -109,7 +109,7 @@ function asksForCredentialValue(card: RawQuestionCard): boolean {
   const cleanedHeader = card.header ? card.header.replace(CREDENTIAL_COMPOUND_NOUN, ' ') : ''
   const hasCredentialTerm = EXPLICIT_CREDENTIAL_PROMPT.test(cleanedQuestion) || EXPLICIT_CREDENTIAL_PROMPT.test(cleanedHeader)
   if (!hasCredentialTerm) return false
-  if (META_POLICY_QUESTION.test(card.question) && !VALUE_REQUEST_CUE.test(card.question)) return false
+  if (CADENCE_QUESTION.test(card.question) && !VALUE_REQUEST_CUE.test(card.question)) return false
   return true
 }
 

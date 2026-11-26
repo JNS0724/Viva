@@ -1148,24 +1148,26 @@ export function createSessionIngestion(
 
   function scheduleColdSessionRetry(sessionId: string, header: SessionHeader, catchupPassId?: number) {
     if (closed) return
+    if (catchupPassId !== undefined && catchupPassId !== coldPassId) return
     const entry = queues.get(sessionId)
     if (!entry || entry.epoch !== owner.epoch) return
     if (sessions.get?.(SessionId(sessionId))) {
-      if (catchupPassId && catchupPassId === coldPassId) {
+      if (catchupPassId !== undefined && catchupPassId === coldPassId) {
         coldPassActiveIds.add(sessionId)
         if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(catchupPassId)
       }
       return
     }
-    if (catchupPassId && catchupPassId === coldPassId) pendingColdRetries.add(sessionId)
+    if (catchupPassId !== undefined && catchupPassId === coldPassId) pendingColdRetries.add(sessionId)
     clearColdRetry(entry)
     entry.coldFailures++
     const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(entry.coldFailures - 1, 6))
     entry.coldRetryTimer = setTimeout(() => {
       entry.coldRetryTimer = null
       if (closed || entry.epoch !== owner.epoch) return
+      if (catchupPassId !== undefined && catchupPassId !== coldPassId) return
       if (sessions.get?.(SessionId(sessionId))) {
-        if (catchupPassId && catchupPassId === coldPassId) {
+        if (catchupPassId !== undefined && catchupPassId === coldPassId) {
           coldPassActiveIds.add(sessionId)
           if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(catchupPassId)
         }
@@ -1216,8 +1218,12 @@ export function createSessionIngestion(
   function scanCold(sessionId: string, header: SessionHeader, catchupPassId?: number): Promise<void> {
     // Capture liveEpoch once at entry (before enqueue/cursor/read) so any session opening
     // (and even closing again) while this cold scan waits or reads supersedes it cleanly.
+    // Also reject scans belonging to a superseded startColdCatchup pass before retiring receipts or settling.
     const startEpoch = liveEpoch.get(sessionId) ?? 0
-    const stale = () => closed || Boolean(sessions.get?.(SessionId(sessionId))) || (liveEpoch.get(sessionId) ?? 0) !== startEpoch
+    const stale = () => closed
+      || Boolean(sessions.get?.(SessionId(sessionId)))
+      || (liveEpoch.get(sessionId) ?? 0) !== startEpoch
+      || (catchupPassId !== undefined && catchupPassId !== coldPassId)
     let transientFailure = false
     const work = enqueue(sessionId, async () => {
       if (stale()) return
