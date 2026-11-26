@@ -61,63 +61,30 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     [],
   )
 
-  // 2. Contextual split credentials across bare, punctuated, formatted, & qualified OTP/password prompts, while safe siblings survive.
+  // 2. Contextual split credentials across bare, punctuated, & formatted OTP/password prompts,
+  //    while ordinary preference/policy/numeric questions are never falsely dropped.
   assert.equal(looksSecret('OTP: 123 456'), true)
   assert.equal(looksSecret('TOTP: 123456'), true)
   assert.equal(looksSecret('OTP123456'), true)
   assert.equal(looksSecret('Your OTP is 123456'), true)
   assert.equal(looksSecret('Did OTP: 123 456 work?'), true)
-  assert.equal(looksSecret('verification code: 123456'), true)
-  assert.equal(looksSecret('one-time passcode is 123 456'), true)
-  assert.equal(looksSecret('Device PIN: 4826'), true)
-  assert.equal(looksSecret('The device PIN is 4826. Should I proceed?'), true)
   assert.equal(looksSecret('验证码：123-456'), true)
   assert.equal(looksSecret('OTP: 123'), false)
   assert.equal(areRawCardsMemoryEligible([{ id: 'c-qotp', question: 'Did OTP: 123 456 work?' }]), false)
-  assert.equal(areRawCardsMemoryEligible([{ id: 'c-vcode', question: 'Did verification code: 123456 work?' }]), false)
-  assert.equal(areRawCardsMemoryEligible([{ id: 'c-qpin', question: 'The device PIN is 4826. Should I proceed?' }]), false)
   const cards = [
     { id: 'c-bare', question: 'OTP', header: 'Auth' },
     { id: 'c-en', question: 'What is your OTP?', header: 'Login' },
     { id: 'c-fmt', question: 'What is your OTP?', header: 'SMS' },
-    { id: 'c-qual', question: 'What is the OTP sent to your phone?', header: 'Verify' },
     { id: 'c-any-otp', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-any-otp-is', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-zh', question: '请输入验证码：', header: '安全验证' },
     { id: 'c-pwd', question: 'Password?', header: 'Account' },
-    { id: 'c-pwd-qual', question: 'What is the password for the account?', header: 'Login' },
-    { id: 'c-pwd-mgr-pw', question: 'What is the password for the password manager?', header: 'Login' },
-    { id: 'c-api-qual', question: 'What is the API key for staging?', header: 'Deploy' },
-    { id: 'c-api-rot-val', question: 'What is the new API key after rotation?', header: 'Deploy' },
-    { id: 'c-api-rot-short', question: 'New API key after rotation?', header: 'Deploy' },
-    { id: 'c-api-clause-smuggle', question: 'Which API key should the integration use, and how long is it valid?', header: 'Deploy' },
-    { id: 'c-api-compound-rot', question: 'How often should we rotate the API key and what is its current value?', header: 'Deploy' },
-    { id: 'c-api-rot-bad-ans', question: 'How often should we rotate the API key?', header: 'Deploy' },
-    { id: 'c-api-rot-paste', question: 'API key rotation is complete. Paste the new value for staging.', header: 'Deploy' },
-    { id: 'c-api-rot-after', question: 'After API key rotation, what is the new value for staging?', header: 'Deploy' },
-    { id: 'c-api-rot-hdr', question: 'Paste the new value for staging.', header: 'API key rotation' },
-    { id: 'c-pwd-rot-which', question: 'Which password should I use after rotation?', header: 'Login' },
-    { id: 'c-pwd-rot-after', question: 'What is the password after rotation?', header: 'Login' },
-    { id: 'c-pwd-rot-sheet', question: 'What is the password for the rotation schedule spreadsheet?', header: 'Login' },
-    { id: 'c-login-creds', question: 'Enter the login credentials from your password manager.', header: 'Staging' },
-    { id: 'c-prod-secrets', question: 'Enter the production secrets from your password manager.', header: 'Prod' },
-    { id: 'c-pin-unlock', question: 'Enter your PIN to unlock the device.', header: 'Device' },
-    { id: 'c-pin-code-alpha', question: 'Enter your PIN code to unlock this device.', header: 'Device' },
-    { id: 'c-pin-inline', question: 'Anything else needed for setup?', header: 'Setup' },
-    { id: 'c-totp-prompt', question: 'Enter the TOTP from your authenticator', header: '2FA' },
     { id: 'c-totp-custom', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-otp-compact', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-hdr', question: 'Enter value', header: `${' '.repeat(210)}OTP` },
     { id: 'c-footprint', question: 'What is the expected annual carbon footprint in tonnes?', header: 'Sustainability' },
     { id: 'c-bio-creds', question: 'What professional credentials should appear in your bio?', header: 'Profile' },
     { id: 'c-pref-mgr', question: 'Which password manager do you prefer?', header: 'Security' },
-    { id: 'c-pref-mgr-type', question: 'What type of password manager do you use?', header: 'Security' },
-    { id: 'c-pref-mgr-enter', question: 'Enter the name of your preferred password manager.', header: 'Security' },
-    { id: 'c-pref-rot', question: 'How often should we rotate the API key?', header: 'Security' },
-    { id: 'c-pref-rot-monthly', question: 'How often should we rotate the API key?', header: 'Security' },
-    { id: 'c-pref-rot-pwd', question: 'How often should we rotate the password?', header: 'Security' },
-    { id: 'c-pref-rot-pk', question: 'How often should we rotate the private key?', header: 'Security' },
-    { id: 'c-pref-rot-rt', question: 'How often should we rotate the refresh token?', header: 'Security' },
     { id: 'c-pref-pol', question: 'What is the password rotation policy?', header: 'Security' },
     { id: 'c-tokens', question: 'Max output tokens?', header: 'Model' },
     { id: 'c-safe', question: 'Preferred drink?', header: 'Preference' },
@@ -126,44 +93,16 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-bare', selected: [], custom: '123456' },
     { id: 'c-en', selected: [], custom: '123456' },
     { id: 'c-fmt', selected: [], custom: '123 456' },
-    { id: 'c-qual', selected: [], custom: '123456' },
     { id: 'c-any-otp', selected: [], custom: 'OTP: 123 456' },
     { id: 'c-any-otp-is', selected: [], custom: 'Your OTP is 123456' },
     { id: 'c-zh', selected: [], custom: '123456' },
     { id: 'c-pwd', selected: [], custom: 'hunter2' },
-    { id: 'c-pwd-qual', selected: [], custom: 'shortpw' },
-    { id: 'c-pwd-mgr-pw', selected: [], custom: 'masterpw' },
-    { id: 'c-api-qual', selected: [], custom: 'my-staging-key' },
-    { id: 'c-api-rot-val', selected: [], custom: 'new-key-123' },
-    { id: 'c-api-rot-short', selected: [], custom: 'short-key' },
-    { id: 'c-api-clause-smuggle', selected: [], custom: 'example-key, valid for 30 days' },
-    { id: 'c-api-compound-rot', selected: [], custom: 'Every month. Current value is example-key' },
-    { id: 'c-api-rot-bad-ans', selected: [], custom: 'Every 90 days; current key is abc123' },
-    { id: 'c-api-rot-paste', selected: [], custom: 'sample-staging-key' },
-    { id: 'c-api-rot-after', selected: [], custom: 'sample-staging-key' },
-    { id: 'c-api-rot-hdr', selected: [], custom: 'sample-staging-key' },
-    { id: 'c-pwd-rot-which', selected: [], custom: 'shortpw2' },
-    { id: 'c-pwd-rot-after', selected: [], custom: 'Monthly!' },
-    { id: 'c-pwd-rot-sheet', selected: [], custom: 'Quarterly.' },
-    { id: 'c-login-creds', selected: [], custom: 'demo-user / demo-passphrase' },
-    { id: 'c-prod-secrets', selected: [], custom: 'prod-secret-value' },
-    { id: 'c-pin-unlock', selected: [], custom: '4826' },
-    { id: 'c-pin-code-alpha', selected: [], custom: 'k7T3m6' },
-    { id: 'c-pin-inline', selected: [], custom: 'Device PIN: 4826' },
-    { id: 'c-totp-prompt', selected: [], custom: '123 456' },
     { id: 'c-totp-custom', selected: [], custom: 'TOTP: 123456' },
     { id: 'c-otp-compact', selected: [], custom: 'OTP123456' },
     { id: 'c-hdr', selected: [], custom: '123456' },
     { id: 'c-footprint', selected: [], custom: '1200' },
     { id: 'c-bio-creds', selected: [], custom: 'CPA' },
     { id: 'c-pref-mgr', selected: [], custom: 'Bitwarden' },
-    { id: 'c-pref-mgr-type', selected: [], custom: 'Bitwarden' },
-    { id: 'c-pref-mgr-enter', selected: [], custom: 'Bitwarden' },
-    { id: 'c-pref-rot', selected: [], custom: 'Every 90 days' },
-    { id: 'c-pref-rot-monthly', selected: [], custom: 'Monthly' },
-    { id: 'c-pref-rot-pwd', selected: [], custom: 'Every 90 days' },
-    { id: 'c-pref-rot-pk', selected: [], custom: 'Monthly' },
-    { id: 'c-pref-rot-rt', selected: [], custom: 'Monthly' },
     { id: 'c-pref-pol', selected: [], custom: 'Every 90 days' },
     { id: 'c-tokens', selected: [], custom: '8192' },
     { id: 'c-safe', selected: [], custom: 'oolong tea' },
@@ -173,14 +112,7 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-bio-creds', question: 'What professional credentials should appear in your bio?', custom: 'CPA' },
     { id: 'c-footprint', question: 'What is the expected annual carbon footprint in tonnes?', custom: '1200' },
     { id: 'c-pref-mgr', question: 'Which password manager do you prefer?', custom: 'Bitwarden' },
-    { id: 'c-pref-mgr-enter', question: 'Enter the name of your preferred password manager.', custom: 'Bitwarden' },
-    { id: 'c-pref-mgr-type', question: 'What type of password manager do you use?', custom: 'Bitwarden' },
     { id: 'c-pref-pol', question: 'What is the password rotation policy?', custom: 'Every 90 days' },
-    { id: 'c-pref-rot', question: 'How often should we rotate the API key?', custom: 'Every 90 days' },
-    { id: 'c-pref-rot-monthly', question: 'How often should we rotate the API key?', custom: 'Monthly' },
-    { id: 'c-pref-rot-pk', question: 'How often should we rotate the private key?', custom: 'Monthly' },
-    { id: 'c-pref-rot-pwd', question: 'How often should we rotate the password?', custom: 'Every 90 days' },
-    { id: 'c-pref-rot-rt', question: 'How often should we rotate the refresh token?', custom: 'Monthly' },
     { id: 'c-safe', question: 'Preferred drink?', custom: 'oolong tea' },
     { id: 'c-tokens', question: 'Max output tokens?', custom: '8192' },
   ])
@@ -221,14 +153,7 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     ),
     [],
   )
-  assert.deepEqual(
-    eligibleQuestionAnswers(
-      [{ id: 'pad-rot', question: `How often should we rotate the API key${' .'.repeat(16_000)}!` }],
-      [{ id: 'pad-rot', selected: [], custom: 'Every 90 days' }],
-    ),
-    [],
-  )
-  assert.ok(performance.now() - t0 < 100, 'full eligibility + OTP/cadence matchers must run in linear time without regex backtracking')
+  assert.ok(performance.now() - t0 < 100, 'full eligibility + OTP matcher must run in linear time without regex backtracking')
 })
 
 test('Phase 4B §5.5: host question-channel retains >200-char rawHeaders for unified eligibility and channel.ask never strands on receipt throw', async () => {

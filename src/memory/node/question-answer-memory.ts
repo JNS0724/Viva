@@ -31,14 +31,6 @@ export type EligibleQuestionAnswer = {
 }
 
 const TRAILING_PROMPT_CHAR = /[\s?？:：!！。.,，;；]/u
-const EXPLICIT_OTP_PROMPT = /(?:验证码|动态码|\b(?:otp|totp|hotp|pin|one[- ]time[- ]pass(?:code|word)|verification[- ]code)\b)/iu
-const EXPLICIT_CREDENTIAL_PROMPT = /(?:密码|口令|密钥|私钥|访问令牌|凭证|凭据|\b(?:password|passwd|pwd|passphrase|pin\s+code|credentials?|secrets?|api[_ -]?key|access[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|bearer[_ -]?token|client[_ -]?secret|webhook[_ -]?secret)\b)/iu
-const CREDENTIAL_COMPOUND_NOUN = /(?:(?:密码|口令|密钥|私钥|令牌|凭证|凭据)(?:管理器|管理|策略|规则|强度|长度|要求|规范|方案)|\b(?:(?:professional|academic|educational|medical|teaching|clinical)\s+credentials?|(?:password|passwd|pwd|passphrase|secrets?|credentials?|api[_ -]?key|access[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|bearer[_ -]?token|client[_ -]?secret|webhook[_ -]?secret)\s+(?:manager|managers|policy|policies|strength|length|requirement|requirements|rule|rules|hashing|storage|vault))\b)/giu
-const PURE_EN_HOW_OFTEN_ROTATE = /^how\s+often\s+(?:should|do|does|will|must|can|to)\s+(?:we|you|they|i|the\s+team)\s+(?:rotate|change|renew|refresh|cycle)\s+(?:(?:the|our|your|my|these|those)\s+)?(?:passwords?|passphrases?|secrets?|credentials?|api[_ -]?keys?|access[_ -]?keys?|secret[_ -]?keys?|private[_ -]?keys?|access[_ -]?tokens?|auth[_ -]?tokens?|refresh[_ -]?tokens?|bearer[_ -]?tokens?|client[_ -]?secrets?|webhook[_ -]?secrets?|it|them)\s*\??$/iu
-const PURE_EN_ROTATION_POLICY = /^what(?:'s|\s+is)\s+(?:the|your|our)\s+(?:(?:password|passwd|pwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|bearer[_ -]?token|client[_ -]?secret|webhook[_ -]?secret)\s+)?(?:rotation|expiry|expiration)\s+(?:policy|policies|schedule|interval|cadence|period|window)\s*\??$/iu
-const PURE_ZH_ROTATION_CADENCE = /^(?:(?:密码|口令|密钥|私钥|令牌|api[_ -]?key|access[_ -]?key|access[_ -]?token|password)\s*)?(?:每)?(?:多久|多长时间|多频繁)(?:需要)?(?:轮换|更换|更新)(?:一次)?(?:密码|口令|密钥|私钥|令牌)?[?？\s]*$/iu
-const EXPLICIT_VALUE_PASTE = /(?:\bpaste\b|\b(?:new|current)\s+value\b|粘贴|当前值|新值)/iu
-const CADENCE_ONLY_ANSWER = /^(?:(?:every|each|once\s+(?:a|every|per))\s+(?:\d{1,4}\s+)?(?:day|days|week|weeks|month|months|quarter|quarters|year|years|hour|hours)|\d{1,4}\s*(?:d|w|mo|y|day|days|week|weeks|month|months|quarter|quarters|year|years|天|日|周|星期|个月|月|季度|年)|daily|weekly|biweekly|monthly|quarterly|semiannually|annually|yearly|never|每\s*(?:\d{1,4}\s*)?(?:天|日|周|星期|个月|月|季度|半年|年)(?:一次)?|每天|每周|每月|每季|每季度|每半年|每年|从不|不轮换)[.。\s]*$/iu
 
 /**
  * Reject NUL bytes and unpaired UTF-16 surrogates that SQLite (`node:sqlite`)
@@ -107,40 +99,12 @@ export function areRawCardsMemoryEligible(cards: readonly RawQuestionCard[]): bo
   return true
 }
 
-function isPureRotationCadence(question: string, custom: string): boolean {
-  const trimmed = question.trim()
-  if (trimmed.length > 200 || custom.length > 64) return false
-  const matchesQuestion = PURE_EN_HOW_OFTEN_ROTATE.test(trimmed)
-    || PURE_EN_ROTATION_POLICY.test(trimmed)
-    || PURE_ZH_ROTATION_CADENCE.test(trimmed)
-  return matchesQuestion && CADENCE_ONLY_ANSWER.test(custom)
-}
-
-function asksForCredentialValue(card: RawQuestionCard): boolean {
-  const allowCompoundStrip = !EXPLICIT_VALUE_PASTE.test(card.question)
-  const cleanedQuestion = allowCompoundStrip ? card.question.replace(CREDENTIAL_COMPOUND_NOUN, ' ') : card.question
-  const cleanedHeader = card.header
-    ? (allowCompoundStrip ? card.header.replace(CREDENTIAL_COMPOUND_NOUN, ' ') : card.header)
-    : ''
-  return EXPLICIT_CREDENTIAL_PROMPT.test(cleanedQuestion) || EXPLICIT_CREDENTIAL_PROMPT.test(cleanedHeader)
-}
-
 function answerHitsContextualSecret(card: RawQuestionCard, custom: string): boolean {
-  // Raw card fields and the standalone custom answer have already passed `looksSecret`.
-  // Allow bounded pure rotation-cadence Q&A (e.g., "How often should we rotate the API key?" + "Monthly")
-  // before contextual stem joining, which would otherwise synthesize "API key: Monthly".
-  if (isPureRotationCadence(card.question, custom)) return false
   const questionStem = stripTrailingPromptPunctuation(card.question)
   if (looksSecret(`${questionStem}: ${custom}`) || looksSecret(`${card.question}: ${custom}`)) return true
   if (card.header) {
     const headerStem = stripTrailingPromptPunctuation(card.header)
     if (looksSecret(`${headerStem}: ${custom}`) || looksSecret(`${card.header}: ${custom}`)) return true
-  }
-  if (asksForCredentialValue(card)) return true
-  if (EXPLICIT_OTP_PROMPT.test(card.question) || (card.header ? EXPLICIT_OTP_PROMPT.test(card.header) : false)) {
-    // Screen digit groups with spaces or hyphens (e.g., "123 456", "123-456") on explicit OTP prompts.
-    const collapsedDigits = custom.replace(/(?<=\d)[\s-]+(?=\d)/gu, '')
-    if (/\d{4,}/u.test(collapsedDigits)) return true
   }
   return false
 }
