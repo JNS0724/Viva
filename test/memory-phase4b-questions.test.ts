@@ -1,0 +1,693 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
+import { EventEmitter } from 'node:events'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { performance } from 'node:perf_hooks'
+import { Context } from '@deepseek-ai/cordis'
+import { SessionId, SessionSeq, type Session, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
+import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
+import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { DREAM_PROFILE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { createQuestionDesk } from '../src/backend/question-channel.ts'
+import { createQuestionChannel, type HumanQuestionReceipt } from '../plugins/questions/lib/channel.ts'
+import { apply as applyQuestionsPlugin } from '../plugins/questions/index.ts'
+import { createSessionIngestion, foldQuestionAnswersForTurn } from '../plugins/memory/lib/ingestion.ts'
+import {
+  areRawCardsMemoryEligible,
+  canonicalEligibleAnswersDigest,
+  eligibleQuestionAnswers,
+  hasUnsupportedSqliteChars,
+  questionAnswerSourceId,
+  questionCallIdHash,
+  questionOccurrenceRequestId,
+  stripTrailingPromptPunctuation,
+} from '../src/memory/node/question-answer-memory.ts'
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+function scratch(t: { after(fn: () => void | Promise<void>): void }, prefix: string) {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix))
+  const cleanups: Array<() => void | Promise<void>> = []
+  t.after(async () => {
+    for (let i = cleanups.length - 1; i >= 0; i--) {
+      try { await cleanups[i]!() } catch {}
+    }
+    rmSync(dir, { recursive: true, force: true })
+  })
+  return { dir, defer: (fn: () => void | Promise<void>) => { cleanups.push(fn) } }
+}
+
+test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char headers, split credentials, NUL/surrogates, and avoids ReDoS', () => {
+  // 1. Raw option 9+ secret suppresses entire batch even when display truncates to 8 options.
+  const nineOptions = Array.from({ length: 9 }, (_, i) => ({
+    label: i === 8 ? 'OTP: 123456' : `选项 ${i + 1}`,
+  }))
+  assert.equal(areRawCardsMemoryEligible([{ id: 'c1', question: '请选择', options: nineOptions }]), false)
+  assert.deepEqual(
+    eligibleQuestionAnswers(
+      [{ id: 'c1', question: '请选择', options: nineOptions }],
+      [{ id: 'c1', selected: [], custom: '普通回答' }],
+    ),
+    [],
+  )
+
+  // 2. Contextual split credentials across bare & punctuated question/header + custom answer, while safe sibling survives.
+  const cards = [
+    { id: 'c-bare', question: 'OTP', header: 'Auth' },
+    { id: 'c-en', question: 'What is your OTP?', header: 'Login' },
+    { id: 'c-zh', question: '请输入验证码：', header: '安全验证' },
+    { id: 'c-pwd', question: 'Password?', header: 'Account' },
+    { id: 'c-hdr', question: 'Enter value', header: `${' '.repeat(210)}OTP` },
+    { id: 'c-safe', question: 'Preferred drink?', header: 'Preference' },
+  ]
+  const answers = [
+    { id: 'c-bare', selected: [], custom: '123456' },
+    { id: 'c-en', selected: [], custom: '123456' },
+    { id: 'c-zh', selected: [], custom: '123456' },
+    { id: 'c-pwd', selected: [], custom: 'hunter2' },
+    { id: 'c-hdr', selected: [], custom: '123456' },
+    { id: 'c-safe', selected: [], custom: 'oolong tea' },
+  ]
+  const eligible = eligibleQuestionAnswers(cards, answers)
+  assert.deepEqual(eligible, [{ id: 'c-safe', question: 'Preferred drink?', custom: 'oolong tea' }])
+
+  // 3. SQLite-lossy NUL and unpaired UTF-16 surrogates are excluded from memory without throwing.
+  assert.equal(hasUnsupportedSqliteChars('a\u0000b'), true)
+  assert.equal(hasUnsupportedSqliteChars('bad\ud800surrogate'), true)
+  assert.equal(hasUnsupportedSqliteChars('emoji 🙂 ok'), false)
+  assert.deepEqual(
+    eligibleQuestionAnswers(
+      [{ id: 'c\u0000bad', question: 'Normal?' }],
+      [{ id: 'c\u0000bad', selected: [], custom: 'valid text' }],
+    ),
+    [],
+  )
+  assert.deepEqual(
+    eligibleQuestionAnswers(
+      [{ id: 'c1', question: 'A?' }, { id: 'c2', question: 'B?' }],
+      [
+        { id: 'c1', selected: [], custom: 'has\u0000nul' },
+        { id: 'c2', selected: [], custom: 'clean answer' },
+      ],
+    ),
+    [{ id: 'c2', question: 'B?', custom: 'clean answer' }],
+  )
+
+  // 4. Linear O(n) backward punctuation scan (no ReDoS on 32,000-char padded headers).
+  const paddedLeading = `${' '.repeat(32_000)}OTP`
+  const paddedTrailing = `OTP${' '.repeat(32_000)}`
+  const t0 = performance.now()
+  assert.equal(stripTrailingPromptPunctuation(paddedLeading), paddedLeading)
+  assert.equal(stripTrailingPromptPunctuation(paddedTrailing), 'OTP')
+  assert.ok(performance.now() - t0 < 50, 'backward scan must run in linear time without regex backtracking')
+})
+
+test('Phase 4B §5.5: host question-channel retains >200-char rawHeaders for unified eligibility and channel.ask never strands on receipt throw', async () => {
+  const longOtpHeader = `${'x'.repeat(210)} OTP`
+  const sentToPlugin: any[] = []
+  const desk = createQuestionDesk({
+    send: msg => { sentToPlugin.push(msg) },
+    emit: () => {},
+    sessionId: () => 'sess-hdr',
+    profileDeletionGen: () => 2,
+    onAnswer: (entry, answers, _op, meta) => {
+      if (!entry.memoryEligible || !entry.callId || entry.callSeq === undefined) return
+      const eligible = eligibleQuestionAnswers(meta?.rawCards ?? entry.question.questions, answers)
+      if (!eligible.length) return
+      const sourceIds: Record<string, string> = {}
+      for (const item of eligible) {
+        sourceIds[item.id] = questionAnswerSourceId(entry.sessionId, entry.callSeq, entry.callId, item.id)
+      }
+      return { conversationId: 'conv-hdr', sourceIds }
+    },
+  })
+  await desk.receive({
+    type: 'question',
+    id: 'q-hdr-1',
+    sessionId: 'sess-hdr',
+    turn: 1,
+    callId: 'call-hdr-1',
+    callSeq: 4,
+    memoryEligible: true,
+    questions: [
+      { id: 'otp-card', question: 'Enter code', header: longOtpHeader, options: [{ label: 'skip' }] },
+      { id: 'safe-card', question: 'Favorite tea?', header: 'Drink', options: [{ label: 'tea' }] },
+    ],
+  })
+  let capturedSourceIds: Readonly<Record<string, string>> | undefined
+  assert.equal(
+    await desk.answer(
+      'q-hdr-1',
+      [
+        { id: 'otp-card', selected: [], custom: '123456' },
+        { id: 'safe-card', selected: [], custom: 'jasmine tea' },
+      ],
+      undefined,
+      { onSourceIds: ids => { capturedSourceIds = ids } },
+    ),
+    true,
+  )
+  // Displayed header was dropped (>200 chars), yet rawHeaders caught OTP + 123456 and preserved safe-card!
+  assert.ok(capturedSourceIds)
+  assert.equal(capturedSourceIds['otp-card'], undefined, 'long raw header OTP card must NOT receive a sourceId')
+  assert.equal(
+    capturedSourceIds['safe-card'],
+    questionAnswerSourceId('sess-hdr', 4, 'call-hdr-1', 'safe-card'),
+  )
+  assert.equal(sentToPlugin.at(-1)?.provenance?.origin, 'human')
+  assert.equal(sentToPlugin.at(-1)?.provenance?.answerProfileGen, 2)
+
+  // Receipt hook throwing synchronously inside channel.ask MUST NOT strand the user's answer!
+  const ipc = new EventEmitter()
+  const logs: string[] = []
+  const sentFromPlugin: any[] = []
+  const channel = createQuestionChannel(
+    { send: m => { sentFromPlugin.push(m) }, on: ipc.on.bind(ipc), off: ipc.off.bind(ipc) },
+    msg => logs.push(msg),
+    () => { throw new Error('simulated listener failure') },
+  )
+  const askPromise = channel.ask(
+    {
+      questions: [{ id: 'q1', question: 'City?', header: 'Location', options: [{ label: 'SH' }] }],
+      agent: { session: { id: 'sess-throw' } },
+    },
+    1,
+    { callSeq: 2, callId: 'call-throw', turn: 1, kind: 'native', openingProfileGen: 0 },
+  )
+  const qMsg = sentFromPlugin[0]
+  assert.equal(qMsg.callId, 'call-throw')
+  assert.equal(qMsg.callSeq, 2)
+  assert.equal(qMsg.memoryEligible, true)
+  ipc.emit('message', {
+    type: 'answer',
+    id: qMsg.id,
+    answers: [{ id: 'q1', selected: [], custom: 'Hangzhou' }],
+    provenance: { origin: 'human', conversationId: 'conv-throw', answeredAt: Date.now(), answerProfileGen: 0 },
+  })
+  const resolved = await askPromise
+  assert.deepEqual(resolved, { answers: [{ id: 'q1', selected: [], custom: 'Hangzhou' }] })
+  assert.ok(logs.some(line => line.includes('simulated listener failure')))
+  channel.close()
+})
+
+test('Phase 4B §5.5-§5.7: native & PTC folding, policy rewrite digest guard, human/agent/SDK isolation, same-turn memory_remember, and interrupted PTC turn retirement', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4b-fold-')
+  const tz = 'UTC'
+  const sessionId = 'sess-fold-1'
+  const nowMs = Date.parse('2026-11-26T00:00:00Z')
+
+  // 1. Unit-level fold verification across native, PTC, compaction replace, error, spill preview, pending, selected-only, user-question-reply.
+  const nativeCards = [
+    { id: 'q1', question: 'Preferred editor?', header: 'Tools', options: [{ label: 'VSCode' }], multi_select: false },
+    { id: 'q2', question: 'OTP?', header: 'Security', options: [{ label: 'None' }], multi_select: false },
+  ]
+  const ptcCards = [{ id: 'p1', question: 'Target region?', header: 'Deploy', options: [{ label: 'us-east' }] }]
+  const turnEvents = [
+    { seq: 0, time: nowMs, type: 'turn/start', data: { turn: 1 } },
+    // Native valid call + result
+    { seq: 1, time: nowMs + 1, type: 'tool/call', data: { turn: 1, step: 1, callId: 'nat-1', name: 'ask_user_question', arguments: JSON.stringify({ questions: nativeCards }) } },
+    { seq: 2, time: nowMs + 5, type: 'tool/result', surfaceOp: 'append', sourceEventSeqs: [1], data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'nat-1', content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q1', selected: [], custom: 'Neovim' }, { id: 'q2', selected: [], custom: '123456' }] }) }] } } },
+    // Compaction replacement must be ignored
+    { seq: 3, time: nowMs + 6, type: 'tool/call', data: { turn: 1, step: 1, callId: 'nat-compact', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'c', question: 'Compacted?' }] }) } },
+    { seq: 4, time: nowMs + 7, type: 'tool/result', surfaceOp: { op: 'replace', startSeq: 3, endSeq: 3 }, sourceEventSeqs: [3], data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'nat-compact', content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'c', selected: [], custom: 'must ignore' }] }) }] } } },
+    // Error / TOOL_OUTCOME_UNKNOWN / spill preview / pending / selected-only must all be ignored
+    { seq: 5, time: nowMs + 8, type: 'tool/call', data: { turn: 1, step: 1, callId: 'nat-err', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'e', question: 'Err?' }] }) } },
+    { seq: 6, time: nowMs + 9, type: 'tool/result', surfaceOp: 'append', sourceEventSeqs: [5], data: { turn: 1, step: 1, error: { name: 'Repair', code: 'TOOL_OUTCOME_UNKNOWN' }, message: { role: 'tool', toolCallId: 'nat-err', isError: true, content: [{ type: 'text', text: 'unknown' }] } } },
+    { seq: 7, time: nowMs + 10, type: 'tool/call', data: { turn: 1, step: 1, callId: 'nat-spill', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 's', question: 'Spill?' }] }) } },
+    { seq: 8, time: nowMs + 11, type: 'tool/result', surfaceOp: 'append', sourceEventSeqs: [7], data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'nat-spill', content: [{ type: 'text', text: '{"answers":[{"id":"s","selected":[],"custom":"trunc...\n\n[...]\n\nSpilled to file' }] } } },
+    { seq: 9, time: nowMs + 12, type: 'tool/call', data: { turn: 1, step: 1, callId: 'nat-pending', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'p', question: 'Pending?' }] }) } },
+    { seq: 10, time: nowMs + 13, type: 'tool/result', surfaceOp: 'append', sourceEventSeqs: [9], data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'nat-pending', content: [{ type: 'text', text: JSON.stringify({ pending: true, callId: 'nat-pending', message: 'waiting' }) }] } } },
+    { seq: 11, time: nowMs + 14, type: 'tool/call', data: { turn: 1, step: 1, callId: 'nat-sel', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'o', question: 'Selected only?', options: [{ label: 'Yes' }] }] }) } },
+    { seq: 12, time: nowMs + 15, type: 'tool/result', surfaceOp: 'append', sourceEventSeqs: [11], data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'nat-sel', content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'o', selected: ['Yes'] }] }) }] } } },
+    // PTC valid dispatch
+    { seq: 13, time: nowMs + 16, type: 'tool/ptc-dispatch-start', data: { rootCallId: 'root-1', parentCallId: 'parent-1', subCallId: 'root-1:ptc:1', name: 'ask_user_question', arguments: { questions: ptcCards } } },
+    { seq: 14, time: nowMs + 17, type: 'tool/ptc-dispatch', data: { rootCallId: 'root-1', parentCallId: 'parent-1', subCallId: 'root-1:ptc:1', name: 'ask_user_question', arguments: { questions: ptcCards }, isError: false, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'p1', selected: [], custom: 'ap-southeast-1' }] }) }] } },
+    // Ignored user-question-reply user message
+    { seq: 15, time: nowMs + 18, type: 'user/message', data: { id: 'uqr-1', role: 'user', source: { kind: 'user-question-reply', callId: 'nat-pending', outcome: 'answered' }, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'p', selected: [], custom: 'late reply' }] }) }] } },
+  ] as unknown as SessionEvent[]
+
+  const folded = foldQuestionAnswersForTurn(turnEvents, sessionId, tz)
+  assert.equal(folded.length, 2, 'only valid native + PTC occurrences should fold')
+  assert.equal(folded[0]!.callSeq, 1)
+  assert.deepEqual(folded[0]!.items.map(i => [i.questionId, i.text]), [['q1', 'Neovim']], 'OTP sibling must be excluded while safe sibling survives')
+  assert.equal(folded[1]!.callSeq, 13)
+  assert.deepEqual(folded[1]!.items.map(i => [i.questionId, i.text]), [['p1', 'ap-southeast-1']])
+
+  // 2. Policy rewrite scope: changing eligible custom text -> digest mismatch rejected; changing selected only -> admitted!
+  const root = path.join(dir, 'mem-policy')
+  const owner = openMemoryOwner({
+    root,
+    hostNamespace: 'viva',
+    dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '' }),
+    compute: job => job.stage === 'note'
+      ? Promise.resolve(JSON.stringify({ status: 'write', title: 'QA', markdown: 'QA note' }))
+      : null,
+  })
+  defer(() => owner.close())
+  await owner.recover()
+
+  const sidPolicy = 'sess-policy-1', convPolicy = 'conv-policy-1'
+  owner.beginTurn({ sessionId: sidPolicy, turn: 1, sessionKind: 'main', conversation: convPolicy, cwd: dir })
+
+  // Receipt for callSeq=1 (human submitted 'Neovim'), but post-execute rewrote custom text to 'Emacs' -> MUST FAIL CLOSED!
+  const call1Hash = questionCallIdHash('nat-1')
+  const origDigest1 = canonicalEligibleAnswersDigest([{ id: 'q1', question: 'Preferred editor?', custom: 'Neovim' }])
+  owner.recordQuestionReceipt({
+    sessionId: sidPolicy, turn: 1, callSeq: 1, callIdHash: call1Hash, conversationId: convPolicy,
+    answeredAt: nowMs + 4, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: origDigest1,
+  })
+  const rewrittenCustomDigest = canonicalEligibleAnswersDigest([{ id: 'q1', question: 'Preferred editor?', custom: 'Emacs' }])
+  const rewrittenCand = {
+    callSeq: 1, callIdHash: call1Hash, requestId: questionOccurrenceRequestId(1, call1Hash),
+    questionAt: nowMs + 1, answerBatchDigest: rewrittenCustomDigest, timezone: tz,
+    items: [{ sourceId: questionAnswerSourceId(sidPolicy, 1, 'nat-1', 'q1'), questionId: 'q1', question: 'Preferred editor?', text: 'Emacs' }],
+  }
+
+  // Receipt for callSeq=2 (human submitted selected=['A'], custom='Rust'); post-execute changed selected=['B'], custom='Rust' -> SAME eligible digest -> ADMITTED!
+  const call2Hash = questionCallIdHash('nat-2')
+  const digest2 = canonicalEligibleAnswersDigest([{ id: 'q2', question: 'Language?', custom: 'Rust' }])
+  owner.recordQuestionReceipt({
+    sessionId: sidPolicy, turn: 1, callSeq: 2, callIdHash: call2Hash, conversationId: convPolicy,
+    answeredAt: nowMs + 6, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: digest2,
+  })
+  const selectedRewriteCand = {
+    callSeq: 2, callIdHash: call2Hash, requestId: questionOccurrenceRequestId(2, call2Hash),
+    questionAt: nowMs + 2, answerBatchDigest: digest2, timezone: tz,
+    items: [{ sourceId: questionAnswerSourceId(sidPolicy, 2, 'nat-2', 'q2'), questionId: 'q2', question: 'Language?', text: 'Rust' }],
+  }
+
+  // Candidate for callSeq=3 with NO receipt (agent answer_background_task or standalone SDK JSON-RPC with identical text 'Rust') -> MUST FAIL CLOSED!
+  const call3Hash = questionCallIdHash('nat-unreceipted')
+  const unreceiptedCand = {
+    callSeq: 3, callIdHash: call3Hash, requestId: questionOccurrenceRequestId(3, call3Hash),
+    questionAt: nowMs + 3, answerBatchDigest: digest2, timezone: tz,
+    items: [{ sourceId: questionAnswerSourceId(sidPolicy, 3, 'nat-unreceipted', 'q2'), questionId: 'q2', question: 'Language?', text: 'Rust' }],
+  }
+
+  // Same-turn memory_remember staging keeps receipt intact until settleTurn and admits custom:true proof!
+  const staged = owner.stageOpenTurnSources({
+    sessionId: sidPolicy, turn: 1, sessionKind: 'main', conversation: convPolicy, cwd: dir,
+    sources: [],
+    questionAnswers: [rewrittenCand, selectedRewriteCand, unreceiptedCand],
+  })
+  assert.deepEqual(staged.staged, [selectedRewriteCand.items[0]!.sourceId])
+  const remembered = await owner.rememberSidecarFile(sidPolicy, 'Rust', new AbortController().signal)
+  assert.ok(remembered, 'same-turn memory_remember must accept staged receipt-backed human custom answer')
+
+  // Verify receipt still exists before settleTurn, then is retired cleanly at settleTurn!
+  const db = new DatabaseSync(path.join(root, 'memory.db'), { readOnly: true })
+  defer(() => db.close())
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get(sidPolicy)?.n, 2)
+
+  await owner.settleTurn({
+    sessionId: sidPolicy, cwd: dir, sessionKind: 'main', conversation: convPolicy, inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 10, turn: 1, reasonKind: 'completed',
+    sources: [], questionAnswers: [rewrittenCand, selectedRewriteCand, unreceiptedCand],
+    assistantText: '', at: nowMs + 10, timezone: tz,
+  })
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get(sidPolicy)?.n, 0,
+    'terminal settleTurn must retire all receipts for settled turn')
+  assert.equal(db.prepare('SELECT id FROM memory_sources WHERE id=?').get(rewrittenCand.items[0]!.sourceId), undefined,
+    'policy-rewritten custom text must be rejected via digest mismatch')
+  assert.equal(db.prepare('SELECT id FROM memory_sources WHERE id=?').get(unreceiptedCand.items[0]!.sourceId), undefined,
+    'unreceipted agent/SDK answer with identical text must fail closed')
+  const kept = db.prepare('SELECT author, profile_eligible, outcome FROM memory_sources WHERE id=?').get(selectedRewriteCand.items[0]!.sourceId) as
+    { author: string, profile_eligible: number, outcome: string } | undefined
+  assert.equal(kept?.author, 'answer')
+  assert.equal(kept?.profile_eligible, 1)
+
+  // 3. Interrupted PTC turn whose buffered call_seq=18 was lost before repair.ts closed at seq=6 STILL retires receipt by turn<=settledTurn!
+  const sidPtcRepair = 'sess-ptc-repair'
+  owner.beginTurn({ sessionId: sidPtcRepair, turn: 1, sessionKind: 'main', conversation: 'conv-ptc-r', cwd: dir })
+  owner.recordQuestionReceipt({
+    sessionId: sidPtcRepair, turn: 1, callSeq: 18, callIdHash: questionCallIdHash('ptc-lost'), conversationId: 'conv-ptc-r',
+    answeredAt: nowMs + 20, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: digest2,
+  })
+  await owner.settleTurn({
+    sessionId: sidPtcRepair, cwd: dir, sessionKind: 'main', conversation: 'conv-ptc-r', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 7, turn: 1, reasonKind: 'interrupted',
+    sources: [], assistantText: '', at: nowMs + 30, timezone: tz,
+  })
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get(sidPtcRepair)?.n, 0,
+    'interrupted turn repaired at seq=6 must still retire lost buffered PTC receipt at callSeq=18 via turn<=settledTurn')
+})
+
+test('Phase 4B §5.5: enqueue-time maxSeq on scanLive, entry-time liveEpoch on scanCold, and confirmed not-found receipt cleanup', async () => {
+  // 1. Earlier queued synchronize() MUST NOT swallow a later turn/end appended after enqueueQuestionReceipt()!
+  const events: SessionEvent[] = [
+    { seq: 0, time: 1000, type: 'turn/start', data: { turn: 1 } } as unknown as SessionEvent,
+  ]
+  const order: string[] = []
+  let nextSeq: number | null = null
+  const gate = deferred<void>()
+  const firstEntered = deferred<void>()
+  let holdFirst = true
+
+  const session = {
+    id: SessionId('sess-maxseq'),
+    get seq() { return SessionSeq(events.length) },
+    inheritedEventCount: 0,
+    header: { id: SessionId('sess-maxseq'), cwd: '/tmp', version: 4, createdAt: 1000, isSeeded: false } as SessionHeader,
+  } as unknown as Session
+
+  const intake = createSessionIngestion(
+    {
+      epoch: 'e1',
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async () => {
+        if (holdFirst) { holdFirst = false; firstEntered.resolve(); await gate.promise }
+        return { createdAt: 0, nextSeq, inheritedSeq: 0, sessionKind: 'main', conversation: null }
+      },
+      advanceIntakeCursor: async input => { nextSeq = input.nextSeq; return { status: 'ok', nextSeq } },
+      beginTurn: async () => {},
+      recordQuestionReceipt: async () => { order.push('receipt') },
+      stageOpenTurnSources: async () => ({ staged: [] }),
+      settleTurn: async input => { order.push('settle'); nextSeq = input.toSeq; return { status: 'ok', nextSeq } },
+    },
+    { flush: async () => true, get: () => session },
+    {
+      open: async () => ({
+        inheritedEventCount: 0,
+        read: async (offset: number, limit: number) => ({ events: events.slice(offset, offset + limit) }),
+        close: async () => {},
+      }) as never,
+      list: async () => [],
+    },
+    { host: true },
+  )
+
+  const sync1 = intake.synchronize(session) // captures targetEndSeq = 1
+  await firstEntered.promise
+  const receiptJob = intake.enqueueQuestionReceipt({
+    sessionId: 'sess-maxseq', turn: 1, callSeq: 1, callIdHash: 'a'.repeat(64), conversationId: 'conv-1',
+    answeredAt: 1005, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: 'b'.repeat(64),
+  })
+  events.push({ seq: 1, time: 1010, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } } as unknown as SessionEvent)
+  const sync2 = intake.synchronize(session) // captures targetEndSeq = 2 AFTER receiptJob
+  gate.resolve()
+  await Promise.all([sync1, receiptJob, sync2])
+  assert.deepEqual(order, ['receipt', 'settle'], 'enqueue-time maxSeq must prevent earlier scanLive from settling before later receipt')
+
+  // 2. scanCold superseded across queued / cursor / read when session opens & closes mid-flight!
+  for (const phase of ['queued', 'cursor', 'read'] as const) {
+    const entered = deferred<void>()
+    const resume = deferred<void>()
+    let held = false
+    const hold = async (where: typeof phase) => {
+      if (!held && phase === where) { held = true; entered.resolve(); await resume.promise }
+    }
+    const coldEvents: SessionEvent[] = []
+    const log: string[] = []
+    let live: Session | undefined
+    let cursorNext: number | null = null
+    const liveSess = {
+      id: SessionId('s-cold'),
+      get seq() { return SessionSeq(coldEvents.length) },
+      inheritedEventCount: 0,
+      header: { id: SessionId('s-cold'), cwd: '/tmp', version: 4, createdAt: 1000, isSeeded: false } as SessionHeader,
+    } as unknown as Session
+
+    const coldIntake = createSessionIngestion(
+      {
+        epoch: 'e2',
+        inEpoch: (_e, fn) => fn(),
+        intakeCursor: async () => { await hold('cursor'); return { createdAt: 0, nextSeq: cursorNext, inheritedSeq: 0, sessionKind: 'main', conversation: null } },
+        advanceIntakeCursor: async input => { cursorNext = input.nextSeq; return { status: 'ok', nextSeq: cursorNext } },
+        beginTurn: async input => { if (input.turn === 99) await hold('queued') },
+        recordQuestionReceipt: async () => { log.push('receipt') },
+        stageOpenTurnSources: async () => ({ staged: [] }),
+        settleTurn: async input => { log.push('settle'); cursorNext = input.toSeq; return { status: 'ok', nextSeq: cursorNext } },
+      },
+      { flush: async () => true, get: () => live },
+      {
+        open: async () => ({
+          inheritedEventCount: 0,
+          read: async (offset: number) => { await hold('read'); return { events: offset ? [] : coldEvents } },
+          close: async () => {},
+        }) as never,
+        list: async () => [],
+      },
+      { host: true },
+    )
+    const blocker = phase === 'queued' ? coldIntake.beginTurn(liveSess, 99, []) : null
+    const cold = coldIntake.scanCold('s-cold', liveSess.header)
+    await entered.promise
+    live = liveSess
+    const rec = coldIntake.enqueueQuestionReceipt({
+      sessionId: 's-cold', turn: 1, callSeq: 1, callIdHash: 'a'.repeat(64), conversationId: 'conv-c',
+      answeredAt: 1005, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: 'b'.repeat(64),
+    })
+    coldEvents.push(
+      { seq: 0, time: 1000, type: 'turn/start', data: { turn: 1 } } as unknown as SessionEvent,
+      { seq: 1, time: 1010, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } } as unknown as SessionEvent,
+    )
+    const synced = coldIntake.synchronize(liveSess)
+    live = undefined
+    coldIntake.release(liveSess)
+    resume.resolve()
+    await Promise.all([blocker, cold, rec, synced])
+    await coldIntake.drain()
+    assert.deepEqual(log, ['receipt', 'settle'], `scanCold held at ${phase} must be superseded by liveEpoch`)
+  }
+
+  // 3. Confirmed SessionPersistenceNotFoundError retires orphan receipts; transient error retains them.
+  const retired: string[] = []
+  let openMode: 'not-found' | 'transient' = 'transient'
+  const cleanupIntake = createSessionIngestion(
+    {
+      epoch: 'e3',
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async () => ({ createdAt: 0, nextSeq: null, inheritedSeq: 0, sessionKind: 'main', conversation: null }),
+      advanceIntakeCursor: async input => ({ status: 'ok', nextSeq: input.nextSeq }),
+      beginTurn: async () => {},
+      retireSessionQuestionReceipts: async sid => { retired.push(sid) },
+      stageOpenTurnSources: async () => ({ staged: [] }),
+      settleTurn: async input => ({ status: 'ok', nextSeq: input.toSeq }),
+    },
+    { flush: async () => true, get: () => undefined },
+    {
+      open: async () => {
+        if (openMode === 'not-found') throw new SessionPersistenceNotFoundError(SessionId('s-orphan'))
+        throw new Error('EIO transient')
+      },
+      list: async () => [],
+    },
+    { host: true },
+  )
+  const hdr = { id: SessionId('s-orphan'), cwd: '/tmp', version: 4, createdAt: 1000, isSeeded: false } as SessionHeader
+  await cleanupIntake.scanCold('s-orphan', hdr)
+  assert.deepEqual(retired, [], 'transient I/O error must NOT retire receipts')
+  openMode = 'not-found'
+  await cleanupIntake.scanCold('s-orphan', hdr)
+  assert.deepEqual(retired, ['s-orphan'], 'confirmed SessionPersistenceNotFoundError must retire orphan session receipts')
+  await cleanupIntake.drain()
+})
+
+test('Phase 4B §5.5-§5.7: dual-generation profile deletion watermark (all 5 rows), clock-rollback answer guard, and persisted eventSeq revocation dependency', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4b-watermark-')
+  let clock = Date.parse('2026-11-26T00:00:00Z')
+  const dreamInputs: Array<Record<string, unknown>> = []
+  const noteInputs: Array<{ turns: Array<{ user: Array<{ sourceId: string, text: string, question: string | null }> }> }> = []
+
+  const root = path.join(dir, 'mem-wm')
+  const owner = openMemoryOwner({
+    root,
+    hostNamespace: 'viva',
+    now: () => clock,
+    dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'mock', model: 'mock' }),
+    readSessionRange: async () => ({ status: 'ok', assistant: '' }),
+    compute: job => {
+      if (job.stage === 'note') {
+        noteInputs.push(JSON.parse(job.input))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '记录', markdown: '测试笔记' }))
+      }
+      if (job.stage === 'dream') {
+        if (job.system === DREAM_PROFILE_SYSTEM) {
+          dreamInputs.push(JSON.parse(job.input))
+          return Promise.resolve(JSON.stringify({ action: 'NOOP' }))
+        }
+        return Promise.resolve(JSON.stringify({ operations: [] }))
+      }
+      return null
+    },
+  })
+  defer(() => owner.close())
+  await owner.recover()
+
+  // Seed initial resident profile via forgettable flow: create a manual note -> trigger profile deletion generation 1.
+  const db = new DatabaseSync(path.join(root, 'memory.db'))
+  defer(() => db.close())
+  // Set profile_deleted_at = clock (t0) and profile_deletion_generation = 1 directly on meta to test exact 5-row truth table + rollback!
+  const deleteAt = clock + 100
+  db.prepare("INSERT INTO memory_meta(key, value) VALUES ('profile_deleted_at', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(deleteAt))
+  db.prepare("INSERT INTO memory_meta(key, value) VALUES ('profile_deletion_generation', '1') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run()
+
+  // Case A (Clock rollback late-insert attack):
+  // User submitted at clock=deleteAt+50 (before clock rolled back to deleteAt!) with answerProfileGen=0!
+  // Settlement runs after deletion -> answer_profile_gen (0) !== currentDelGen (1) -> MUST admit with profileEligible=0!
+  const sidRollback = 'sess-rollback'
+  const srcRollback = questionAnswerSourceId(sidRollback, 2, 'call-rb', 'q-rb')
+  const digestRb = canonicalEligibleAnswersDigest([{ id: 'q-rb', question: 'Pre-del Q?', custom: 'pre-deletion rolled-back answer' }])
+  owner.beginTurn({ sessionId: sidRollback, turn: 1, sessionKind: 'main', conversation: 'conv-rb', cwd: dir })
+  owner.recordQuestionReceipt({
+    sessionId: sidRollback, turn: 1, callSeq: 2, callIdHash: questionCallIdHash('call-rb'), conversationId: 'conv-rb',
+    answeredAt: deleteAt + 50, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: digestRb,
+  })
+  await owner.settleTurn({
+    sessionId: sidRollback, cwd: dir, sessionKind: 'main', conversation: 'conv-rb', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 4, turn: 1, reasonKind: 'completed',
+    sources: [],
+    questionAnswers: [{
+      callSeq: 2, callIdHash: questionCallIdHash('call-rb'), requestId: questionOccurrenceRequestId(2, questionCallIdHash('call-rb')),
+      questionAt: deleteAt - 20, answerBatchDigest: digestRb, timezone: 'UTC',
+      items: [{ sourceId: srcRollback, questionId: 'q-rb', question: 'Pre-del Q?', text: 'pre-deletion rolled-back answer' }],
+    }],
+    assistantText: '', at: deleteAt + 60, timezone: 'UTC',
+  })
+  const rbRow = db.prepare('SELECT profile_eligible, at FROM memory_sources WHERE id=?').get(srcRollback) as { profile_eligible: number, at: number }
+  assert.equal(rbRow.profile_eligible, 0, 'clock-rolled-back pre-deletion answer (answerProfileGen=0 !== delGen=1) MUST NOT be profileEligible')
+  assert.equal(rbRow.at, deleteAt + 50, 'runtime.accept must persist receipt.answeredAt via 5th argument')
+
+  // Case B (Blocking card open across deletion: openingProfileGen=0, submitted after deletion with answerProfileGen=1 & answeredAt > deleteAt)
+  // Plus future-gen mismatch (questionProfileGen=2 > delGen=1), null questionProfileGen, and valid post-deletion (questionProfileGen=1 & questionAt > deleteAt)!
+  const sidRows = 'sess-rows'
+  const srcOpenAcross = questionAnswerSourceId(sidRows, 2, 'call-across', 'q-across')
+  const srcFutureGen = questionAnswerSourceId(sidRows, 4, 'call-future', 'q-future')
+  const srcNullGen = questionAnswerSourceId(sidRows, 6, 'call-null', 'q-null')
+  const srcValidPost = questionAnswerSourceId(sidRows, 8, 'call-valid', 'q-valid')
+  const makeRec = (callSeq: number, callId: string, qId: string, q: string, text: string, qGen: number | null, qAt: number) => {
+    const h = questionCallIdHash(callId)
+    const d = canonicalEligibleAnswersDigest([{ id: qId, question: q, custom: text }])
+    owner.recordQuestionReceipt({
+      sessionId: sidRows, turn: 1, callSeq, callIdHash: h, conversationId: 'conv-rows',
+      answeredAt: deleteAt + 200, questionProfileGen: qGen, answerProfileGen: 1, answerBatchDigest: d,
+    })
+    return {
+      callSeq, callIdHash: h, requestId: questionOccurrenceRequestId(callSeq, h),
+      questionAt: qAt, answerBatchDigest: d, timezone: 'UTC',
+      items: [{ sourceId: questionAnswerSourceId(sidRows, callSeq, callId, qId), questionId: qId, question: q, text }],
+    }
+  }
+  owner.beginTurn({ sessionId: sidRows, turn: 1, sessionKind: 'main', conversation: 'conv-rows', cwd: dir })
+  const cands = [
+    makeRec(2, 'call-across', 'q-across', 'OLD QUESTION BEFORE DELETE', 'answer after delete', 0, deleteAt - 10),
+    makeRec(4, 'call-future', 'q-future', 'FUTURE GEN QUESTION', 'answer future gen', 2, deleteAt + 10),
+    makeRec(6, 'call-null', 'q-null', 'NULL GEN QUESTION', 'answer null gen', null, deleteAt + 10),
+    makeRec(8, 'call-valid', 'q-valid', 'VALID POST DELETE QUESTION', 'answer valid post', 1, deleteAt + 20),
+  ]
+  await owner.settleTurn({
+    sessionId: sidRows, cwd: dir, sessionKind: 'main', conversation: 'conv-rows', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 12, turn: 1, reasonKind: 'completed',
+    sources: [], questionAnswers: cands, assistantText: '', at: deleteAt + 210, timezone: 'UTC',
+  })
+  await owner.runtime.wake()
+  // Trigger manual Dream so DREAM_PROFILE_SYSTEM receives the exact gated question inputs!
+  clock = deleteAt + 300
+  owner.runtime.requestDream(randomUUID())
+  await owner.runtime.wake()
+  assert.ok(dreamInputs.length > 0, 'Dream profile planner must run')
+  const latestDreamJson = JSON.stringify(dreamInputs.at(-1))
+  assert.equal(latestDreamJson.includes('pre-deletion rolled-back answer'), false, 'clock-rolled-back answer must never enter Dream profile input')
+  assert.equal(latestDreamJson.includes('answer after delete'), true, 'post-deletion custom answer to pre-deletion card must enter Dream')
+  assert.equal(latestDreamJson.includes('OLD QUESTION BEFORE DELETE'), false, 'pre-deletion question (gen=0) must be withheld from Dream')
+  assert.equal(latestDreamJson.includes('FUTURE GEN QUESTION'), false, 'mismatched future questionProfileGen (2 !== 1) must be withheld from Dream')
+  assert.equal(latestDreamJson.includes('NULL GEN QUESTION'), false, 'missing/null questionProfileGen after deletion must be withheld from Dream')
+  assert.equal(latestDreamJson.includes('VALID POST DELETE QUESTION'), true, 'valid post-deletion question (gen=1, questionAt > watermark) must reach Dream')
+  assert.ok([srcOpenAcross, srcFutureGen, srcNullGen, srcValidPost].every(id => db.prepare('SELECT profile_eligible FROM memory_sources WHERE id=?').get(id)?.profile_eligible === 1))
+
+  // Case C (Clock rollback same-turn revocation dependency via persisted eventSeq):
+  // Prompt at eventSeq=1, at=deleteAt+500; question at callSeq=3, questionAt=deleteAt+495 (5ms clock rollback!).
+  const sidSeq = 'sess-seq-dep'
+  const promptId = randomUUID()
+  const ansSeqId = questionAnswerSourceId(sidSeq, 3, 'call-seq', 'q-seq')
+  const digestSeq = canonicalEligibleAnswersDigest([{ id: 'q-seq', question: 'Sensitive prompt followup?', custom: 'keeps custom text' }])
+  owner.beginTurn({ sessionId: sidSeq, turn: 1, sessionKind: 'main', conversation: 'conv-seq', cwd: dir })
+  owner.recordQuestionReceipt({
+    sessionId: sidSeq, turn: 1, callSeq: 3, callIdHash: questionCallIdHash('call-seq'), conversationId: 'conv-seq',
+    answeredAt: deleteAt + 510, questionProfileGen: 1, answerProfileGen: 1, answerBatchDigest: digestSeq,
+  })
+  await owner.settleTurn({
+    sessionId: sidSeq, cwd: dir, sessionKind: 'main', conversation: 'conv-seq', inheritedSeq: 0,
+    expectedNextSeq: null, fromSeq: 0, toSeq: 6, turn: 1, reasonKind: 'completed',
+    sources: [{ sourceId: promptId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '同轮前置敏感原话', eventSeq: 1, at: deleteAt + 500, timezone: 'UTC' }],
+    questionAnswers: [{
+      callSeq: 3, callIdHash: questionCallIdHash('call-seq'), requestId: questionOccurrenceRequestId(3, questionCallIdHash('call-seq')),
+      questionAt: deleteAt + 495, answerBatchDigest: digestSeq, timezone: 'UTC',
+      items: [{ sourceId: ansSeqId, questionId: 'q-seq', question: 'Sensitive prompt followup?', text: 'keeps custom text' }],
+    }],
+    assistantText: '', at: deleteAt + 520, timezone: 'UTC',
+  })
+  const depRow = db.prepare('SELECT question_sources_json FROM memory_sources WHERE id=?').get(ansSeqId) as { question_sources_json: string }
+  assert.ok(depRow.question_sources_json.includes(promptId),
+    'persisted eventSeq (1 < 3) must record same-turn prompt as question dependency even when wall clock rolled back 5ms')
+})
+
+test('Phase 4B §5.5: viva-questions plugin observes starts, evicts denied calls on step/end, samples openingProfileGen, and emits receipts', async t => {
+  const ctx = new Context()
+  const ipc = new EventEmitter()
+  const sent: any[] = []
+  const port = Object.assign(ipc, { send: (msg: object) => { sent.push(msg); return true } }) as unknown as NodeJS.Process
+  const receipts: HumanQuestionReceipt[] = []
+  let cachedDelGen: number | null = 3
+
+  // Provide minimal agents service for turnBoundaryOf.
+  ctx.provide('agents', { turnBoundaryOf: () => ({ openTurnStartSeq: 0, lastTurn: 2 }) } as never)
+  ctx.on('viva-memory/read-profile-deletion-gen', probe => { probe.value = cachedDelGen })
+  ctx.on('viva-questions/human-answer-receipt', receipt => { receipts.push(receipt) })
+
+  applyQuestionsPlugin(ctx, {}, port)
+  t.after(() => ctx.fiber.dispose())
+
+  const session = { id: SessionId('sess-plugin') } as unknown as Session
+
+  // 1. Denied call in step 1 (never enters tools/execute) is evicted on step/end so step 2 reusing callId claims seq 10 (not seq 1)!
+  ctx.emit('session/event', session, { seq: SessionSeq(1), time: 100, type: 'tool/call', data: { turn: 2, step: 1, callId: 'dup-id', name: 'ask_user_question', arguments: '{}' } } as never)
+  ctx.emit('session/event', session, { seq: SessionSeq(2), time: 101, type: 'step/end', data: { turn: 2, step: 1 } } as never)
+  cachedDelGen = 4
+  ctx.emit('session/event', session, { seq: SessionSeq(10), time: 200, type: 'tool/call', data: { turn: 2, step: 2, callId: 'dup-id', name: 'ask_user_question', arguments: '{}' } } as never)
+
+  const askResult = await ctx.waterfall(
+    'tools/execute',
+    { name: 'ask_user_question', callId: 'dup-id', agent: { session } } as never,
+    async () => {
+      const reqPromise = ctx.waterfall(
+        'user-questions/request',
+        {
+          questions: [{ id: 'q1', question: 'Confirm color?', header: 'Color', options: [{ label: 'Blue' }] }],
+          agent: { session },
+        } as never,
+        () => Promise.reject(new Error('no answerer')),
+      )
+      const qMsg = sent.at(-1)
+      assert.equal(qMsg.callSeq, 10, 'must claim step 2 start (seq 10), not evicted step 1 start (seq 1)')
+      assert.equal(qMsg.callId, 'dup-id')
+      assert.equal(qMsg.memoryEligible, true)
+      ipc.emit('message', {
+        type: 'answer',
+        id: qMsg.id,
+        answers: [{ id: 'q1', selected: [], custom: 'Emerald' }],
+        provenance: { origin: 'human', conversationId: 'conv-plugin', answeredAt: 250, answerProfileGen: 4 },
+      })
+      return await reqPromise
+    },
+  )
+  assert.deepEqual(askResult, { answers: [{ id: 'q1', selected: [], custom: 'Emerald' }] })
+  assert.equal(receipts.length, 1)
+  assert.equal(receipts[0]!.callSeq, 10)
+  assert.equal(receipts[0]!.turn, 2)
+  assert.equal(receipts[0]!.questionProfileGen, 4, 'openingProfileGen must be sampled at start-event observation time')
+  assert.equal(receipts[0]!.answerProfileGen, 4)
+  assert.equal(receipts[0]!.conversationId, 'conv-plugin')
+})

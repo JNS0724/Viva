@@ -209,8 +209,9 @@ test('failed revision validation is terminal and cannot poison owner recovery', 
   try { await next.recover(); assert.equal(next.ready(), true) } finally { await next.close() }
 })
 
-test('custom question answer uses the owner native turn and joins only completed-turn processing', async t => {
+test('custom question answer uses scalar receipt and joins only completed-turn processing', async t => {
   const { owner, root } = fixture(t); await owner.recover()
+  const { canonicalEligibleAnswersDigest, questionAnswerSourceId, questionCallIdHash, questionOccurrenceRequestId } = await import('../src/memory/node/question-answer-memory.ts')
   const sessionId = randomUUID(), src = candidate()
   owner.beginTurn({ sessionId, turn: 2, sessionKind: 'main', conversation: sessionId, cwd: null })
   await owner.settleTurn({
@@ -219,28 +220,35 @@ test('custom question answer uses the owner native turn and joins only completed
     sources: [src], assistantText: '', at: src.at, timezone: 'Asia/Shanghai',
   })
   owner.beginTurn({ sessionId, turn: 3, sessionKind: 'main', conversation: sessionId, cwd: null })
-  const card = { id: 'drink', question: '你喜欢什么饮品？', header: '', multiSelect: false, options: [{ label: '茶' }] }
-  const context = { kind: 'user' as const }
-  const operationId = randomUUID()
-  const answer = { operationId, session: sessionId, conversation: sessionId, text: '我喜欢茉莉花茶', turn: 3, cards: [card],
-    requestId: 'request', questionId: card.id, context }
-  assert.deepEqual(await owner.handleHost('acceptQuestionAnswer', answer), { sourceId: operationId })
-  assert.deepEqual(await owner.handleHost('acceptQuestionAnswer', answer), { sourceId: operationId })
+  const callSeq = 8, callId = 'call-drink-1'
+  const callIdHash = questionCallIdHash(callId)
+  const sourceId = questionAnswerSourceId(sessionId, callSeq, callId, 'drink')
+  const requestId = questionOccurrenceRequestId(callSeq, callIdHash)
+  const question = '你喜欢什么饮品？', text = '我喜欢茉莉花茶'
+  const digest = canonicalEligibleAnswersDigest([{ id: 'drink', question, custom: text }])
+  const receipt = {
+    sessionId, turn: 3, callSeq, callIdHash, conversationId: sessionId,
+    answeredAt: Date.now(), questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: digest,
+  }
+  owner.recordQuestionReceipt(receipt)
+  owner.recordQuestionReceipt(receipt) // idempotent
   await owner.settleTurn({
     sessionId, cwd: null, sessionKind: 'main', conversation: sessionId, inheritedSeq: 0,
     expectedNextSeq: 6, fromSeq: 6, toSeq: 11, turn: 3, reasonKind: 'completed',
-    sources: [], assistantText: '收到', at: Date.now(), timezone: 'Asia/Shanghai',
+    sources: [],
+    questionAnswers: [{
+      callSeq, callIdHash, requestId, questionAt: Date.now() - 10, answerBatchDigest: digest, timezone: 'Asia/Shanghai',
+      items: [{ sourceId, questionId: 'drink', question, text }],
+    }],
+    assistantText: '收到', at: Date.now(), timezone: 'Asia/Shanghai',
   })
-  // Fresh answer targeting already-completed turn 2 after retirement must be rejected!
-  await assert.rejects(
-    owner.handleHost('acceptQuestionAnswer', { ...answer, operationId: randomUUID(), turn: 2 }),
-    /unavailable/,
-  )
   const db = new DatabaseSync(join(root, 'memory.db'))
   try {
-    const row = db.prepare('SELECT outcome, question_valid FROM memory_sources WHERE id=?').get(operationId)
+    const row = db.prepare('SELECT outcome, question_valid FROM memory_sources WHERE id=?').get(sourceId)
     assert.equal(row?.outcome, 'note-pending')
     assert.equal(row?.question_valid, 1)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get(sessionId)?.n, 0,
+      'settled turn must retire consumed question receipt')
   } finally { db.close() }
 })
 

@@ -1,5 +1,4 @@
 import type { OwnerCallOptions } from '../memory/node/owner-adapter.ts'
-import { DAILY_MEMORY_DEFAULTS } from '../memory/contracts/memory-daily-defaults.ts'
 import { memoryDomainErrorCode, memoryHostFailure, parseMemoryDomainErrorDetails } from '../memory/contracts/domain-error.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
@@ -163,15 +162,6 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
   // A caller operation already owns this wait; do not create a second proxy span inside each read step.
   const call = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) => diagnosticContext() ? execute(method, input)
     : withOperation('memory.owner', () => execute(method, input), { identities: { methodId: method, ownerEpoch: current?.epoch ?? '' } })
-  async function callIntake<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], options?: { budgetMs?: number }) {
-    const budget = createRequestBudget(options?.budgetMs ?? DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
-    // Send the intake frame before dispatching the agent request on its separate channel.
-    try {
-      const pending = execute(method, input, undefined, budget)
-      return await budget.run(() => pending)
-    }
-    finally { budget.close() }
-  }
   async function readBatch<T>(work: (read: HostMemoryCaller) => Promise<T>, options: { budgetMs?: number, signal?: AbortSignal } = {}): Promise<T> {
     if (closed || current?.state !== 'ready') throw new MemoryOwnerUnavailable()
     if (batches.size >= MEMORY_PAGE_READ_LIMIT) {
@@ -248,7 +238,6 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
   return { call, readBatch, receive, waitReady, ready: () => current?.state === 'ready' && !closed, state: () => current,
     readState: () => ({ batches: batches.size, executions: [...batches.values()].reduce((sum, batch) => sum + batch.executions, 0) }),
     processExited: () => invalidate('Memory owner disconnected'),
-    callIntake,
     close: () => { closed = true; invalidate('Memory owner connection closed') },
   }
 }

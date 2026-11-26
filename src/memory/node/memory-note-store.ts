@@ -331,6 +331,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     assistantSources?: readonly string[]
     questionSources?: readonly string[]
     questionCurrent?: boolean
+    sourceEventSeqs?: Readonly<Record<string, number>>
     ephemeralAssistant?: string
     rangeIdOverride?: string
   }): string | null {
@@ -376,15 +377,23 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     // Persist direct question-context metadata directly on each answer's memory_sources row so
     // sourceQuestionContext() survives range consumption and DSH session-log deletion (§5.3 item 2).
     if (hasQuestions) {
+      const eventSeqs = input.sourceEventSeqs
       for (let i = 0; i < sources.length; i++) {
         const answer = sources[i]!
         if (answer.author !== 'answer') continue
+        const answerSeq = eventSeqs?.[answer.id]
         const askedAt = answer.questionAt ?? answer.at
         const precedingIds = sources
-          .filter((source, idx) => source.id !== answer.id
-            && (source.author === 'answer'
-              ? idx < i && (!answer.requestId || source.requestId !== answer.requestId)
-              : source.at <= askedAt))
+          .filter((source, idx) => {
+            if (source.id === answer.id) return false
+            if (source.author === 'answer') {
+              if (answer.requestId && source.requestId === answer.requestId) return false
+              const sourceSeq = eventSeqs?.[source.id]
+              return answerSeq !== undefined && sourceSeq !== undefined ? sourceSeq < answerSeq : idx < i
+            }
+            const sourceSeq = eventSeqs?.[source.id]
+            return answerSeq !== undefined && sourceSeq !== undefined ? sourceSeq < answerSeq : source.at <= askedAt
+          })
           .map(source => source.id)
         // Exclude rejected sibling cards sharing the same `requestId` (already shown together
         // before either card was answered), while still checking genuine prior prerequisites.

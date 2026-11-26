@@ -22,6 +22,7 @@ import { memoryFileCreateRequest, memoryFileForgetRequest } from '../contracts/f
 import { parseMemoryDomainErrorDetails, type MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryScope } from '../contracts/memory-contract.ts'
 import type { MemorySessionKind as SessionKind, MemorySource, MemorySourceKind } from '../contracts/records.ts'
+import { canonicalEligibleAnswersDigest, hasUnsupportedSqliteChars } from './question-answer-memory.ts'
 
 export type TurnSourceCandidate = {
   sourceId: string
@@ -30,8 +31,38 @@ export type TurnSourceCandidate = {
   profileEligible: boolean
   text: string
   conversation?: string | null
+  eventSeq?: number
   at: number
   timezone: string
+}
+
+export type QuestionReceiptInput = {
+  sessionId: string
+  turn: number
+  callSeq: number
+  callIdHash: string
+  conversationId: string
+  answeredAt: number
+  questionProfileGen: number | null
+  answerProfileGen: number | null
+  answerBatchDigest: string
+}
+
+export type TurnQuestionAnswerItem = {
+  sourceId: string
+  questionId: string
+  question: string
+  text: string
+}
+
+export type TurnQuestionAnswerCandidate = {
+  callSeq: number
+  callIdHash: string
+  requestId: string
+  questionAt: number
+  answerBatchDigest: string
+  timezone: string
+  items: readonly TurnQuestionAnswerItem[]
 }
 
 export type AdvanceIntakeCursorInput = {
@@ -59,6 +90,7 @@ export type StageOpenTurnInput = {
   conversation?: string | null
   cwd?: string | null
   sources: readonly TurnSourceCandidate[]
+  questionAnswers?: readonly TurnQuestionAnswerCandidate[]
 }
 
 export type SettleTurnInput = {
@@ -73,6 +105,7 @@ export type SettleTurnInput = {
   turn: number
   reasonKind: string
   sources: readonly TurnSourceCandidate[]
+  questionAnswers?: readonly TurnQuestionAnswerCandidate[]
   assistantText: string
   at: number
   timezone: string
@@ -93,6 +126,18 @@ type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'readSession
 }
 type SessionRow = { conversation: string, context: string | null, project: string | null }
 type CursorRow = { session: string, next_seq: number, inherited_seq: number, session_kind: string, conversation: string | null, created_at: number, updated_at: number }
+type QuestionReceiptRow = {
+  session: string
+  turn: number
+  call_seq: number
+  call_id_hash: string
+  conversation_id: string
+  answered_at: number
+  question_profile_gen: number | null
+  answer_profile_gen: number | null
+  answer_batch_digest: string
+  created_at: number
+}
 type Operation = { id: string, fingerprint: string, state: MemoryOperationOutcome['state'], payload: string | null }
 
 /** Protocol operations only. This classification has no role in facts, conflicts or admission. */
@@ -123,7 +168,19 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const hash = (value: unknown) => createHmac('sha256', store.meta('secret')!).update(JSON.stringify(value)).digest('hex')
   db.exec(`
     CREATE TABLE IF NOT EXISTS owner_active_turns(session TEXT PRIMARY KEY,turn TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS owner_answer_sources(session TEXT NOT NULL,turn TEXT NOT NULL,source TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS owner_question_receipts(
+      session TEXT NOT NULL,
+      turn INTEGER NOT NULL,
+      call_seq INTEGER NOT NULL,
+      call_id_hash TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      answered_at INTEGER NOT NULL,
+      question_profile_gen INTEGER,
+      answer_profile_gen INTEGER,
+      answer_batch_digest TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY(session, call_seq, call_id_hash)
+    );
     CREATE TABLE IF NOT EXISTS owner_sessions(session TEXT PRIMARY KEY,conversation TEXT NOT NULL,context TEXT,project TEXT);
     CREATE TABLE IF NOT EXISTS owner_intake_cursors(
       session TEXT PRIMARY KEY,
@@ -311,9 +368,141 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
   }
 
+  function recordQuestionReceipt(input: QuestionReceiptInput) {
+    requireReady()
+    const { sessionId: session, turn, callSeq, callIdHash, conversationId, answeredAt, questionProfileGen, answerProfileGen, answerBatchDigest } = input
+    if (!session || !Number.isSafeInteger(turn) || turn <= 0
+      || !Number.isSafeInteger(callSeq) || callSeq < 0
+      || !/^[0-9a-f]{64}$/u.test(callIdHash)
+      || !conversationId.trim()
+      || !Number.isSafeInteger(answeredAt) || answeredAt <= 0
+      || !/^[0-9a-f]{64}$/u.test(answerBatchDigest)) {
+      throw new MemoryDomainError('invalid.text', 'Invalid question receipt')
+    }
+    store.tx(() => {
+      const existing = db.prepare(
+        'SELECT * FROM owner_question_receipts WHERE session=? AND call_seq=? AND call_id_hash=?',
+      ).get(session, callSeq, callIdHash) as QuestionReceiptRow | undefined
+      if (existing) {
+        if (existing.turn !== turn
+          || existing.conversation_id !== conversationId
+          || existing.answer_batch_digest !== answerBatchDigest) {
+          throw new MemoryDomainError('operation.conflict', 'Question receipt conflicts with an earlier submission')
+        }
+        return
+      }
+      db.prepare(`INSERT INTO owner_question_receipts(
+        session, turn, call_seq, call_id_hash, conversation_id, answered_at,
+        question_profile_gen, answer_profile_gen, answer_batch_digest, created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+        session, turn, callSeq, callIdHash, conversationId, answeredAt,
+        questionProfileGen, answerProfileGen, answerBatchDigest, now(),
+      )
+    })
+  }
+
+  function retireSessionQuestionReceipts(session: string) {
+    requireReady()
+    db.prepare('DELETE FROM owner_question_receipts WHERE session=?').run(session)
+  }
+
+  function pruneExpiredQuestionReceipts(maxAgeMs = 30 * 24 * 60 * 60 * 1000) {
+    requireReady()
+    if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs <= 0) return
+    const cutoff = now() - maxAgeMs
+    db.prepare('DELETE FROM owner_question_receipts WHERE created_at<?').run(cutoff)
+  }
+
+  function admitQuestionAnswersInTx(
+    session: string,
+    turn: number,
+    effectiveKind: SessionKind,
+    questionAnswers: readonly TurnQuestionAnswerCandidate[],
+    { deferAutomatic }: { deferAutomatic: boolean },
+  ): { admittedIds: string[], eventSeqs: Record<string, number>, conversation?: string } {
+    const admittedIds: string[] = []
+    const eventSeqs: Record<string, number> = Object.create(null) as Record<string, number>
+    let receiptConversation: string | undefined
+    if (!questionAnswers.length) return { admittedIds, eventSeqs }
+    const selectReceipt = db.prepare(
+      'SELECT * FROM owner_question_receipts WHERE session=? AND turn=? AND call_seq=? AND call_id_hash=?',
+    )
+    const currentDelGen = runtime.profileDeletionGeneration()
+    const sourceKind: MemorySourceKind = effectiveKind === 'task' ? 'task-question-answer' : 'question-answer'
+    for (const candidate of questionAnswers) {
+      if (!candidate.items.length) continue
+      const row = selectReceipt.get(session, turn, candidate.callSeq, candidate.callIdHash) as QuestionReceiptRow | undefined
+      if (!row || row.answer_batch_digest !== candidate.answerBatchDigest) continue
+      const computedDigest = canonicalEligibleAnswersDigest(candidate.items.map(item => ({
+        id: item.questionId,
+        question: item.question,
+        custom: item.text,
+      })))
+      if (computedDigest !== row.answer_batch_digest) continue
+      if (!receiptConversation && row.conversation_id) receiptConversation = row.conversation_id
+      const answerProfileEligible = currentDelGen === 0
+        || (row.answer_profile_gen !== null && row.answer_profile_gen === currentDelGen)
+      const origin = {
+        conversation: row.conversation_id,
+        session,
+        scope: { kind: 'user' as const },
+        context: { kind: 'user' as const },
+        author: 'answer' as const,
+        sourceKind,
+        profileEligible: answerProfileEligible,
+      }
+      for (const item of candidate.items) {
+        const text = item.text.trim()
+        if (!text || !item.questionId.trim() || !item.question.trim()) continue
+        if (hasUnsupportedSqliteChars(item.questionId) || hasUnsupportedSqliteChars(item.question) || hasUnsupportedSqliteChars(text)) continue
+        if (looksSecret(item.questionId) || looksSecret(item.question) || looksSecret(text)) continue
+        const answerMeta = {
+          question: item.question,
+          requestId: candidate.requestId,
+          questionId: item.questionId,
+          custom: true as const,
+          questionAt: candidate.questionAt,
+          ...(row.question_profile_gen !== null ? { questionProfileGen: row.question_profile_gen } : {}),
+        }
+        const expectedHash = memoryHash(text)
+        const existing = store.readSource(item.sourceId)
+        if (existing) {
+          if (existing.session !== session
+            || existing.conversation !== origin.conversation
+            || existing.author !== 'answer'
+            || (existing.hash !== null && existing.hash !== expectedHash)
+            || existing.requestId !== candidate.requestId
+            || existing.questionId !== item.questionId) {
+            continue
+          }
+          if (!deferAutomatic && existing.outcome === 'received') {
+            runtime.accept(text, origin, item.sourceId, answerMeta, {
+              deferAutomatic: false, at: row.answered_at, timezone: candidate.timezone,
+            })
+          }
+        } else {
+          runtime.accept(text, origin, item.sourceId, answerMeta, {
+            deferAutomatic, at: row.answered_at, timezone: candidate.timezone,
+          })
+        }
+        const saved = store.readSource(item.sourceId)
+        if (saved?.text
+          && saved.session === session
+          && saved.conversation === origin.conversation
+          && saved.author === 'answer'
+          && saved.hash === expectedHash
+          && saved.text === text) {
+          admittedIds.push(saved.id)
+          eventSeqs[saved.id] = candidate.callSeq
+        }
+      }
+    }
+    return { admittedIds, eventSeqs, ...(receiptConversation ? { conversation: receiptConversation } : {}) }
+  }
+
   function stageOpenTurnSources(input: StageOpenTurnInput): { staged: string[] } {
     requireReady()
-    const { sessionId: session, turn, sessionKind, conversation, cwd, sources } = input
+    const { sessionId: session, turn, sessionKind, conversation, cwd, sources, questionAnswers = [] } = input
     if (sessionKind === 'unattended' || turn <= 0) return { staged: [] }
     const resolved = resolveIntakeScope(cwd)
     if (resolved.status === 'unknown' || !scopeMatches(session, resolved)) return { staged: [] }
@@ -354,14 +543,23 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           staged.push(saved.id)
         }
       }
-      return { staged }
+      const admittedQuestions = admitQuestionAnswersInTx(session, turn, sessionKind, questionAnswers, { deferAutomatic: true })
+      if (admittedQuestions.conversation && !conversation) {
+        bindSession(session, resolved, admittedQuestions.conversation)
+      }
+      for (const answerSourceId of admittedQuestions.admittedIds) {
+        db.prepare('INSERT OR IGNORE INTO owner_open_turn_sources(session, turn, source_id) VALUES (?,?,?)')
+          .run(session, turn, answerSourceId)
+        staged.push(answerSourceId)
+      }
+      return { staged: [...new Set(staged)] }
     })
   }
 
   function settleTurn(input: SettleTurnInput, signal?: AbortSignal): CursorResult {
     requireReady()
     signal?.throwIfAborted()
-    const { sessionId: session, cwd, sessionKind, conversation, inheritedSeq, expectedNextSeq, fromSeq, toSeq, turn, reasonKind, sources, assistantText, flushNotes } = input
+    const { sessionId: session, cwd, sessionKind, conversation, inheritedSeq, expectedNextSeq, fromSeq, toSeq, turn, reasonKind, sources, questionAnswers = [], assistantText, flushNotes } = input
     if (!Number.isSafeInteger(fromSeq) || !Number.isSafeInteger(toSeq) || fromSeq < 0 || toSeq <= fromSeq) {
       throw new Error('Invalid turn range')
     }
@@ -379,11 +577,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           return { status: 'cas_mismatch' as const, nextSeq: 0 }
         }
       }
-      const answers = db.prepare('SELECT source FROM owner_answer_sources WHERE session=? AND turn=?')
-        .all(session, String(turn)).map(row => String(row.source))
       const effectiveKind: SessionKind = existingCursor && sessionKind === 'main' && existingCursor.session_kind !== 'main'
         ? existingCursor.session_kind as SessionKind : sessionKind
-      const effectiveConv = conversation ?? existingCursor?.conversation ?? null
+      let effectiveConv = conversation ?? existingCursor?.conversation ?? null
 
       // Terminal-reason gating (§5.2 item 2): ONLY 'completed' turns upsert canonical sources & note ranges.
       if (reasonKind === 'completed' && effectiveKind !== 'unattended') {
@@ -395,6 +591,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (scopeMatches(session, resolved)) {
           const bound = bindSession(session, resolved, effectiveConv)
           const admittedIds: string[] = []
+          const sourceEventSeqs: Record<string, number> = Object.create(null) as Record<string, number>
           for (const candidate of sources) {
             if (!candidate.text.trim()) continue
             const origin = resolveCandidateOrigin(session, bound, candidate)
@@ -402,28 +599,20 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
               deferAutomatic: false, at: candidate.at, timezone: candidate.timezone,
             })
             const saved = store.readSource(receipt.sourceId)
-            if (saved?.text) admittedIds.push(saved.id)
-          }
-          for (const answerId of answers) {
-            const saved = store.readSource(answerId)
             if (saved?.text) {
-              if (saved.outcome === 'received') {
-                runtime.accept(saved.text, {
-                  conversation: saved.conversation,
-                  session: saved.session,
-                  context: saved.context ?? undefined,
-                  scope: saved.scope,
-                  ...(saved.project?.kind === 'project' ? { project: { kind: 'project' as const, id: saved.project.id } } : {}),
-                  author: 'answer',
-                  sourceKind: saved.sourceKind,
-                  profileEligible: saved.profileEligible,
-                }, saved.id, saved.question && saved.requestId && saved.questionId
-                  ? { question: saved.question, requestId: saved.requestId, questionId: saved.questionId, custom: true,
-                    ...(saved.questionAt != null ? { questionAt: saved.questionAt } : {}),
-                    ...(saved.questionProfileGen != null ? { questionProfileGen: saved.questionProfileGen } : {}) }
-                  : undefined)
-              }
               admittedIds.push(saved.id)
+              if (candidate.eventSeq !== undefined) sourceEventSeqs[saved.id] = candidate.eventSeq
+            }
+          }
+          const admittedQuestions = admitQuestionAnswersInTx(session, turn, effectiveKind, questionAnswers, { deferAutomatic: false })
+          if (admittedQuestions.conversation && !effectiveConv) {
+            effectiveConv = admittedQuestions.conversation
+            bindSession(session, resolved, effectiveConv)
+          }
+          for (const answerSourceId of admittedQuestions.admittedIds) {
+            admittedIds.push(answerSourceId)
+            if (admittedQuestions.eventSeqs[answerSourceId] !== undefined) {
+              sourceEventSeqs[answerSourceId] = admittedQuestions.eventSeqs[answerSourceId]!
             }
           }
           const uniqueAdmitted = [...new Set(admittedIds)]
@@ -431,15 +620,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
             runtime.recordNoteRangeInTx?.({
               session, fromSeq, toSeq, turn, ids: uniqueAdmitted,
               assistant: assistantText,
+              sourceEventSeqs,
               flush: flushNotes === true || effectiveKind === 'task',
             })
           }
         }
       }
 
-      // On ANY terminal turn/end (completed, aborted, interrupted, error): clear open-turn staging & advance cursor.
+      // On ANY terminal turn/end (completed, aborted, interrupted, error): clear open-turn staging,
+      // retire question receipts up to this turn/seq (covering lost PTC tails closed by repair.ts), and advance cursor.
       db.prepare('DELETE FROM owner_open_turn_sources WHERE session=? AND turn=?').run(session, turn)
-      db.prepare('DELETE FROM owner_answer_sources WHERE session=? AND turn=?').run(session, String(turn))
+      db.prepare('DELETE FROM owner_question_receipts WHERE session=? AND (turn<=? OR call_seq<?)').run(session, turn, toSeq)
       db.prepare('DELETE FROM owner_active_turns WHERE session=? AND turn=?').run(session, String(turn))
       const ts = now()
       db.prepare(`INSERT INTO owner_intake_cursors(session, next_seq, inherited_seq, session_kind, conversation, created_at, updated_at)
@@ -512,9 +703,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const origin = sessionContext(session)
     if (!origin.foregroundTurn) return null
     const current = () => !signal.aborted && !closed && sessionContext(session).foregroundTurn === origin.foregroundTurn
-    const sources = db.prepare(`SELECT source_id AS source FROM owner_open_turn_sources WHERE session=? AND turn=?
-      UNION ALL SELECT source FROM owner_answer_sources WHERE session=? AND turn=?`)
-      .all(session, Number(origin.foregroundTurn), session, origin.foregroundTurn)
+    const sources = db.prepare('SELECT source_id AS source FROM owner_open_turn_sources WHERE session=? AND turn=?')
+      .all(session, Number(origin.foregroundTurn))
       .map(row => String(row.source))
     const source = runtime.explicitFileSource(text, origin, sources)
     if (!source) return null
@@ -661,54 +851,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     } catch (error) { return Promise.reject(error) }
   }
   async function executeHost(command: HostMemoryCommand, signal?: AbortSignal, deadlineAt?: number): Promise<unknown> {
-    const assertIntakeCurrent = () => {
-      signal?.throwIfAborted()
-      if (deadlineAt !== undefined && Date.now() >= deadlineAt) throw new RequestTimeout()
-    }
+    signal?.throwIfAborted()
+    if (deadlineAt !== undefined && Date.now() >= deadlineAt) throw new RequestTimeout()
     switch (command.method) {
       case 'getOperation': { const item = operation(command.input.operationId); return item ? outcome(item) : null }
     }
     requireReady()
     switch (command.method) {
-      case 'acceptQuestionAnswer': {
-        const input = command.input, sourceId = input.operationId
-        const existing = store.readSource(sourceId)
-        if (existing) {
-          if (existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
-            || existing.requestId !== input.requestId || existing.conversation !== input.conversation) {
-            throw new MemoryDomainError('operation.conflict', 'Answer operation identity conflicts')
-          }
-          return { sourceId }
-        }
-        const { session, turn } = input
-        const context = sessionContext(session)
-        const activeTurn = db.prepare('SELECT turn FROM owner_active_turns WHERE session=?').get(session) as { turn: string } | undefined
-        if (context.conversation !== input.conversation || context.project?.id !== input.project?.id
-          || !activeTurn || activeTurn.turn !== String(turn)
-          || db.prepare('SELECT 1 FROM memory_note_ranges WHERE session=? AND turn=?').get(session, turn)) {
-          throw new MemoryDomainError('not.found', 'Answer context is unavailable')
-        }
-        const question = input.cards.find(card => card.id === input.questionId)
-        if (!question || input.cards.some(card => [card.question, card.header,
-          ...card.options.flatMap(option => [option.label, option.description ?? ''])].some(looksSecret))) {
-          throw new MemoryDomainError('credentials', 'Question cannot be retained')
-        }
-        store.tx(() => {
-          assertIntakeCurrent()
-          const isHostTaskAnswer = Boolean(options.hostNamespace) && input.context?.kind === 'task'
-          const answerOrigin = isHostTaskAnswer
-            ? { ...context, context: { kind: 'user' as const }, sourceKind: 'task-question-answer' as const, profileEligible: true }
-            : { ...context, context: input.context }
-          runtime.accept(input.text, answerOrigin, sourceId,
-            { question: question.question, requestId: input.requestId, questionId: input.questionId, custom: true,
-              ...(input.questionAt !== undefined ? { questionAt: input.questionAt } : {}),
-              ...(input.questionProfileGen !== undefined ? { questionProfileGen: input.questionProfileGen } : {}) },
-            { deferAutomatic: true, at: now(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
-          if (!runtime.sourceCurrent(sourceId)) throw new MemoryDomainError('credentials', 'Answer cannot be retained')
-          db.prepare('INSERT INTO owner_answer_sources VALUES (?,?,?)').run(session, String(turn), sourceId)
-        })
-        return { sourceId }
-      }
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)
       case 'cleanupPending': return runtime.cleanupPending()
@@ -752,6 +901,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     intakeCursor,
     advanceIntakeCursor,
     beginTurn,
+    recordQuestionReceipt,
+    retireSessionQuestionReceipts,
+    pruneExpiredQuestionReceipts,
     stageOpenTurnSources,
     rememberSidecarFile,
     epoch,

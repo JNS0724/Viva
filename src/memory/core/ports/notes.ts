@@ -100,6 +100,7 @@ export interface MemoryNotes {
         assistantSources?: readonly string[];
         questionSources?: readonly string[];
         questionCurrent?: boolean;
+        sourceEventSeqs?: Readonly<Record<string, number>>;
         ephemeralAssistant?: string;
     }): string | null;
     add(session: string, day: string, sources: MemorySource[], assistant: string, requestId?: string, assistantSources?: readonly string[], inputAssistant?: string, options?: { questionSources?: readonly string[], questionCurrent?: boolean }): string | null;

@@ -10,6 +10,14 @@ import type { AutomaticRecallResult } from '../../../src/memory/contracts/memory
 import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-daily-defaults.ts'
 import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
+import type { QuestionReceiptInput } from '../../../src/memory/node/owner.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'viva-questions/human-answer-receipt'(receipt: QuestionReceiptInput): void
+    'viva-memory/read-profile-deletion-gen'(probe: { value: number | null }): void
+  }
+}
 import {
   memoryOwnerChange,
   memoryOwnerContextUsed,
@@ -122,6 +130,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   const intake = createSessionIngestion(owner, ctx.sessions, () => sessionPersistence, { host: Boolean(config.host), onError: report })
   let cachedProfile: MemoryProfileSnapshot | undefined
   let currentRevision: number | undefined
+  let currentProfileDeletionGen: number | null = null
   let observedEpoch: string | undefined
   const pendingContextConfirmations = new Map<string, { session: string, turn: number, pushed: Array<{ text: string, names: string[] }> }>()
   let route: { provider: string, model: string } | null = null
@@ -173,6 +182,9 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     if (lifetime.signal.aborted) return
     const profileMsg = memoryOwnerProfile.safeParse(raw)
     if (profileMsg.success) {
+      if (profileMsg.data.profileDeletionGen !== undefined) {
+        currentProfileDeletionGen = profileMsg.data.profileDeletionGen
+      }
       acceptProfile({ epoch: profileMsg.data.epoch, revision: profileMsg.data.revision, text: profileMsg.data.text })
       return
     }
@@ -192,15 +204,19 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     }
     const message = memoryOwnerState.safeParse(raw)
     if (!message.success) return
-    const { epoch, state, revision } = message.data
+    const { epoch, state, revision, profileDeletionGen } = message.data
     if (observedEpoch !== epoch) {
       observedEpoch = epoch
       cachedProfile = undefined
+      currentProfileDeletionGen = null
       firstDeferredAt = undefined
       yieldExempt = false
     }
     if (state === 'unavailable') {
       cachedProfile = undefined
+      currentProfileDeletionGen = null
+    } else if (profileDeletionGen !== undefined) {
+      currentProfileDeletionGen = profileDeletionGen
     }
     sendParent(message.data)
     if (state !== 'ready') {
@@ -223,6 +239,15 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     clearPendingForSession(id)
     intake.release(session)
   })
+  if (config.host) {
+    ctx.on('viva-memory/read-profile-deletion-gen', probe => {
+      if (available() && currentProfileDeletionGen !== null) probe.value = currentProfileDeletionGen
+    })
+    ctx.on('viva-questions/human-answer-receipt', receipt => {
+      if (!available()) return
+      void intake.enqueueQuestionReceipt(receipt).catch(report)
+    })
+  }
   ctx.on('session/event', (session, event) => {
     if (event.type === 'model/selection') {
       route = { provider: event.data.provider, model: event.data.model }

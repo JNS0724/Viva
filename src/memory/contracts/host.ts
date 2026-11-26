@@ -1,6 +1,5 @@
 import type { MemoryDreamStatus } from './dream-status.ts'
 import { z } from 'zod'
-import type { MemoryScope } from './memory-contract.ts'
 import type { MemoryOperationOutcome } from './service.ts'
 import { memoryFileListRequest, memoryFileIdentity, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
 import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail,
@@ -13,7 +12,6 @@ export const memoryHostRead = z.strictObject({ readBatchId: z.uuid(), budgetMs: 
 export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profilePage', 'cleanupPending', 'revision', 'listFiles', 'readFile'])
 export type MemoryProject = { kind: 'project', id: string }
 export type MemoryProfileSnapshot = { epoch: string, revision: number, text: string }
-type HostQuestionCard = { id: string, question: string, header: string, multiSelect: boolean, options: Array<{ label: string, description?: string }> }
 type Args<A extends readonly unknown[], O> = { input: { args: A }, output: O }
 /** Deliberate whitelist: adding a host operation requires adding a decoder and an owner handler. */
 export interface HostMemoryApi {
@@ -31,7 +29,6 @@ export interface HostMemoryApi {
   epoch: Args<[], number>
   cleanupPending: Args<[], number>
   rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
-  acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, turn: number, cards: readonly HostQuestionCard[], requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject, questionAt?: number, questionProfileGen?: number }, output: { sourceId: string } }
   getOperation: { input: { operationId: string }, output: MemoryOperationOutcome | null }
 }
 export type HostMemoryMethod = keyof HostMemoryApi
@@ -42,7 +39,6 @@ const MAX_HOST_TEXT = 512_000
 const text = z.string().max(MAX_HOST_TEXT)
 const integer = z.number().int().nonnegative()
 const project = z.strictObject({ kind: z.literal('project'), id: key })
-const scope = z.union([z.strictObject({ kind: z.literal('user') }), z.strictObject({ kind: z.enum(['project', 'conversation', 'task']), id: key })])
 // Node's JSON IPC encodes an undefined tuple slot as null. Only optional slots
 // are restored; nullable domain values keep their meaning.
 const args = <T extends z.ZodTuple>(schema: T) => z.strictObject({ args: z.preprocess(value => Array.isArray(value)
@@ -56,9 +52,6 @@ export const hostMemoryInputSchemas = {
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
   profilePage: args(z.tuple([project.optional()])),
   revision: empty, epoch: empty, cleanupPending: empty, rebuildIndexes: empty,
-  acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, turn: z.number().int().positive(),
-    cards: z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })),
-    requestId: key, questionId: key, context: scope, project: project.optional(), questionAt: integer.optional(), questionProfileGen: integer.optional() }),
   getOperation: z.strictObject({ operationId: z.uuid() }),
 } satisfies Record<HostMemoryMethod, z.ZodType>
 export function parseHostMemoryCommand(method: unknown, input: unknown): HostMemoryCommand {

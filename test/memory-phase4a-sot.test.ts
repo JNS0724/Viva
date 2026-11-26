@@ -8,7 +8,8 @@ import { test } from 'node:test'
 import { boot } from '@deepseek-ai/dsh-app-boot'
 import { createUserMessage, LlmAdapter, ToolCallId, type GenerateOptions, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
-import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { openMemoryOwner, type TurnQuestionAnswerCandidate } from '../src/memory/node/owner.ts'
+import { canonicalEligibleAnswersDigest, questionCallIdHash, questionOccurrenceRequestId } from '../src/memory/node/question-answer-memory.ts'
 import { openMemoryStore, memoryHash } from '../src/memory/node/memory-store.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
@@ -962,11 +963,55 @@ test('Phase 4A §5.7.2k: valid & revoked direct question metadata on memory_sour
   assert.equal(revokedEntry.questionUnavailable, true)
 })
 
+function buildReceiptQuestionCandidate(
+  owner: ReturnType<typeof openMemoryOwner>,
+  input: {
+    sessionId: string
+    turn: number
+    callSeq: number
+    callId: string
+    conversationId: string
+    questionAt: number
+    answeredAt?: number
+    questionProfileGen?: number | null
+    answerProfileGen?: number | null
+    timezone?: string
+    items: readonly { sourceId: string, questionId: string, question: string, text: string }[]
+  },
+): TurnQuestionAnswerCandidate {
+  const callIdHash = questionCallIdHash(input.callId)
+  const requestId = questionOccurrenceRequestId(input.callSeq, callIdHash)
+  const sortedItems = [...input.items].sort((a, b) => (a.questionId < b.questionId ? -1 : a.questionId > b.questionId ? 1 : 0))
+  const digest = canonicalEligibleAnswersDigest(sortedItems.map(item => ({
+    id: item.questionId, question: item.question, custom: item.text,
+  })))
+  owner.recordQuestionReceipt({
+    sessionId: input.sessionId,
+    turn: input.turn,
+    callSeq: input.callSeq,
+    callIdHash,
+    conversationId: input.conversationId,
+    answeredAt: input.answeredAt ?? input.questionAt + 1,
+    questionProfileGen: input.questionProfileGen ?? 0,
+    answerProfileGen: input.answerProfileGen ?? 0,
+    answerBatchDigest: digest,
+  })
+  return {
+    callSeq: input.callSeq,
+    callIdHash,
+    requestId,
+    questionAt: input.questionAt,
+    answerBatchDigest: digest,
+    timezone: input.timezone ?? 'UTC',
+    items: sortedItems,
+  }
+}
+
 test('Phase 4A Codex R1 P1-1..P1-4: task custom answer settlement, human-only deleted range, unattended zero L3 pre-step, and unavailable standalone cwd retry', { timeout: 30_000 }, async t => {
   const { dir, defer } = scratch(t, 'p4a-r1-p1-')
 
-  // P1-1: Task custom answer via acceptQuestionAnswer (with legacy context.kind==='task') normalizes to global user workspace
-  // and settles alongside task-brief + task-assistant in one transaction without memory-turn-scope!
+  // P1-1: Task custom answer settles natively via scalar receipt in global user workspace
+  // alongside task-brief + task-assistant in one transaction without memory-turn-scope!
   const root1 = path.join(dir, 'mem-p11')
   const owner1 = openMemoryOwner({
     root: root1,
@@ -982,26 +1027,23 @@ test('Phase 4A Codex R1 P1-1..P1-4: task custom answer settlement, human-only de
   await owner1.recover()
   const taskSid = randomUUID(), taskConv = randomUUID(), ansOpId = randomUUID(), nowMs = Date.now()
   owner1.beginTurn({ sessionId: taskSid, turn: 1, sessionKind: 'task', conversation: taskConv, cwd: dir })
-  await owner1.handleHost('acceptQuestionAnswer', {
-    operationId: ansOpId,
-    text: '本次任务部署到上海机房',
-    session: taskSid,
+  const taskQuestionCandidate = buildReceiptQuestionCandidate(owner1, {
+    sessionId: taskSid,
     turn: 1,
-    conversation: taskConv,
-    cards: [{ id: 'q1', question: '部署到哪个机房？', header: '机房', options: [{ label: '北京' }], multiSelect: false }],
-    requestId: 'req-task-q1',
-    questionId: 'q1',
-    context: { kind: 'task', id: taskSid },
+    callSeq: 2,
+    callId: 'call-task-q1',
+    conversationId: taskConv,
     questionAt: nowMs,
-    questionProfileGen: 0,
+    items: [{ sourceId: ansOpId, questionId: 'q1', question: '部署到哪个机房？', text: '本次任务部署到上海机房' }],
   })
   const settled1 = await owner1.settleTurn({
     sessionId: taskSid, cwd: dir, sessionKind: 'task', conversation: taskConv, inheritedSeq: 0,
     expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
     sources: [
-      { sourceId: randomUUID(), author: 'agent', sourceKind: 'task-brief', profileEligible: false, text: '执行机房部署检查', conversation: taskConv, at: nowMs, timezone: 'UTC' },
-      { sourceId: randomUUID(), author: 'assistant', sourceKind: 'task-assistant', profileEligible: false, text: '华东部署结论', conversation: taskConv, at: nowMs + 1, timezone: 'UTC' },
+      { sourceId: randomUUID(), author: 'agent', sourceKind: 'task-brief', profileEligible: false, text: '执行机房部署检查', conversation: taskConv, eventSeq: 1, at: nowMs, timezone: 'UTC' },
+      { sourceId: randomUUID(), author: 'assistant', sourceKind: 'task-assistant', profileEligible: false, text: '华东部署结论', conversation: taskConv, eventSeq: 4, at: nowMs + 1, timezone: 'UTC' },
     ],
+    questionAnswers: [taskQuestionCandidate],
     assistantText: '华东部署结论', at: nowMs + 2, timezone: 'UTC', flushNotes: true,
   })
   assert.deepEqual(settled1, { status: 'ok', nextSeq: 5 })
@@ -1390,17 +1432,13 @@ test('Phase 4A Codex R2 P1-1 & P2-1..P2-5: 3-turn revocation soundness, backlog 
   defer(() => db1rw.close())
   assert.equal(db1rw.prepare('SELECT COUNT(*) AS n FROM memory_note_ranges WHERE session=?').get(revSid)?.n, 1)
   db1rw.prepare("UPDATE memory_sources SET text=NULL, hash=NULL, outcome='rejected' WHERE id=?").run(t1Src)
-  // R2 P2-4: Fresh acceptQuestionAnswer targeting already-completed Turn 1 after retirement MUST be rejected!
+  // Verify retired acceptQuestionAnswer host method is rejected in Phase 4B!
   await assert.rejects(
-    owner1.handleHost('acceptQuestionAnswer', {
-      operationId: randomUUID(), text: '迟到的回答', session: revSid, turn: 1, conversation: revSid,
-      cards: [{ id: 'q1', question: '问题？', header: '头', options: [{ label: 'A' }], multiSelect: false }],
-      requestId: 'req-late', questionId: 'q1', context: { kind: 'user' },
-    }),
-    /unavailable/,
-    'fresh acceptQuestionAnswer for an already-completed turn must be rejected even after range retirement',
+    owner1.handleHost('acceptQuestionAnswer', {}),
+    /Unknown memory host method/,
+    'retired acceptQuestionAnswer host RPC must be rejected in Phase 4B',
   )
-  assert.equal(db1rw.prepare('SELECT COUNT(*) AS n FROM owner_answer_sources WHERE session=?').get(revSid)?.n, 0)
+  assert.equal(db1rw.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get(revSid)?.n, 0)
   // Turn 3 runs -> previousAssistant MUST be null (Turn 2's location must NOT leak after Turn 1 revocation)!
   await owner1.settleTurn({
     sessionId: revSid, cwd: dir, sessionKind: 'main', inheritedSeq: 0,
@@ -1978,24 +2016,21 @@ test('Phase 4A Codex R3 P1-1..P1-2 & P2-3..P2-6: same-turn question dep revocati
   const triggerSrcId = randomUUID()
   const answerSrcId = randomUUID()
   owner1.beginTurn({ sessionId: sameTurnSid, turn: 1, sessionKind: 'main', conversation: 'conv-stq', cwd: dir })
-  await owner1.handleHost('acceptQuestionAnswer', {
-    operationId: answerSrcId,
-    text: '偏好周三上午开会',
-    session: sameTurnSid,
+  const stqCandidate = buildReceiptQuestionCandidate(owner1, {
+    sessionId: sameTurnSid,
     turn: 1,
-    conversation: 'conv-stq',
-    cards: [{ id: 'q1', question: '基于刚才敏感议程，选哪个会议时间？', header: '时间', options: [{ label: '周一' }], multiSelect: false }],
-    requestId: 'req-stq',
-    questionId: 'q1',
-    context: { kind: 'user' },
+    callSeq: 3,
+    callId: 'call-stq',
+    conversationId: 'conv-stq',
     questionAt: nowMs + 10,
-    questionProfileGen: 0,
+    items: [{ sourceId: answerSrcId, questionId: 'q1', question: '基于刚才敏感议程，选哪个会议时间？', text: '偏好周三上午开会' }],
   })
   // Settle Turn 1 with [userPrompt, customAnswer] together, then revoke ONLY userPrompt before WRITE_NOTE runs!
   await owner1.settleTurn({
     sessionId: sameTurnSid, cwd: dir, sessionKind: 'main', conversation: 'conv-stq', inheritedSeq: 0,
     expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
-    sources: [{ sourceId: triggerSrcId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '触发提问的同轮敏感原话', at: nowMs, timezone: 'UTC' }],
+    sources: [{ sourceId: triggerSrcId, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '触发提问的同轮敏感原话', eventSeq: 1, at: nowMs, timezone: 'UTC' }],
+    questionAnswers: [stqCandidate],
     assistantText: '', at: nowMs + 20, timezone: 'UTC',
   })
   const db1rw = new DatabaseSync(path.join(root1, 'memory.db'))
@@ -2318,15 +2353,13 @@ test('Phase 4A Codex R4 P1-1..P1-2 & P2-3..P2-4: multi-answer mid-read revocatio
   const sid1 = 'sess-r4-multi-ans'
   const ansA = randomUUID(), ansB = randomUUID()
   owner1.beginTurn({ sessionId: sid1, turn: 1, sessionKind: 'main', conversation: 'conv-r4-1', cwd: dir })
-  await owner1.handleHost('acceptQuestionAnswer', {
-    operationId: ansA, text: '第一个回答：项目代号北极星', session: sid1, turn: 1, conversation: 'conv-r4-1',
-    cards: [{ id: 'qA', question: '项目代号是什么？', header: '代号', options: [{ label: 'X' }], multiSelect: false }],
-    requestId: 'req-A', questionId: 'qA', context: { kind: 'user' }, questionAt: nowMs, questionProfileGen: 0,
+  const candA = buildReceiptQuestionCandidate(owner1, {
+    sessionId: sid1, turn: 1, callSeq: 2, callId: 'call-A', conversationId: 'conv-r4-1', questionAt: nowMs,
+    items: [{ sourceId: ansA, questionId: 'qA', question: '项目代号是什么？', text: '第一个回答：项目代号北极星' }],
   })
-  await owner1.handleHost('acceptQuestionAnswer', {
-    operationId: ansB, text: '第二个回答：每周五同步', session: sid1, turn: 1, conversation: 'conv-r4-1',
-    cards: [{ id: 'qB', question: '北极星项目每周几同步？', header: '同步', options: [{ label: '周一' }], multiSelect: false }],
-    requestId: 'req-B', questionId: 'qB', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  const candB = buildReceiptQuestionCandidate(owner1, {
+    sessionId: sid1, turn: 1, callSeq: 4, callId: 'call-B', conversationId: 'conv-r4-1', questionAt: nowMs + 10,
+    items: [{ sourceId: ansB, questionId: 'qB', question: '北极星项目每周几同步？', text: '第二个回答：每周五同步' }],
   })
   const db1 = new DatabaseSync(path.join(root1, 'memory.db'))
   defer(() => db1.close())
@@ -2336,7 +2369,7 @@ test('Phase 4A Codex R4 P1-1..P1-2 & P2-3..P2-4: multi-answer mid-read revocatio
   await owner1.settleTurn({
     sessionId: sid1, cwd: dir, sessionKind: 'main', conversation: 'conv-r4-1', inheritedSeq: 0,
     expectedNextSeq: null, fromSeq: 0, toSeq: 6, turn: 1, reasonKind: 'completed',
-    sources: [], assistantText: '', at: nowMs + 20, timezone: 'UTC',
+    sources: [], questionAnswers: [candA, candB], assistantText: '', at: nowMs + 20, timezone: 'UTC',
   })
   await owner1.runtime.wake()
   assert.equal(noteInputs1.length, 1)
@@ -2370,15 +2403,15 @@ test('Phase 4A Codex R4 P1-1..P1-2 & P2-3..P2-4: multi-answer mid-read revocatio
   const sid2 = 'sess-r4-deferred'
   const trigger2 = randomUUID(), answer2 = randomUUID()
   owner2.beginTurn({ sessionId: sid2, turn: 1, sessionKind: 'main', conversation: 'conv-r4-2', cwd: dir })
-  await owner2.handleHost('acceptQuestionAnswer', {
-    operationId: answer2, text: '只喝美式咖啡', session: sid2, turn: 1, conversation: 'conv-r4-2',
-    cards: [{ id: 'q2', question: '基于上述敏感行程，偏好什么饮品？', header: '饮品', options: [{ label: '茶' }], multiSelect: false }],
-    requestId: 'req-2', questionId: 'q2', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  const cand2 = buildReceiptQuestionCandidate(owner2, {
+    sessionId: sid2, turn: 1, callSeq: 3, callId: 'call-r4-2', conversationId: 'conv-r4-2', questionAt: nowMs + 10,
+    items: [{ sourceId: answer2, questionId: 'q2', question: '基于上述敏感行程，偏好什么饮品？', text: '只喝美式咖啡' }],
   })
   await owner2.settleTurn({
     sessionId: sid2, cwd: dir, sessionKind: 'main', conversation: 'conv-r4-2', inheritedSeq: 0,
     expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
-    sources: [{ sourceId: trigger2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '同轮触发原话', at: nowMs, timezone: 'UTC' }],
+    sources: [{ sourceId: trigger2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '同轮触发原话', eventSeq: 1, at: nowMs, timezone: 'UTC' }],
+    questionAnswers: [cand2],
     assistantText: '', at: nowMs + 20, timezone: 'UTC',
   })
   const db2 = new DatabaseSync(path.join(root2, 'memory.db'))
@@ -2477,15 +2510,15 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
   await owner1.recover()
   const sid1 = 'sess-r5-rej', trig1 = randomUUID(), ans1 = randomUUID()
   owner1.beginTurn({ sessionId: sid1, turn: 1, sessionKind: 'main', conversation: 'conv-r5-1', cwd: dir })
-  await owner1.handleHost('acceptQuestionAnswer', {
-    operationId: ans1, text: '有效回答内容', session: sid1, turn: 1, conversation: 'conv-r5-1',
-    cards: [{ id: 'q1', question: '引用触发原话的问题？', header: '问题', options: [{ label: 'A' }], multiSelect: false }],
-    requestId: 'req-r5-1', questionId: 'q1', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  const candR51 = buildReceiptQuestionCandidate(owner1, {
+    sessionId: sid1, turn: 1, callSeq: 3, callId: 'call-r5-1', conversationId: 'conv-r5-1', questionAt: nowMs + 10,
+    items: [{ sourceId: ans1, questionId: 'q1', question: '引用触发原话的问题？', text: '有效回答内容' }],
   })
   await owner1.settleTurn({
     sessionId: sid1, cwd: dir, sessionKind: 'main', conversation: 'conv-r5-1', inheritedSeq: 0,
     expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
-    sources: [{ sourceId: trig1, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '将被标记拒绝的触发原话', at: nowMs, timezone: 'UTC' }],
+    sources: [{ sourceId: trig1, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '将被标记拒绝的触发原话', eventSeq: 1, at: nowMs, timezone: 'UTC' }],
+    questionAnswers: [candR51],
     assistantText: '', at: nowMs + 20, timezone: 'UTC',
   })
   const db1 = new DatabaseSync(path.join(root1, 'memory.db'))
@@ -2516,18 +2549,18 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
   await owner2.recover()
   const sid2 = 'sess-r5-post', prompt2 = randomUUID(), ans2 = randomUUID(), laterSteer2 = randomUUID()
   owner2.beginTurn({ sessionId: sid2, turn: 1, sessionKind: 'main', conversation: 'conv-r5-2', cwd: dir })
-  await owner2.handleHost('acceptQuestionAnswer', {
-    operationId: ans2, text: '固定用 TypeScript', session: sid2, turn: 1, conversation: 'conv-r5-2',
-    cards: [{ id: 'q2', question: '优先使用什么语言？', header: '语言', options: [{ label: 'JS' }], multiSelect: false }],
-    requestId: 'req-r5-2', questionId: 'q2', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  const candR52 = buildReceiptQuestionCandidate(owner2, {
+    sessionId: sid2, turn: 1, callSeq: 3, callId: 'call-r5-2', conversationId: 'conv-r5-2', questionAt: nowMs + 10,
+    items: [{ sourceId: ans2, questionId: 'q2', question: '优先使用什么语言？', text: '固定用 TypeScript' }],
   })
   await owner2.settleTurn({
     sessionId: sid2, cwd: dir, sessionKind: 'main', conversation: 'conv-r5-2', inheritedSeq: 0,
     expectedNextSeq: null, fromSeq: 0, toSeq: 6, turn: 1, reasonKind: 'completed',
     sources: [
-      { sourceId: prompt2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '帮我规划工程', at: nowMs, timezone: 'UTC' },
-      { sourceId: laterSteer2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '后来的无关插话', at: nowMs + 50, timezone: 'UTC' },
+      { sourceId: prompt2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '帮我规划工程', eventSeq: 1, at: nowMs, timezone: 'UTC' },
+      { sourceId: laterSteer2, author: 'user', sourceKind: 'main-human', profileEligible: true, text: '后来的无关插话', eventSeq: 4, at: nowMs + 50, timezone: 'UTC' },
     ],
+    questionAnswers: [candR52],
     assistantText: '', at: nowMs + 60, timezone: 'UTC',
   })
   const db2 = new DatabaseSync(path.join(root2, 'memory.db'))
@@ -2711,20 +2744,23 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
   await ownerBatch.recover()
   const sidB = 'sess-r6-same-req', card1 = randomUUID(), card2 = randomUUID(), card3 = randomUUID()
   ownerBatch.beginTurn({ sessionId: sidB, turn: 1, sessionKind: 'main', conversation: 'conv-r6-b', cwd: dir })
-  await ownerBatch.handleHost('acceptQuestionAnswer', {
-    operationId: card1, text: 'secret-food', session: sidB, turn: 1, conversation: 'conv-r6-b',
-    cards: [{ id: 'c1', question: 'favorite food?', header: 'food', options: [{ label: 'A' }], multiSelect: false }],
-    requestId: 'shared-req-1', questionId: 'c1', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  const batchCand12 = buildReceiptQuestionCandidate(ownerBatch, {
+    sessionId: sidB, turn: 1, callSeq: 2, callId: 'shared-call-1', conversationId: 'conv-r6-b', questionAt: nowMs + 10,
+    items: [
+      { sourceId: card1, questionId: 'c1', question: 'favorite food?', text: 'secret-food' },
+      { sourceId: card2, questionId: 'c2', question: 'favorite drink?', text: 'water' },
+    ],
   })
-  await ownerBatch.handleHost('acceptQuestionAnswer', {
-    operationId: card2, text: 'water', session: sidB, turn: 1, conversation: 'conv-r6-b',
-    cards: [{ id: 'c2', question: 'favorite drink?', header: 'drink', options: [{ label: 'B' }], multiSelect: false }],
-    requestId: 'shared-req-1', questionId: 'c2', context: { kind: 'user' }, questionAt: nowMs + 10, questionProfileGen: 0,
+  const batchCand3 = buildReceiptQuestionCandidate(ownerBatch, {
+    sessionId: sidB, turn: 1, callSeq: 4, callId: 'later-call-2', conversationId: 'conv-r6-b', questionAt: nowMs + 15,
+    items: [
+      { sourceId: card3, questionId: 'c3', question: 'when do you eat that food?', text: 'evening' },
+    ],
   })
-  await ownerBatch.handleHost('acceptQuestionAnswer', {
-    operationId: card3, text: 'evening', session: sidB, turn: 1, conversation: 'conv-r6-b',
-    cards: [{ id: 'c3', question: 'when do you eat that food?', header: 'time', options: [{ label: 'C' }], multiSelect: false }],
-    requestId: 'later-req-2', questionId: 'c3', context: { kind: 'user' }, questionAt: nowMs + 15, questionProfileGen: 0,
+  // Stage all three cards mid-turn, then reject card 1 BEFORE settleTurn()!
+  ownerBatch.stageOpenTurnSources({
+    sessionId: sidB, turn: 1, sessionKind: 'main', conversation: 'conv-r6-b', cwd: dir,
+    sources: [], questionAnswers: [batchCand12, batchCand3],
   })
   const dbBatch = new DatabaseSync(path.join(rootBatch, 'memory.db'))
   defer(() => dbBatch.close())
@@ -2733,7 +2769,7 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
   await ownerBatch.settleTurn({
     sessionId: sidB, cwd: dir, sessionKind: 'main', conversation: 'conv-r6-b', inheritedSeq: 0,
     expectedNextSeq: null, fromSeq: 0, toSeq: 5, turn: 1, reasonKind: 'completed',
-    sources: [], assistantText: '', at: nowMs + 20, timezone: 'UTC',
+    sources: [], questionAnswers: [batchCand12, batchCand3], assistantText: '', at: nowMs + 20, timezone: 'UTC',
   })
   ownerBatch.runtime.flushNoteTurns?.(sidB)
   await ownerBatch.runtime.wake()
