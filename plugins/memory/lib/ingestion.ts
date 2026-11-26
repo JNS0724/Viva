@@ -791,16 +791,17 @@ export function createSessionIngestion(
   let listRetryTimer: ReturnType<typeof setTimeout> | null = null
   let listEpoch: string | undefined
   let listFailures = 0
+  let coldPassId = 0
   let coldPassEpoch: string | undefined
   let coldPassScanned = false
   let coldPassPruned = false
   let coldPassActiveIds = new Set<string>()
   const pendingColdRetries = new Set<string>()
 
-  function maybePruneColdReceipts(targetEpoch: string | undefined) {
-    if (closed || !targetEpoch || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
-    if (coldPassEpoch !== targetEpoch || !coldPassScanned || coldPassPruned) return
-    if (pendingColdRetries.size > 0) return
+  function maybePruneColdReceipts(passId: number) {
+    if (closed || passId <= 0 || passId !== coldPassId || !coldPassEpoch) return
+    if (owner.epoch !== coldPassEpoch || listEpoch !== coldPassEpoch) return
+    if (!coldPassScanned || coldPassPruned || pendingColdRetries.size > 0) return
     coldPassPruned = true
     const excludeSessions = [...new Set([
       ...coldPassActiveIds,
@@ -812,9 +813,9 @@ export function createSessionIngestion(
 
   const markLive = (sessionId: string) => {
     liveEpoch.set(sessionId, (liveEpoch.get(sessionId) ?? 0) + 1)
-    if (coldPassEpoch && owner.epoch === coldPassEpoch) {
+    if (coldPassId > 0 && coldPassEpoch && owner.epoch === coldPassEpoch) {
       coldPassActiveIds.add(sessionId)
-      if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(coldPassEpoch)
+      if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(coldPassId)
     }
   }
 
@@ -1145,18 +1146,18 @@ export function createSessionIngestion(
     }
   }
 
-  function scheduleColdSessionRetry(sessionId: string, header: SessionHeader, catchupEpoch?: string) {
+  function scheduleColdSessionRetry(sessionId: string, header: SessionHeader, catchupPassId?: number) {
     if (closed) return
     const entry = queues.get(sessionId)
     if (!entry || entry.epoch !== owner.epoch) return
     if (sessions.get?.(SessionId(sessionId))) {
-      if (catchupEpoch && catchupEpoch === coldPassEpoch) {
+      if (catchupPassId && catchupPassId === coldPassId) {
         coldPassActiveIds.add(sessionId)
-        if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(catchupEpoch)
+        if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(catchupPassId)
       }
       return
     }
-    if (catchupEpoch && catchupEpoch === coldPassEpoch) pendingColdRetries.add(sessionId)
+    if (catchupPassId && catchupPassId === coldPassId) pendingColdRetries.add(sessionId)
     clearColdRetry(entry)
     entry.coldFailures++
     const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(entry.coldFailures - 1, 6))
@@ -1164,15 +1165,15 @@ export function createSessionIngestion(
       entry.coldRetryTimer = null
       if (closed || entry.epoch !== owner.epoch) return
       if (sessions.get?.(SessionId(sessionId))) {
-        if (catchupEpoch && catchupEpoch === coldPassEpoch) {
+        if (catchupPassId && catchupPassId === coldPassId) {
           coldPassActiveIds.add(sessionId)
-          if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(catchupEpoch)
+          if (pendingColdRetries.delete(sessionId)) maybePruneColdReceipts(catchupPassId)
         }
         return
       }
-      void scanCold(sessionId, header, catchupEpoch).catch(err => {
+      void scanCold(sessionId, header, catchupPassId).catch(err => {
         onError?.(err)
-        scheduleColdSessionRetry(sessionId, header, catchupEpoch)
+        scheduleColdSessionRetry(sessionId, header, catchupPassId)
       })
     }, delayMs)
     entry.coldRetryTimer.unref?.()
@@ -1212,7 +1213,7 @@ export function createSessionIngestion(
     }
   }
 
-  function scanCold(sessionId: string, header: SessionHeader, catchupEpoch?: string): Promise<void> {
+  function scanCold(sessionId: string, header: SessionHeader, catchupPassId?: number): Promise<void> {
     // Capture liveEpoch once at entry (before enqueue/cursor/read) so any session opening
     // (and even closing again) while this cold scan waits or reads supersedes it cleanly.
     const startEpoch = liveEpoch.get(sessionId) ?? 0
@@ -1232,9 +1233,9 @@ export function createSessionIngestion(
         }
         if (read.status === 'error') {
           transientFailure = true
-          if (catchupEpoch && catchupEpoch === coldPassEpoch) pendingColdRetries.add(sessionId)
+          if (catchupPassId && catchupPassId === coldPassId) pendingColdRetries.add(sessionId)
           onError?.(read.error)
-          scheduleColdSessionRetry(sessionId, header, catchupEpoch)
+          scheduleColdSessionRetry(sessionId, header, catchupPassId)
           return
         }
         if (read.events.length === 0) return
@@ -1267,8 +1268,8 @@ export function createSessionIngestion(
         && !sessions.get?.(SessionId(sessionId))) {
         queues.delete(sessionId)
       }
-      if (!transientFailure && catchupEpoch && catchupEpoch === coldPassEpoch && pendingColdRetries.delete(sessionId)) {
-        maybePruneColdReceipts(catchupEpoch)
+      if (!transientFailure && catchupPassId && catchupPassId === coldPassId && pendingColdRetries.delete(sessionId)) {
+        maybePruneColdReceipts(catchupPassId)
       }
     }).catch(() => {})
     return work
@@ -1279,6 +1280,7 @@ export function createSessionIngestion(
     if (closed || !owner.epoch || !persistence) return
     clearListRetry()
     const targetEpoch = owner.epoch
+    const passId = ++coldPassId
     listEpoch = targetEpoch
     listFailures = 0
     coldPassEpoch = targetEpoch
@@ -1288,13 +1290,13 @@ export function createSessionIngestion(
     pendingColdRetries.clear()
 
     const runList = async () => {
-      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId) return
       let snapshots
       try {
         snapshots = await persistence.list()
       } catch (error) {
         onError?.(error)
-        if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+        if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId) return
         listFailures++
         const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(listFailures - 1, 6))
         listRetryTimer = setTimeout(() => {
@@ -1304,24 +1306,24 @@ export function createSessionIngestion(
         listRetryTimer.unref?.()
         return
       }
-      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch) return
+      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId) return
       const activeIds = new Set((sessions.list?.() ?? []).map(session => String(session.id)))
       for (const id of activeIds) coldPassActiveIds.add(id)
       const coldTasks: Promise<void>[] = []
       for (const snap of snapshots) {
         const sid = String(snap.header.id)
         if (activeIds.has(sid) || sessions.get?.(snap.header.id)) continue
-        const task = scanCold(sid, snap.header, targetEpoch).catch(err => {
-          if (targetEpoch === coldPassEpoch) pendingColdRetries.add(sid)
+        const task = scanCold(sid, snap.header, passId).catch(err => {
+          if (passId === coldPassId) pendingColdRetries.add(sid)
           onError?.(err)
-          scheduleColdSessionRetry(sid, snap.header, targetEpoch)
+          scheduleColdSessionRetry(sid, snap.header, passId)
         })
         coldTasks.push(task)
       }
       await Promise.allSettled(coldTasks)
-      if (!closed && owner.epoch === targetEpoch && listEpoch === targetEpoch && coldPassEpoch === targetEpoch) {
+      if (!closed && owner.epoch === targetEpoch && listEpoch === targetEpoch && coldPassId === passId) {
         coldPassScanned = true
-        maybePruneColdReceipts(targetEpoch)
+        maybePruneColdReceipts(passId)
       }
     }
     void runList()
@@ -1407,6 +1409,7 @@ export function createSessionIngestion(
     async drain() {
       closed = true
       clearListRetry()
+      coldPassId++
       pendingColdRetries.clear()
       coldPassEpoch = undefined
       coldPassScanned = false

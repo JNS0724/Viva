@@ -63,21 +63,31 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
 
   // 2. Contextual split credentials across bare, punctuated, formatted, & qualified OTP/password prompts, while safe siblings survive.
   assert.equal(looksSecret('OTP: 123 456'), true)
+  assert.equal(looksSecret('Your OTP is 123456'), true)
   assert.equal(looksSecret('Did OTP: 123 456 work?'), true)
+  assert.equal(looksSecret('verification code: 123456'), true)
+  assert.equal(looksSecret('one-time passcode is 123 456'), true)
   assert.equal(looksSecret('验证码：123-456'), true)
   assert.equal(looksSecret('OTP: 123'), false)
   assert.equal(areRawCardsMemoryEligible([{ id: 'c-qotp', question: 'Did OTP: 123 456 work?' }]), false)
+  assert.equal(areRawCardsMemoryEligible([{ id: 'c-vcode', question: 'Did verification code: 123456 work?' }]), false)
   const cards = [
     { id: 'c-bare', question: 'OTP', header: 'Auth' },
     { id: 'c-en', question: 'What is your OTP?', header: 'Login' },
     { id: 'c-fmt', question: 'What is your OTP?', header: 'SMS' },
     { id: 'c-qual', question: 'What is the OTP sent to your phone?', header: 'Verify' },
     { id: 'c-any-otp', question: 'Any additional information?', header: 'Notes' },
+    { id: 'c-any-otp-is', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-zh', question: '请输入验证码：', header: '安全验证' },
     { id: 'c-pwd', question: 'Password?', header: 'Account' },
     { id: 'c-pwd-qual', question: 'What is the password for the account?', header: 'Login' },
+    { id: 'c-pwd-mgr-pw', question: 'What is the password for the password manager?', header: 'Login' },
     { id: 'c-api-qual', question: 'What is the API key for staging?', header: 'Deploy' },
+    { id: 'c-api-rot-val', question: 'What is the new API key after rotation?', header: 'Deploy' },
     { id: 'c-hdr', question: 'Enter value', header: `${' '.repeat(210)}OTP` },
+    { id: 'c-pref-mgr', question: 'Which password manager do you prefer?', header: 'Security' },
+    { id: 'c-pref-rot', question: 'How often should we rotate the API key?', header: 'Security' },
+    { id: 'c-pref-pol', question: 'What is the password rotation policy?', header: 'Security' },
     { id: 'c-tokens', question: 'Max output tokens?', header: 'Model' },
     { id: 'c-safe', question: 'Preferred drink?', header: 'Preference' },
   ]
@@ -87,16 +97,25 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-fmt', selected: [], custom: '123 456' },
     { id: 'c-qual', selected: [], custom: '123456' },
     { id: 'c-any-otp', selected: [], custom: 'OTP: 123 456' },
+    { id: 'c-any-otp-is', selected: [], custom: 'Your OTP is 123456' },
     { id: 'c-zh', selected: [], custom: '123456' },
     { id: 'c-pwd', selected: [], custom: 'hunter2' },
     { id: 'c-pwd-qual', selected: [], custom: 'shortpw' },
+    { id: 'c-pwd-mgr-pw', selected: [], custom: 'masterpw' },
     { id: 'c-api-qual', selected: [], custom: 'my-staging-key' },
+    { id: 'c-api-rot-val', selected: [], custom: 'new-key-123' },
     { id: 'c-hdr', selected: [], custom: '123456' },
+    { id: 'c-pref-mgr', selected: [], custom: 'Bitwarden' },
+    { id: 'c-pref-rot', selected: [], custom: 'Every 90 days' },
+    { id: 'c-pref-pol', selected: [], custom: 'Every 90 days' },
     { id: 'c-tokens', selected: [], custom: '8192' },
     { id: 'c-safe', selected: [], custom: 'oolong tea' },
   ]
   const eligible = eligibleQuestionAnswers(cards, answers)
   assert.deepEqual(eligible, [
+    { id: 'c-pref-mgr', question: 'Which password manager do you prefer?', custom: 'Bitwarden' },
+    { id: 'c-pref-pol', question: 'What is the password rotation policy?', custom: 'Every 90 days' },
+    { id: 'c-pref-rot', question: 'How often should we rotate the API key?', custom: 'Every 90 days' },
     { id: 'c-safe', question: 'Preferred drink?', custom: 'oolong tea' },
     { id: 'c-tokens', question: 'Max output tokens?', custom: '8192' },
   ])
@@ -959,4 +978,80 @@ test('Phase 4B Codex R2 P2-3..P2-4: malformed/colliding PTC step recovery and TT
   defer(() => dbRetry.close())
   assert.equal(dbRetry.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get('sess-active-keep')?.n, 1)
   assert.equal(dbRetry.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get('sess-abandoned-prune')?.n, 0)
+
+  // 3. Rebinding sessionPersistence (a second startColdCatchup under the same owner.epoch):
+  //    the superseded older pass resolving empty MUST NOT prune receipts before the newer pass replays them!
+  const baseMs = Date.parse('2026-10-01T00:00:00Z')
+  let rebindNow = baseMs
+  const rootRebind = path.join(dir, 'mem-rebind-pass')
+  const ownerRebind = openMemoryOwner({
+    root: rootRebind, hostNamespace: 'viva', now: () => rebindNow, dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => null, compute: () => null,
+  })
+  defer(() => ownerRebind.close())
+  await ownerRebind.recover()
+  const rebindSid = 'sess-rebind-40d'
+  const rebindCallId = 'call-rebind-1'
+  const rebindQuestion = 'Preferred city?'
+  const rebindCustom = 'Shanghai'
+  ownerRebind.recordQuestionReceipt({
+    sessionId: rebindSid, turn: 1, callSeq: 1, callIdHash: questionCallIdHash(rebindCallId), conversationId: 'conv-rebind',
+    answeredAt: baseMs + 2, questionProfileGen: 0, answerProfileGen: 0,
+    answerBatchDigest: canonicalEligibleAnswersDigest([{ id: 'q1', question: rebindQuestion, custom: rebindCustom }]),
+  })
+  rebindNow = baseMs + 40 * 24 * 60 * 60 * 1000
+  const rebindEvents = [
+    { seq: 0, type: 'turn/start', time: baseMs + 1, data: { turn: 1 } },
+    { seq: 1, type: 'tool/call', time: baseMs + 2, data: { turn: 1, step: 1, callId: rebindCallId, name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q1', question: rebindQuestion }] }) } },
+    { seq: 2, type: 'tool/result', time: baseMs + 3, surfaceOp: 'append', sourceEventSeqs: [1], data: { message: { toolCallId: rebindCallId, isError: false, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q1', selected: [], custom: rebindCustom }] }) }] } } },
+    { seq: 3, type: 'turn/end', time: baseMs + 4, data: { turn: 1, reason: { kind: 'completed' } } },
+  ] as unknown as SessionEvent[]
+  const oldList = deferred<Array<{ header: SessionHeader }>>()
+  const nextList = deferred<Array<{ header: SessionHeader }>>()
+  const nextPruned = deferred<void>()
+  let rebindPruneCalls = 0
+  let currentPersistence: { list: () => Promise<Array<{ header: SessionHeader }>>, open?: () => Promise<never> } = {
+    list: () => oldList.promise,
+  }
+  const rebindIntake = createSessionIngestion(
+    {
+      epoch: ownerRebind.epoch,
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async sid => ownerRebind.intakeCursor(sid),
+      advanceIntakeCursor: async input => ownerRebind.advanceIntakeCursor(input),
+      beginTurn: async input => ownerRebind.beginTurn(input),
+      pruneExpiredQuestionReceipts: async (maxAgeMs, exclude) => {
+        rebindPruneCalls++
+        ownerRebind.pruneExpiredQuestionReceipts(maxAgeMs, exclude)
+        nextPruned.resolve()
+      },
+      stageOpenTurnSources: async input => ownerRebind.stageOpenTurnSources(input),
+      settleTurn: async input => ownerRebind.settleTurn(input),
+    },
+    { flush: async () => true, get: () => undefined, list: () => [] },
+    () => currentPersistence as never,
+    { host: true },
+  )
+  rebindIntake.startColdCatchup()
+  currentPersistence = {
+    list: () => nextList.promise,
+    open: async () => ({
+      inheritedEventCount: 0,
+      read: async (offset: number, limit: number) => ({ events: rebindEvents.slice(offset, offset + limit) }),
+      close: async () => {},
+    }) as never,
+  }
+  rebindIntake.startColdCatchup()
+  // Older pass resolves empty first: MUST NOT prune the 40-day-old receipt before newer pass replays it!
+  oldList.resolve([])
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(rebindPruneCalls, 0, 'superseded cold catch-up pass must not trigger TTL pruning')
+  nextList.resolve([{ header: { id: SessionId(rebindSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader }])
+  await nextPruned.promise
+  await rebindIntake.drain()
+  assert.equal(rebindPruneCalls, 1)
+  const dbRebind = new DatabaseSync(path.join(rootRebind, 'memory.db'), { readOnly: true })
+  defer(() => dbRebind.close())
+  const rebindRows = dbRebind.prepare("SELECT text FROM memory_sources WHERE session=? AND author='answer'").all(rebindSid) as Array<{ text: string }>
+  assert.deepEqual(rebindRows.map(r => r.text), [rebindCustom], 'newer cold catch-up pass must still admit the 40-day-old answered question')
 })
