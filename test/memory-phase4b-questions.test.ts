@@ -88,11 +88,14 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-api-rot-val', question: 'What is the new API key after rotation?', header: 'Deploy' },
     { id: 'c-api-rot-short', question: 'New API key after rotation?', header: 'Deploy' },
     { id: 'c-api-clause-smuggle', question: 'Which API key should the integration use, and how long is it valid?', header: 'Deploy' },
+    { id: 'c-api-compound-rot', question: 'How often should we rotate the API key and what is its current value?', header: 'Deploy' },
+    { id: 'c-api-rot-bad-ans', question: 'How often should we rotate the API key?', header: 'Deploy' },
     { id: 'c-pwd-rot-which', question: 'Which password should I use after rotation?', header: 'Login' },
     { id: 'c-totp-prompt', question: 'Enter the TOTP from your authenticator', header: '2FA' },
     { id: 'c-totp-custom', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-otp-compact', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-hdr', question: 'Enter value', header: `${' '.repeat(210)}OTP` },
+    { id: 'c-footprint', question: 'What is the expected annual carbon footprint in tonnes?', header: 'Sustainability' },
     { id: 'c-pref-mgr', question: 'Which password manager do you prefer?', header: 'Security' },
     { id: 'c-pref-rot', question: 'How often should we rotate the API key?', header: 'Security' },
     { id: 'c-pref-pol', question: 'What is the password rotation policy?', header: 'Security' },
@@ -114,11 +117,14 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-api-rot-val', selected: [], custom: 'new-key-123' },
     { id: 'c-api-rot-short', selected: [], custom: 'short-key' },
     { id: 'c-api-clause-smuggle', selected: [], custom: 'example-key, valid for 30 days' },
+    { id: 'c-api-compound-rot', selected: [], custom: 'Every month. Current value is example-key' },
+    { id: 'c-api-rot-bad-ans', selected: [], custom: 'Every 90 days; current key is abc123' },
     { id: 'c-pwd-rot-which', selected: [], custom: 'shortpw2' },
     { id: 'c-totp-prompt', selected: [], custom: '123 456' },
     { id: 'c-totp-custom', selected: [], custom: 'TOTP: 123456' },
     { id: 'c-otp-compact', selected: [], custom: 'OTP123456' },
     { id: 'c-hdr', selected: [], custom: '123456' },
+    { id: 'c-footprint', selected: [], custom: '1200' },
     { id: 'c-pref-mgr', selected: [], custom: 'Bitwarden' },
     { id: 'c-pref-rot', selected: [], custom: 'Every 90 days' },
     { id: 'c-pref-pol', selected: [], custom: 'Every 90 days' },
@@ -127,6 +133,7 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
   ]
   const eligible = eligibleQuestionAnswers(cards, answers)
   assert.deepEqual(eligible, [
+    { id: 'c-footprint', question: 'What is the expected annual carbon footprint in tonnes?', custom: '1200' },
     { id: 'c-pref-mgr', question: 'Which password manager do you prefer?', custom: 'Bitwarden' },
     { id: 'c-pref-pol', question: 'What is the password rotation policy?', custom: 'Every 90 days' },
     { id: 'c-pref-rot', question: 'How often should we rotate the API key?', custom: 'Every 90 days' },
@@ -170,7 +177,14 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     ),
     [],
   )
-  assert.ok(performance.now() - t0 < 100, 'full eligibility + OTP matcher must run in linear time without regex backtracking')
+  assert.deepEqual(
+    eligibleQuestionAnswers(
+      [{ id: 'pad-rot', question: `How often should we rotate the API key${' .'.repeat(16_000)}!` }],
+      [{ id: 'pad-rot', selected: [], custom: 'Every 90 days' }],
+    ),
+    [],
+  )
+  assert.ok(performance.now() - t0 < 100, 'full eligibility + OTP/cadence matchers must run in linear time without regex backtracking')
 })
 
 test('Phase 4B §5.5: host question-channel retains >200-char rawHeaders for unified eligibility and channel.ask never strands on receipt throw', async () => {
@@ -1199,4 +1213,141 @@ test('Phase 4B Codex R2 P2-3..P2-4: malformed/colliding PTC step recovery and TT
   defer(() => dbRelNf.close())
   const relRows = dbRelNf.prepare("SELECT text FROM memory_sources WHERE session=? AND author='answer'").all(relSid) as Array<{ text: string }>
   assert.deepEqual(relRows.map(r => r.text), [rebindCustom], 'disposal-initiated cold scan from old provider must not retire receipt after persistence rebinds')
+
+  // 6. Detaching persistence during a cold read MUST NOT mark catch-up complete or trigger premature TTL pruning!
+  let detachNow = baseMs
+  const rootDetach = path.join(dir, 'mem-detach-ttl')
+  const ownerDetach = openMemoryOwner({
+    root: rootDetach, hostNamespace: 'viva', now: () => detachNow, dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => null, compute: () => null,
+  })
+  defer(() => ownerDetach.close())
+  await ownerDetach.recover()
+  const detachSid = 'sess-detach-40d'
+  ownerDetach.recordQuestionReceipt({
+    sessionId: detachSid, turn: 1, callSeq: 1, callIdHash: questionCallIdHash(rebindCallId), conversationId: 'conv-detach',
+    answeredAt: baseMs + 2, questionProfileGen: 0, answerProfileGen: 0,
+    answerBatchDigest: canonicalEligibleAnswersDigest([{ id: 'q1', question: rebindQuestion, custom: rebindCustom }]),
+  })
+  detachNow = baseMs + 40 * 24 * 60 * 60 * 1000
+  const detachEntered = deferred<void>()
+  const detachOpen = deferred<never>()
+  let detachPrunes = 0
+  let detachProvider: { list: () => Promise<Array<{ header: SessionHeader }>>, open: () => Promise<never> } | undefined = {
+    list: async () => [{ header: { id: SessionId(detachSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader }],
+    open: () => {
+      detachEntered.resolve()
+      return detachOpen.promise
+    },
+  }
+  const detachIntake = createSessionIngestion(
+    {
+      epoch: ownerDetach.epoch,
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async sid => ownerDetach.intakeCursor(sid),
+      advanceIntakeCursor: async input => ownerDetach.advanceIntakeCursor(input),
+      beginTurn: async input => ownerDetach.beginTurn(input),
+      pruneExpiredQuestionReceipts: async (maxAgeMs, exclude) => {
+        detachPrunes++
+        ownerDetach.pruneExpiredQuestionReceipts(maxAgeMs, exclude)
+      },
+      stageOpenTurnSources: async input => ownerDetach.stageOpenTurnSources(input),
+      settleTurn: async input => ownerDetach.settleTurn(input),
+    },
+    { flush: async () => true, get: () => undefined, list: () => [] },
+    () => detachProvider as never,
+    { host: true },
+  )
+  detachIntake.startColdCatchup()
+  await detachEntered.promise
+  detachProvider = undefined
+  detachOpen.resolve({ inheritedEventCount: 0, read: async () => ({ events: [] }), close: async () => {} } as never)
+  await new Promise(resolve => setTimeout(resolve, 30))
+  await detachIntake.drain()
+  assert.equal(detachPrunes, 0, 'detaching persistence during cold read must not authorize TTL cleanup')
+  const dbDetach = new DatabaseSync(path.join(rootDetach, 'memory.db'), { readOnly: true })
+  defer(() => dbDetach.close())
+  assert.equal(dbDetach.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get(detachSid)?.n, 1)
+
+  // 7. Rebinding persistence mid-replay (while turn 1 settleTurn is paused) MUST abort before settling turn 2 from the old provider!
+  const rootMulti = path.join(dir, 'mem-multi-rebind')
+  const ownerMulti = openMemoryOwner({
+    root: rootMulti, hostNamespace: 'viva', now: () => baseMs, dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => null, compute: () => null,
+  })
+  defer(() => ownerMulti.close())
+  await ownerMulti.recover()
+  const multiSid = 'sess-multi-rebind'
+  ownerMulti.recordQuestionReceipt({
+    sessionId: multiSid, turn: 2, callSeq: 3, callIdHash: questionCallIdHash(rebindCallId), conversationId: 'conv-multi',
+    answeredAt: baseMs + 4, questionProfileGen: 0, answerProfileGen: 0,
+    answerBatchDigest: canonicalEligibleAnswersDigest([{ id: 'q1', question: rebindQuestion, custom: rebindCustom }]),
+  })
+  const oldMultiEvents = [
+    { seq: 0, type: 'turn/start', time: baseMs + 1, data: { turn: 1 } },
+    { seq: 1, type: 'turn/end', time: baseMs + 2, data: { turn: 1, reason: { kind: 'completed' } } },
+    { seq: 2, type: 'turn/start', time: baseMs + 3, data: { turn: 2 } },
+    { seq: 3, type: 'turn/end', time: baseMs + 4, data: { turn: 2, reason: { kind: 'interrupted' } } },
+  ] as unknown as SessionEvent[]
+  const newMultiEvents = [
+    { seq: 0, type: 'turn/start', time: baseMs + 1, data: { turn: 1 } },
+    { seq: 1, type: 'turn/end', time: baseMs + 2, data: { turn: 1, reason: { kind: 'completed' } } },
+    { seq: 2, type: 'turn/start', time: baseMs + 3, data: { turn: 2 } },
+    { seq: 3, type: 'tool/call', time: baseMs + 4, data: { turn: 2, step: 1, callId: rebindCallId, name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q1', question: rebindQuestion }] }) } },
+    { seq: 4, type: 'tool/result', time: baseMs + 5, surfaceOp: 'append', sourceEventSeqs: [3], data: { message: { toolCallId: rebindCallId, isError: false, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q1', selected: [], custom: rebindCustom }] }) }] } } },
+    { seq: 5, type: 'turn/end', time: baseMs + 6, data: { turn: 2, reason: { kind: 'completed' } } },
+  ] as unknown as SessionEvent[]
+  const turn1Entered = deferred<void>()
+  const releaseTurn1 = deferred<void>()
+  const multiPruned = deferred<void>()
+  let multiProvider: { list: () => Promise<Array<{ header: SessionHeader }>>, open: () => Promise<never> } = {
+    list: async () => [{ header: { id: SessionId(multiSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader }],
+    open: async () => ({
+      inheritedEventCount: 0,
+      read: async (offset: number, limit: number) => ({ events: oldMultiEvents.slice(offset, offset + limit) }),
+      close: async () => {},
+    }) as never,
+  }
+  const multiIntake = createSessionIngestion(
+    {
+      epoch: ownerMulti.epoch,
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async sid => ownerMulti.intakeCursor(sid),
+      advanceIntakeCursor: async input => ownerMulti.advanceIntakeCursor(input),
+      beginTurn: async input => ownerMulti.beginTurn(input),
+      pruneExpiredQuestionReceipts: async (maxAgeMs, exclude) => {
+        ownerMulti.pruneExpiredQuestionReceipts(maxAgeMs, exclude)
+        multiPruned.resolve()
+      },
+      stageOpenTurnSources: async input => ownerMulti.stageOpenTurnSources(input),
+      settleTurn: async input => {
+        if (input.turn === 1) {
+          turn1Entered.resolve()
+          await releaseTurn1.promise
+        }
+        return ownerMulti.settleTurn(input)
+      },
+    },
+    { flush: async () => true, get: () => undefined, list: () => [] },
+    () => multiProvider as never,
+    { host: true },
+  )
+  multiIntake.startColdCatchup()
+  await turn1Entered.promise
+  multiProvider = {
+    list: async () => [{ header: { id: SessionId(multiSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader }],
+    open: async () => ({
+      inheritedEventCount: 0,
+      read: async (offset: number, limit: number) => ({ events: newMultiEvents.slice(offset, offset + limit) }),
+      close: async () => {},
+    }) as never,
+  }
+  multiIntake.startColdCatchup()
+  releaseTurn1.resolve()
+  await multiPruned.promise
+  await multiIntake.drain()
+  const dbMulti = new DatabaseSync(path.join(rootMulti, 'memory.db'), { readOnly: true })
+  defer(() => dbMulti.close())
+  const multiRows = dbMulti.prepare("SELECT text FROM memory_sources WHERE session=? AND author='answer'").all(multiSid) as Array<{ text: string }>
+  assert.deepEqual(multiRows.map(r => r.text), [rebindCustom], 'old provider must abort before settling turn 2 so replacement log admits completed turn 2')
 })

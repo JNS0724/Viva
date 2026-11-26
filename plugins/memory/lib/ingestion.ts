@@ -793,6 +793,8 @@ export function createSessionIngestion(
   let listFailures = 0
   let coldPassId = 0
   let coldPassEpoch: string | undefined
+  let coldPassPersistence: PersistenceLike | undefined
+  let coldPassDetached = false
   let coldPassScanned = false
   let coldPassPruned = false
   let coldPassActiveIds = new Set<string>()
@@ -801,6 +803,7 @@ export function createSessionIngestion(
   function maybePruneColdReceipts(passId: number) {
     if (closed || passId <= 0 || passId !== coldPassId || !coldPassEpoch) return
     if (owner.epoch !== coldPassEpoch || listEpoch !== coldPassEpoch) return
+    if (coldPassDetached || !coldPassPersistence || getPersistence() !== coldPassPersistence) return
     if (!coldPassScanned || coldPassPruned || pendingColdRetries.size > 0) return
     coldPassPruned = true
     const excludeSessions = [...new Set([
@@ -882,6 +885,7 @@ export function createSessionIngestion(
     sliceFromSeq: number
     sliceEndSeq: number
     collectOpenTurn?: boolean
+    shouldAbort?: () => boolean
   }): Promise<{
     openTurn?: {
       turn: number
@@ -891,8 +895,9 @@ export function createSessionIngestion(
       questionAnswers: TurnQuestionAnswerCandidate[]
     }
     casRetry?: boolean
+    aborted?: boolean
   }> {
-    const { sessionId, cwd, inheritedSeq, createdAt, events, sliceFromSeq, sliceEndSeq, collectOpenTurn = false } = input
+    const { sessionId, cwd, inheritedSeq, createdAt, events, sliceFromSeq, sliceEndSeq, collectOpenTurn = false, shouldAbort } = input
     let expectedNextSeq = input.cursorNextSeq
     let currentSeq = sliceFromSeq
     let sessionKind: SessionKind = input.sessionKind
@@ -927,6 +932,7 @@ export function createSessionIngestion(
         }
       }
       if (skipToSeq !== null && skipToSeq > sliceFromSeq) {
+        if (shouldAbort?.()) return { aborted: true }
         const res = await owner.advanceIntakeCursor({
           sessionId, expectedNextSeq: null, nextSeq: skipToSeq, inheritedSeq, sessionKind, conversation, cwd,
         })
@@ -990,6 +996,7 @@ export function createSessionIngestion(
             timezone: tz,
           })
         }
+        if (shouldAbort?.()) return { aborted: true }
         const res = await owner.settleTurn({
           sessionId,
           cwd,
@@ -1247,7 +1254,10 @@ export function createSessionIngestion(
         if (stale()) return
         const readPersistence = getPersistence()
         const read = await readAllPersistedFrom(sessionId, cursor.nextSeq, readPersistence)
-        if (stale() || (readPersistence !== undefined && getPersistence() !== readPersistence)) return
+        const detached = (entryPersistence !== undefined && getPersistence() !== entryPersistence)
+          || (readPersistence !== undefined && getPersistence() !== readPersistence)
+        if (detached && catchupPassId && catchupPassId === coldPassId) coldPassDetached = true
+        if (stale() || detached) return
         if (read.status === 'not-found') {
           await owner.retireSessionQuestionReceipts?.(sessionId)
           return
@@ -1272,7 +1282,14 @@ export function createSessionIngestion(
           sliceFromSeq: read.fromSeq,
           sliceEndSeq: read.endSeq,
           collectOpenTurn: false,
+          shouldAbort: () => {
+            const changed = (entryPersistence !== undefined && getPersistence() !== entryPersistence)
+              || (readPersistence !== undefined && getPersistence() !== readPersistence)
+            if (changed && catchupPassId && catchupPassId === coldPassId) coldPassDetached = true
+            return stale() || changed
+          },
         })
+        if (outcome.aborted) return
         if (outcome.casRetry) continue
         const entry = queues.get(sessionId)
         if (entry) {
@@ -1305,19 +1322,21 @@ export function createSessionIngestion(
     listEpoch = targetEpoch
     listFailures = 0
     coldPassEpoch = targetEpoch
+    coldPassPersistence = persistence
+    coldPassDetached = false
     coldPassScanned = false
     coldPassPruned = false
     coldPassActiveIds = new Set()
     pendingColdRetries.clear()
 
     const runList = async () => {
-      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId) return
+      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId || getPersistence() !== persistence) return
       let snapshots
       try {
         snapshots = await persistence.list()
       } catch (error) {
         onError?.(error)
-        if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId) return
+        if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId || getPersistence() !== persistence) return
         listFailures++
         const delayMs = Math.min(COLD_RETRY_MAX_MS, COLD_RETRY_BASE_MS * 2 ** Math.min(listFailures - 1, 6))
         listRetryTimer = setTimeout(() => {
@@ -1327,7 +1346,7 @@ export function createSessionIngestion(
         listRetryTimer.unref?.()
         return
       }
-      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId) return
+      if (closed || owner.epoch !== targetEpoch || listEpoch !== targetEpoch || coldPassId !== passId || getPersistence() !== persistence) return
       const activeIds = new Set((sessions.list?.() ?? []).map(session => String(session.id)))
       for (const id of activeIds) coldPassActiveIds.add(id)
       const coldTasks: Promise<void>[] = []
@@ -1342,7 +1361,8 @@ export function createSessionIngestion(
         coldTasks.push(task)
       }
       await Promise.allSettled(coldTasks)
-      if (!closed && owner.epoch === targetEpoch && listEpoch === targetEpoch && coldPassId === passId) {
+      if (!closed && owner.epoch === targetEpoch && listEpoch === targetEpoch && coldPassId === passId
+        && !coldPassDetached && getPersistence() === persistence) {
         coldPassScanned = true
         maybePruneColdReceipts(passId)
       }
@@ -1433,6 +1453,8 @@ export function createSessionIngestion(
       coldPassId++
       pendingColdRetries.clear()
       coldPassEpoch = undefined
+      coldPassPersistence = undefined
+      coldPassDetached = false
       coldPassScanned = false
       coldPassPruned = false
       coldPassActiveIds = new Set()
