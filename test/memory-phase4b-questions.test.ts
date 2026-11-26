@@ -69,10 +69,13 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
   assert.equal(looksSecret('Did OTP: 123 456 work?'), true)
   assert.equal(looksSecret('verification code: 123456'), true)
   assert.equal(looksSecret('one-time passcode is 123 456'), true)
+  assert.equal(looksSecret('Device PIN: 4826'), true)
+  assert.equal(looksSecret('The device PIN is 4826. Should I proceed?'), true)
   assert.equal(looksSecret('验证码：123-456'), true)
   assert.equal(looksSecret('OTP: 123'), false)
   assert.equal(areRawCardsMemoryEligible([{ id: 'c-qotp', question: 'Did OTP: 123 456 work?' }]), false)
   assert.equal(areRawCardsMemoryEligible([{ id: 'c-vcode', question: 'Did verification code: 123456 work?' }]), false)
+  assert.equal(areRawCardsMemoryEligible([{ id: 'c-qpin', question: 'The device PIN is 4826. Should I proceed?' }]), false)
   const cards = [
     { id: 'c-bare', question: 'OTP', header: 'Auth' },
     { id: 'c-en', question: 'What is your OTP?', header: 'Login' },
@@ -99,6 +102,8 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-login-creds', question: 'Enter the login credentials from your password manager.', header: 'Staging' },
     { id: 'c-prod-secrets', question: 'Enter the production secrets from your password manager.', header: 'Prod' },
     { id: 'c-pin-unlock', question: 'Enter your PIN to unlock the device.', header: 'Device' },
+    { id: 'c-pin-code-alpha', question: 'Enter your PIN code to unlock this device.', header: 'Device' },
+    { id: 'c-pin-inline', question: 'Anything else needed for setup?', header: 'Setup' },
     { id: 'c-totp-prompt', question: 'Enter the TOTP from your authenticator', header: '2FA' },
     { id: 'c-totp-custom', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-otp-compact', question: 'Any additional information?', header: 'Notes' },
@@ -143,6 +148,8 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-login-creds', selected: [], custom: 'demo-user / demo-passphrase' },
     { id: 'c-prod-secrets', selected: [], custom: 'prod-secret-value' },
     { id: 'c-pin-unlock', selected: [], custom: '4826' },
+    { id: 'c-pin-code-alpha', selected: [], custom: 'k7T3m6' },
+    { id: 'c-pin-inline', selected: [], custom: 'Device PIN: 4826' },
     { id: 'c-totp-prompt', selected: [], custom: '123 456' },
     { id: 'c-totp-custom', selected: [], custom: 'TOTP: 123456' },
     { id: 'c-otp-compact', selected: [], custom: 'OTP123456' },
