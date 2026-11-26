@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld('desk', /** @satisfies {DeskApi} */ ({
     ipcRenderer.on('language:changed', listener)
     return () => ipcRenderer.removeListener('language:changed', listener)
   },
+  getTheme: () => ipcRenderer.invoke('theme:get'),
+  onTheme: (callback) => {
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {import('../shared/theme.ts').ThemeState} */ state) => callback(state)
+    ipcRenderer.on('theme:changed', listener)
+    return () => ipcRenderer.removeListener('theme:changed', listener)
+  },
   onView: (callback) => {
     const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {unknown} */ payload) => callback(payload)
     ipcRenderer.on('island:view', listener)

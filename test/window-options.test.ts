@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { TITLEBAR_HEIGHT, devIcon, windowChrome, windowSize } from '../src/shell/window-options.ts'
+import { TITLEBAR_HEIGHT, devIcon, titleBarOverlay, windowBackground, windowChrome, windowSize } from '../src/shell/window-options.ts'
 
 test('macOS keeps its traffic lights, inset and centred in the title bar', () => {
   const chrome = windowChrome('darwin')
@@ -11,13 +11,20 @@ test('macOS keeps its traffic lights, inset and centred in the title bar', () =>
   assert.equal(chrome.trafficLightPosition?.y, 29, 'lights are about 14px tall, so they sit centred in 72px')
 })
 
-test('Windows and Linux get system-drawn window buttons in a matching overlay', () => {
+test('Windows and Linux get system-drawn window buttons in a matching dark or light overlay', () => {
   for (const platform of ['win32', 'linux']) {
-    const chrome = windowChrome(platform)
-    assert.equal(chrome.titleBarStyle, 'hidden')
-    assert.deepEqual(chrome.titleBarOverlay, { color: '#060B16', symbolColor: '#A3B0CC', height: TITLEBAR_HEIGHT })
-    assert.equal(chrome.trafficLightPosition, undefined)
+    const dark = windowChrome(platform)
+    assert.equal(dark.titleBarStyle, 'hidden')
+    assert.deepEqual(dark.titleBarOverlay, { color: '#060B16', symbolColor: '#A3B0CC', height: TITLEBAR_HEIGHT })
+    assert.equal(dark.trafficLightPosition, undefined)
+
+    const light = windowChrome(platform, 'light')
+    assert.equal(light.titleBarStyle, 'hidden')
+    assert.deepEqual(light.titleBarOverlay, { color: '#F2F5FA', symbolColor: '#3B4C68', height: TITLEBAR_HEIGHT })
+    assert.deepEqual(titleBarOverlay('light'), light.titleBarOverlay)
   }
+  assert.equal(windowBackground('dark'), '#060B16')
+  assert.equal(windowBackground('light'), '#F2F5FA')
 })
 
 test('the window fits the screen it opens on, including a scaled laptop display', () => {

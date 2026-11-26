@@ -1,5 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import { initializeLanguage } from './language.ts'
+import { initializeDeskTheme } from './theme.ts'
 import { IMAGE_LIMITS } from '../shared/images.ts'
 import { insertText, pastedParts } from './paste.ts'
 import { createIsland } from './view/island-dom.ts'
@@ -29,6 +30,7 @@ let languageReady = false
  */
 let earlyView: unknown = null
 const stopEarly = api.onView((next) => { earlyView = next })
+try { await initializeDeskTheme(api) } catch (err) { console.error('[desk] theme initialization failed:', err) }
 await initializeLanguage(api, () => { if (languageReady) show() })
 
 /**

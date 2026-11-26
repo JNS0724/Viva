@@ -1,6 +1,8 @@
 import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { languageControl } from '../language.ts'
+import { initialTheme, type ThemeSlice } from '../theme-state.ts'
+import type { ThemePreference } from '../../shared/theme.ts'
 import { formatSize } from '../selectors.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { modelsSection } from './models.ts'
@@ -157,11 +159,70 @@ function imagesSection(settings: Settings, handlers: Handlers) {
     actions)
 }
 
+/** Appearance selector driven purely from state.theme so redraws keep pending selections and re-translate errors. */
+function themeControl(theme: ThemeSlice, handlers: Handlers) {
+  const shown = theme.pending ?? theme.theme
+  const options: ReadonlyArray<[ThemePreference, string]> = [
+    ['system', t('settings.theme.system')],
+    ['dark', t('settings.theme.dark')],
+    ['light', t('settings.theme.light')],
+  ]
+  const select = h('select', {
+    class: 'field',
+    name: 'theme',
+    'aria-label': t('settings.theme.label'),
+    'aria-describedby': 'settings-theme-help',
+    'data-version': shown,
+    disabled: theme.pending !== null,
+    onChange: (event: Event) => handlers.setTheme((event.target as HTMLSelectElement).value as ThemePreference),
+  }, ...options.map(([value, label]) => h('option', { value, text: label })))
+  select.value = shown
+  return h('label', { class: 'pref-row' },
+    h('span', { class: 'pref-copy' },
+      h('span', { class: 'profile-heading', text: t('settings.theme.label') }),
+      h('span', {
+        id: 'settings-theme-help',
+        class: 'help',
+        'data-theme-help': 'true',
+        'data-error': theme.failed ? 'true' : undefined,
+        'aria-live': 'polite',
+        text: theme.failed ? t('settings.theme.save.failed') : t('settings.theme.help'),
+      })),
+    select)
+}
+
+const latestTheme = new WeakMap<HTMLElement, ThemeSlice>()
+
+/** Update the appearance row in place when only theme state changed, preserving focus on unrelated Settings buttons. */
+export function updateThemeControl(container: HTMLElement, theme: ThemeSlice): boolean {
+  latestTheme.set(container, theme)
+  const select = container.querySelector<HTMLSelectElement>('select[name="theme"]')
+  const help = container.querySelector<HTMLElement>('[data-theme-help]')
+  if (!select || !help) return false
+  const shown = theme.pending ?? theme.theme
+  select.value = shown
+  select.dataset.version = shown
+  select.disabled = theme.pending !== null
+  if (theme.failed) help.setAttribute('data-error', 'true')
+  else help.removeAttribute('data-error')
+  const nextHelp = theme.failed ? t('settings.theme.save.failed') : t('settings.theme.help')
+  if (help.textContent !== nextHelp) help.textContent = nextHelp
+  return true
+}
+
 /**
  * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, pictures and privacy. Skills, MCP
  * and plugins are 能力's (view/capabilities.ts). Re-rendered only when its slices change, and typed text survives a re-render.
  */
-export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], handlers: Handlers, diagnostics: State['diagnostics'] = initialDiagnostics) {
+export function renderSettings(
+  container: HTMLElement,
+  settings: Settings,
+  models: State['models'],
+  handlers: Handlers,
+  diagnostics: State['diagnostics'] = initialDiagnostics,
+  theme: ThemeSlice = initialTheme,
+) {
+  latestTheme.set(container, theme)
   if (!settings.open) {
     container.replaceChildren()
     return
@@ -172,6 +233,7 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
     h('section', { class: 'settings', 'aria-labelledby': 'settings-title' },
       h('h2', { class: 'settings-title', id: 'settings-title', text: t("settings.settings") }),
       languageControl(),
+      themeControl(latestTheme.get(container) ?? theme, handlers),
       keyStatus(settings),
       form,
       feedback(settings),

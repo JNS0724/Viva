@@ -41,6 +41,8 @@ export const IPC_ARGS = Object.freeze({
   'diagnostics:debug': z.tuple([z.boolean()]),
   'language:get': read(none),
   'language:set': z.tuple([z.enum(['system', 'zh-CN', 'en'])]),
+  'theme:get': read(none),
+  'theme:set': z.tuple([z.enum(['system', 'dark', 'light'])]),
   'agent:info': read(none),
   'agent:snapshot': read(z.tuple([z.strictObject({ budgetMs: z.number().positive().max(30_000) }).optional()])),
   'agent:waits': read(none),

@@ -228,6 +228,7 @@ export const testLevels = {
     'tasks-state',
     'test-feature',
     'text-submit-boundary',
+    'theme',
     'timeline-search',
     'topic-hint',
     'topic-ipc',

@@ -12,15 +12,15 @@
 .isl[data-host="bar"] { max-width: 100%; }
 .isl[data-host="bar"] .isl-head { max-width: 100%; }
 .isl[data-host="bar"][data-tone="working"] { --isl-rim: color-mix(in srgb, var(--accent) 55%, var(--line-2)); }
-.isl[data-open="true"] { border-radius: calc(var(--isl-head) / 2); box-shadow: 0 24px 60px rgba(0, 0, 0, .6); }
+.isl[data-open="true"] { border-radius: calc(var(--isl-head) / 2); box-shadow: var(--shadow-island); }
 .isl[data-tone="idle"] { --isl-dot: var(--ink-3); }
 .isl[data-tone="pending"] { --isl-rim: var(--line-2); --isl-dot: var(--ink-3); }
 .isl[data-tone="waiting"] { --isl-rim: var(--orange); --isl-dot: var(--orange); }
 .isl[data-tone="error"] { --isl-rim: var(--red); --isl-dot: var(--red); }
 .isl[data-tone="done"] { --isl-rim: var(--accent); }
 /* The input (island-input.js) and files dragged over the island: a blue rim with a soft glow. */
-.isl[data-form="input"], .isl[data-form="drop"] { --isl-rim: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent), 0 24px 60px rgba(0, 0, 0, .6); }
-.isl[data-form="drop"] { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 18%, transparent), 0 24px 60px rgba(0, 0, 0, .6); }
+.isl[data-form="input"], .isl[data-form="drop"] { --isl-rim: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent), var(--shadow-island); }
+.isl[data-form="drop"] { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 18%, transparent), var(--shadow-island); }
 
 /* The content is clipped to the shape; her picture is not, so its ring and badge stay whole. */
 .isl-clip { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }

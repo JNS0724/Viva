@@ -19,10 +19,10 @@ const FEATURES = {
   capabilities: /^(?:capabilit|extensions[.-]|plugins?[.-]|app-plugins[.-]|import-flow[.-]|config-actions[.-]|commands[.-])/,
   files: /^(?:file(?:s[.-]|-access)|workspace-files[.-]|attachments[.-]|image-(?:ipc|store)[.-]|paste[.-]|csv[.-]|remove-tree[.-])/,
   memory: /^(?:remote-)?memory[.-]/,
-  rendering: /^(?:column-resize|earlier-(?:row|state)|frame|full-screen|hub-state|island-(?:desk-card|dom|view)|done-notice|long-answer|markdown|prompt-card|reader-control|reconcile|renderer-(?:css|hotpaths)|review-(?:actions|state)|scroll-follow|selectors|stars|timeline-search|turn-rail|ui-polish|user-error)\.test\.(?:js|ts)$/,
+  rendering: /^(?:column-resize|earlier-(?:row|state)|frame|full-screen|hub-state|island-(?:desk-card|dom|view)|done-notice|long-answer|markdown|prompt-card|reader-control|reconcile|renderer-(?:css|hotpaths)|review-(?:actions|state)|scroll-follow|selectors|stars|theme|timeline-search|turn-rail|ui-polish|user-error)\.test\.(?:js|ts)$/,
   storage: /^(?:app-db|envelope|journal|preferences|settings|history-db|feed-store|feed-source-store|task-store)\.test\.(?:js|ts)$/,
   i18n: /^i18n[.-]/,
-  shell: /^(?:desk-(?:island|place)|island-main|tray|window-options)\.test\.(?:js|ts)$/,
+  shell: /^(?:desk-(?:island|place)|island-main|theme|tray|window-options)\.test\.(?:js|ts)$/,
   tooling: /^(?:asar-integrity|build-page-libraries|pnpm-launcher|live(?:-approval)?|maid|smoke-(?:diagnostics|kit|timeline-time|layout|fixtures)|ci-check|test-feature)\.test\.(?:js|ts)$/,
 } as const
 export type Feature = keyof typeof FEATURES

@@ -26,6 +26,7 @@ type Widened<T> = [T] extends [never] ? Untyped
   : T extends (...args: any[]) => any ? T
   : T extends BackgroundTask ? BackgroundTask
   : T extends import('./memory-file-state.ts').MemoryFileState ? import('./memory-file-state.ts').MemoryFileState
+  : T extends import('./theme-state.ts').ThemeSlice ? import('./theme-state.ts').ThemeSlice
   : T extends object ? ([keyof T] extends [never] ? Readonly<Record<string, Untyped>> : { -readonly [K in keyof T]: Widened<T[K]> })
   : T
 /** What the main process tells the window of the agent (session-info.ts, acp-bridge.ts): the fields the window reads. */
@@ -145,6 +146,8 @@ interface LanguageApi {
   onLanguage: (callback: (state: import('../shared/i18n/locale.ts').LanguageState) => void) => Unlisten
 }
 interface DraftApi extends LanguageApi {
+  getTheme: Invoke<'theme:get'>
+  onTheme: (callback: (state: import('../shared/theme.ts').ThemeState) => void) => Unlisten
   getDraft: Invoke<'draft:get'>
   updateDraft: (...args: Args<'draft:update'>) => void
   appendDraftImage: Invoke<'draft:append-image'>
@@ -154,6 +157,7 @@ interface DraftApi extends LanguageApi {
 }
 interface AgentApi extends DraftApi {
   reportDiagnostic: (event: Args<'diagnostics:event'>[0]) => void
+  setTheme: Invoke<'theme:set'>
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: string
   getInfo: Invoke<'agent:info'>

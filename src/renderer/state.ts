@@ -25,6 +25,7 @@ import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
 import { MEMORY_FILE_ACTIONS } from './memory-file-state.ts'
 import { initialDiagnostics, DIAGNOSTICS_ACTIONS } from './diagnostics-state.ts'
+import { initialTheme, THEME_ACTIONS } from './theme-state.ts'
 
 function removeRestoredTrace(state: State): State {
   const restored = state.restoredTraceData
@@ -94,6 +95,7 @@ export const initialState = Object.freeze({
   proposals: [] as Untyped[],
   models: initialModels,
   diagnostics: initialDiagnostics,
+  theme: initialTheme,
   /** The 插件 section of settings (plugins-state.ts). */
   plugins: initialPlugins,
   /** 能力: which of skills, MCP and plugins is shown, and the one picked (capabilities-state.ts). */
@@ -310,6 +312,7 @@ const ACTION_HANDLERS: ActionHandlers = {
     drawer: state.drawer,
     settings: state.settings,
     diagnostics: state.diagnostics,
+    theme: state.theme,
     history: state.history,
     earlier: withCurrentKept(state),
     workDir: state.workDir,
@@ -413,6 +416,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...MEMORY_FILE_ACTIONS,
   ...MODEL_ACTIONS,
   ...DIAGNOSTICS_ACTIONS,
+  ...THEME_ACTIONS,
   ...PLUGIN_ACTIONS,
   ...FILES_ACTIONS,
   ...SECRET_ACTIONS,

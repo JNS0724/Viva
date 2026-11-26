@@ -1,4 +1,5 @@
 import { isLanguage, type Language } from '../shared/i18n/locale.ts'
+import { isThemePreference, type ThemePreference } from '../shared/theme.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -18,6 +19,7 @@ const FILE_VERSION = 1
  */
 export interface Preferences {
   language: Language
+  theme: ThemePreference
   deskIsland: boolean
   deskPlaces: any
   workDirs: any
@@ -29,8 +31,12 @@ export interface Preferences {
   webSearch: string
 }
 
+/** Preferences the desktop shell may write through the backend control channel (server.ts). */
+export const SHELL_PREFERENCES: ReadonlySet<string> = new Set(['theme', 'deskIsland', 'deskPlaces'])
+
 const DEFAULTS: Readonly<Preferences> = Object.freeze({
   language: 'system',
+  theme: 'dark',
   deskIsland: true,
   deskPlaces: Object.freeze({ last: null, places: Object.freeze({}) }),
   workDirs: Object.freeze({ recent: Object.freeze([]), trusted: Object.freeze([]) }),
@@ -46,6 +52,7 @@ export function createPreferences({ file, onError = () => {} }: { file: string, 
     try {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
       saved.language = isLanguage(saved.language) ? saved.language : 'zh-CN'
+      saved.theme = isThemePreference(saved.theme) ? saved.theme : DEFAULTS.theme
       return Object.fromEntries(Object.entries(DEFAULTS).map(([key, value]) => [key, typeof saved[key] === typeof value ? saved[key] : value])) as Preferences
     } catch (err: any) {
       if (err.code !== 'ENOENT') onError(err)
@@ -59,6 +66,7 @@ export function createPreferences({ file, onError = () => {} }: { file: string, 
   function set(key: string, value: unknown): Preferences {
     if (!Object.hasOwn(DEFAULTS, key)) throw new Error(`unknown preference: ${key}`)
     if (key === 'language' && !isLanguage(value)) throw new Error('Invalid language')
+    if (key === 'theme' && !isThemePreference(value)) throw new Error('Invalid theme')
     const known = DEFAULTS[key as keyof Preferences]
     if (typeof value !== typeof known) throw new Error(`${key} must be a ${typeof known}`)
     const next = { ...read(), [key]: value }

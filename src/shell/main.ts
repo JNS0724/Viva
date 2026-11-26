@@ -3,10 +3,11 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, MenuItem, nativeImage, Notification, powerMonitor, protocol, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, MenuItem, nativeImage, nativeTheme, Notification, powerMonitor, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import type { FileOptions, FolderOptions, SaveOptions, ShellSettings } from '../backend/host.ts'
 import type { HostCall, HostMethod, Mirror } from '../backend/wire.ts'
 import { setLocale, type LanguageState } from '../shared/i18n/locale.ts'
+import { resolveTheme, type ThemeState } from '../shared/theme.ts'
 import { type BackendProcess, spawnBackend } from './backend-client.ts'
 import { createBackendKeeper } from './backend-keeper.ts'
 import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
@@ -22,7 +23,8 @@ import type { Preferences } from '../backend/preferences.ts'
 import type { KeptImage } from '../backend/image-store.ts'
 import { createTray } from './tray.ts'
 import { installAutomationDriver } from './automation-driver.ts'
-import { devIcon, windowChrome, windowSize } from './window-options.ts'
+import { registerThemeIpc } from './theme-ipc.ts'
+import { devIcon, titleBarOverlay, windowBackground, windowChrome, windowSize } from './window-options.ts'
 import { createManagedDiagnostics } from '../diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../diagnostics/node/hub.ts'
 import { createDiagnosticClearer } from '../diagnostics/node/clear.ts'
@@ -156,7 +158,7 @@ const BACKEND_ENTRY = path.join(CODE_ROOT, 'src', 'backend', 'server.js')
 /** Started with the computer (开机启动): the window stays hidden, Viva in the tray. */
 const startedHidden = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
 
-type ShellPreferences = Pick<Preferences, 'deskIsland' | 'deskPlaces'>
+type ShellPreferences = Pick<Preferences, 'theme' | 'deskIsland' | 'deskPlaces'>
 
 let win: BrowserWindow | null = null
 /** The island on the desktop, shown while the window is in the background (desk-island.ts). */
@@ -172,7 +174,7 @@ let pendingFeed = 0
 /** Whether the shortcut that opens the island's input is ours (another app may hold it); null before it is tried. */
 let shortcutHeld: ReturnType<typeof registerAskShortcut> | null = null
 /** The desktop island's preferences, kept here as the island reads them at once; written through to the backend. */
-let shellPreferences: ShellPreferences = { deskIsland: true, deskPlaces: { last: null, places: {} } }
+let shellPreferences: ShellPreferences = { theme: 'dark', deskIsland: true, deskPlaces: { last: null, places: {} } }
 /** Quitting has begun (or the session ends): the window closes for real, and the backend's end is expected. */
 let quitting = false
 /** The backend is stopping dsh and closing; then quitting goes on. */
@@ -522,15 +524,31 @@ function useDevIcon() {
   return process.platform === 'darwin' ? null : icon
 }
 
+/** Keep the main window's frame colour and Windows/Linux caption overlay matched to the active theme. */
+function applyWindowTheme(state: ThemeState) {
+  if (!win || win.isDestroyed()) return
+  win.setBackgroundColor(windowBackground(state.resolved))
+  if (process.platform !== 'darwin' && typeof win.setTitleBarOverlay === 'function') {
+    win.setTitleBarOverlay(titleBarOverlay(state.resolved))
+  }
+}
+
+function broadcastTheme(state: ThemeState) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('theme:changed', state)
+  }
+}
+
 function createWindow() {
   emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'start' })
   const icon = useDevIcon()
+  const resolvedTheme = resolveTheme(shellPreferences.theme, nativeTheme.shouldUseDarkColors)
   const created = new BrowserWindow({
     ...windowSize(screen.getPrimaryDisplay().workAreaSize),
-    ...windowChrome(process.platform),
+    ...windowChrome(process.platform, resolvedTheme),
     ...(icon ? { icon } : {}),
     show: false,
-    backgroundColor: '#060B16',
+    backgroundColor: windowBackground(resolvedTheme),
     webPreferences: {
       preload: path.join(CODE_ROOT, 'src', 'preload', 'preload.cjs'),
       contextIsolation: true,
@@ -586,6 +604,21 @@ app.whenReady().then(async () => {
   const started = await keeper.start()
   forwardChannels(started)
   shellPreferences = await started.connection.control<Preferences>('preferences-get')
+  registerThemeIpc(ipcMain, {
+    getTheme: () => shellPreferences.theme,
+    saveTheme: async (theme) => {
+      await (await backendConnection()).control('preferences-set', 'theme', theme)
+      shellPreferences = { ...shellPreferences, theme }
+    },
+    systemDark: () => nativeTheme.shouldUseDarkColors,
+    syncNative: (theme) => { nativeTheme.themeSource = theme },
+    applyWindow: applyWindowTheme,
+    broadcast: broadcastTheme,
+    onSystemThemeChange: (listener) => {
+      nativeTheme.on('updated', listener)
+      return () => nativeTheme.off('updated', listener)
+    },
+  })
   registerImageProtocol(protocol, async (url) => (await backendConnection()).image(url))
   registerShellSettingsIpc()
   const islandDrafts = registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu,
