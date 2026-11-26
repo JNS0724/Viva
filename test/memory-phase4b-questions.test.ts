@@ -11,6 +11,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { SessionId, SessionSeq, type Session, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { looksSecret } from '../src/memory/contracts/memory-sensitive.ts'
 import { DREAM_PROFILE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { createQuestionDesk } from '../src/backend/question-channel.ts'
 import { createQuestionChannel, type HumanQuestionReceipt } from '../plugins/questions/lib/channel.ts'
@@ -60,15 +61,24 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     [],
   )
 
-  // 2. Contextual split credentials across bare, punctuated, formatted, & qualified OTP prompts, while safe sibling survives.
+  // 2. Contextual split credentials across bare, punctuated, formatted, & qualified OTP/password prompts, while safe siblings survive.
+  assert.equal(looksSecret('OTP: 123 456'), true)
+  assert.equal(looksSecret('Did OTP: 123 456 work?'), true)
+  assert.equal(looksSecret('验证码：123-456'), true)
+  assert.equal(looksSecret('OTP: 123'), false)
+  assert.equal(areRawCardsMemoryEligible([{ id: 'c-qotp', question: 'Did OTP: 123 456 work?' }]), false)
   const cards = [
     { id: 'c-bare', question: 'OTP', header: 'Auth' },
     { id: 'c-en', question: 'What is your OTP?', header: 'Login' },
     { id: 'c-fmt', question: 'What is your OTP?', header: 'SMS' },
     { id: 'c-qual', question: 'What is the OTP sent to your phone?', header: 'Verify' },
+    { id: 'c-any-otp', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-zh', question: '请输入验证码：', header: '安全验证' },
     { id: 'c-pwd', question: 'Password?', header: 'Account' },
+    { id: 'c-pwd-qual', question: 'What is the password for the account?', header: 'Login' },
+    { id: 'c-api-qual', question: 'What is the API key for staging?', header: 'Deploy' },
     { id: 'c-hdr', question: 'Enter value', header: `${' '.repeat(210)}OTP` },
+    { id: 'c-tokens', question: 'Max output tokens?', header: 'Model' },
     { id: 'c-safe', question: 'Preferred drink?', header: 'Preference' },
   ]
   const answers = [
@@ -76,13 +86,20 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-en', selected: [], custom: '123456' },
     { id: 'c-fmt', selected: [], custom: '123 456' },
     { id: 'c-qual', selected: [], custom: '123456' },
+    { id: 'c-any-otp', selected: [], custom: 'OTP: 123 456' },
     { id: 'c-zh', selected: [], custom: '123456' },
     { id: 'c-pwd', selected: [], custom: 'hunter2' },
+    { id: 'c-pwd-qual', selected: [], custom: 'shortpw' },
+    { id: 'c-api-qual', selected: [], custom: 'my-staging-key' },
     { id: 'c-hdr', selected: [], custom: '123456' },
+    { id: 'c-tokens', selected: [], custom: '8192' },
     { id: 'c-safe', selected: [], custom: 'oolong tea' },
   ]
   const eligible = eligibleQuestionAnswers(cards, answers)
-  assert.deepEqual(eligible, [{ id: 'c-safe', question: 'Preferred drink?', custom: 'oolong tea' }])
+  assert.deepEqual(eligible, [
+    { id: 'c-safe', question: 'Preferred drink?', custom: 'oolong tea' },
+    { id: 'c-tokens', question: 'Max output tokens?', custom: '8192' },
+  ])
 
   // 3. SQLite-lossy NUL and unpaired UTF-16 surrogates are excluded from memory without throwing.
   assert.equal(hasUnsupportedSqliteChars('a\u0000b'), true)
@@ -846,4 +863,100 @@ test('Phase 4B Codex R1 P2-2..P2-4: sequential PTC callId reuse across live/cold
     'active reopened session must be excluded from TTL pruning while awaiting live catch-up')
   assert.equal(dbTtl.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get('sess-abandoned-old')?.n, 0,
     'abandoned >30-day unclosed session receipt should be pruned after clean cold catch-up')
+})
+
+test('Phase 4B Codex R2 P2-3..P2-4: malformed/colliding PTC step recovery and TTL prune after transient cold-read recovery', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'p4b-r2-fixes-')
+  const tz = 'UTC'
+  const nowMs = Date.parse('2026-11-26T00:00:00Z')
+
+  // 1. A malformed PTC start (questions: []) + error dispatch OR a step-1 collision must NOT poison a valid call reusing the tuple in step 2 (or same step after malformed dispatch).
+  const validCard1 = [{ id: 'v1', question: 'Same-step after malformed?' }]
+  const validCard2 = [{ id: 'v2', question: 'Next-step after collision?' }]
+  const ptcEvents = [
+    { seq: 0, time: nowMs, type: 'turn/start', data: { turn: 1 } },
+    // Step 1a: malformed questions: [] start + terminal error dispatch
+    { seq: 1, time: nowMs + 1, type: 'tool/ptc-dispatch-start', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: [] } } },
+    { seq: 2, time: nowMs + 2, type: 'tool/ptc-dispatch', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: [] }, isError: true, content: [{ type: 'text', text: 'empty questions' }] } },
+    // Step 1b: valid call reusing the exact same tuple right after malformed dispatch
+    { seq: 3, time: nowMs + 3, type: 'tool/ptc-dispatch-start', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: validCard1 } } },
+    { seq: 4, time: nowMs + 4, type: 'tool/ptc-dispatch', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: validCard1 }, isError: false, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'v1', selected: [], custom: 'Recovered same-step' }] }) }] } },
+    // Step 1c: concurrent collision (two starts before dispatch) stays ambiguous in step 1
+    { seq: 5, time: nowMs + 5, type: 'tool/ptc-dispatch-start', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: validCard1 } } },
+    { seq: 6, time: nowMs + 6, type: 'tool/ptc-dispatch-start', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: validCard1 } } },
+    { seq: 7, time: nowMs + 7, type: 'tool/ptc-dispatch', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: validCard1 }, isError: false, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'v1', selected: [], custom: 'Must drop collision' }] }) }] } },
+    { seq: 8, time: nowMs + 8, type: 'step/end', data: { turn: 1, step: 1 } },
+    // Step 2: valid call reusing the exact same tuple after step/end drains step 1
+    { seq: 9, time: nowMs + 9, type: 'tool/ptc-dispatch-start', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: validCard2 } } },
+    { seq: 10, time: nowMs + 10, type: 'tool/ptc-dispatch', data: { rootCallId: 'r1', parentCallId: 'p1', subCallId: 'r1:ptc:1', name: 'ask_user_question', arguments: { questions: validCard2 }, isError: false, content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'v2', selected: [], custom: 'Recovered next-step' }] }) }] } },
+    { seq: 11, time: nowMs + 11, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ] as unknown as SessionEvent[]
+  const folded = foldQuestionAnswersForTurn(ptcEvents, 'sess-ptc-r2', tz)
+  assert.deepEqual(
+    folded.map(c => [c.callSeq, c.items[0]!.text]),
+    [[3, 'Recovered same-step'], [9, 'Recovered next-step']],
+    'malformed dispatch and prior-step collision must not suppress later valid PTC calls, while same-step collision still drops',
+  )
+
+  // 2. Transient cold open() failure followed by successful scheduled retry MUST run TTL pruning once retries settle, preserving active exclusions.
+  let clock = nowMs
+  const rootRetry = path.join(dir, 'mem-retry-prune')
+  const ownerRetry = openMemoryOwner({
+    root: rootRetry, hostNamespace: 'viva', now: () => clock, dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => null, compute: () => null,
+  })
+  defer(() => ownerRetry.close())
+  await ownerRetry.recover()
+  ownerRetry.recordQuestionReceipt({
+    sessionId: 'sess-active-keep', turn: 1, callSeq: 2, callIdHash: 'a'.repeat(64), conversationId: 'conv-keep',
+    answeredAt: clock, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: 'b'.repeat(64),
+  })
+  ownerRetry.recordQuestionReceipt({
+    sessionId: 'sess-abandoned-prune', turn: 1, callSeq: 2, callIdHash: 'c'.repeat(64), conversationId: 'conv-prune',
+    answeredAt: clock, questionProfileGen: 0, answerProfileGen: 0, answerBatchDigest: 'd'.repeat(64),
+  })
+  clock += 35 * 24 * 60 * 60 * 1000
+  let coldOpens = 0
+  let pruneCalls = 0
+  const pruneDone = deferred<void>()
+  const activeSession = {
+    id: SessionId('sess-active-keep'),
+    seq: SessionSeq(0),
+    inheritedEventCount: 0,
+    header: { id: SessionId('sess-active-keep'), cwd: dir, version: 4, createdAt: nowMs, isSeeded: false } as SessionHeader,
+  } as unknown as Session
+  const retryIntake = createSessionIngestion(
+    {
+      epoch: ownerRetry.epoch,
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async sid => ownerRetry.intakeCursor(sid),
+      advanceIntakeCursor: async input => ownerRetry.advanceIntakeCursor(input),
+      beginTurn: async input => ownerRetry.beginTurn(input),
+      pruneExpiredQuestionReceipts: async (maxAgeMs, exclude) => {
+        pruneCalls++
+        ownerRetry.pruneExpiredQuestionReceipts(maxAgeMs, exclude)
+        pruneDone.resolve()
+      },
+      stageOpenTurnSources: async input => ownerRetry.stageOpenTurnSources(input),
+      settleTurn: async input => ownerRetry.settleTurn(input),
+    },
+    { flush: async () => true, get: id => String(id) === 'sess-active-keep' ? activeSession : undefined, list: () => [activeSession] },
+    {
+      list: async () => [{ header: { id: SessionId('sess-transient-cold'), cwd: dir, version: 4, createdAt: nowMs, isSeeded: false } as SessionHeader }] as never,
+      open: async () => {
+        if (++coldOpens === 1) throw new Error('EIO transient open failure')
+        return { inheritedEventCount: 0, read: async () => ({ events: [] }), close: async () => {} } as never
+      },
+    },
+    { host: true },
+  )
+  retryIntake.startColdCatchup()
+  await pruneDone.promise
+  await retryIntake.drain()
+  assert.equal(coldOpens, 2, 'transient cold session should retry and recover')
+  assert.equal(pruneCalls, 1, 'TTL prune must fire exactly once after transient cold retries settle')
+  const dbRetry = new DatabaseSync(path.join(rootRetry, 'memory.db'), { readOnly: true })
+  defer(() => dbRetry.close())
+  assert.equal(dbRetry.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get('sess-active-keep')?.n, 1)
+  assert.equal(dbRetry.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get('sess-abandoned-prune')?.n, 0)
 })

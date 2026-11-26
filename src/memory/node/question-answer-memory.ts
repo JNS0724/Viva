@@ -32,6 +32,7 @@ export type EligibleQuestionAnswer = {
 
 const TRAILING_PROMPT_CHAR = /[\s?？:：!！。.,，;；]/u
 const EXPLICIT_OTP_PROMPT = /(?:验证码|动态码|\b(?:otp|one[- ]time[- ]pass(?:code|word)|verification[- ]code)\b)/iu
+const EXPLICIT_CREDENTIAL_PROMPT = /(?:密码|口令|密钥|私钥|访问令牌|\b(?:password|passwd|pwd|passphrase|api[_ -]?key|access[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|bearer[_ -]?token|client[_ -]?secret|webhook[_ -]?secret)\b)/iu
 
 /**
  * Reject NUL bytes and unpaired UTF-16 surrogates that SQLite (`node:sqlite`)
@@ -106,6 +107,9 @@ function answerHitsContextualSecret(card: RawQuestionCard, custom: string): bool
   if (card.header) {
     const headerStem = stripTrailingPromptPunctuation(card.header)
     if (looksSecret(`${headerStem}: ${custom}`) || looksSecret(`${card.header}: ${custom}`)) return true
+  }
+  if (EXPLICIT_CREDENTIAL_PROMPT.test(card.question) || (card.header ? EXPLICIT_CREDENTIAL_PROMPT.test(card.header) : false)) {
+    return true
   }
   if (EXPLICIT_OTP_PROMPT.test(card.question) || (card.header ? EXPLICIT_OTP_PROMPT.test(card.header) : false)) {
     // Screen digit groups with spaces or hyphens (e.g., "123 456", "123-456") on explicit OTP prompts.
