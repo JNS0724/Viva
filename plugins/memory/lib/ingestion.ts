@@ -1146,9 +1146,16 @@ export function createSessionIngestion(
     }
   }
 
-  function scheduleColdSessionRetry(sessionId: string, header: SessionHeader, catchupPassId?: number) {
+  function scheduleColdSessionRetry(
+    sessionId: string,
+    header: SessionHeader,
+    catchupPassId?: number,
+    entryPassId: number = catchupPassId ?? coldPassId,
+    boundPersistence?: PersistenceLike,
+  ) {
     if (closed) return
-    if (catchupPassId !== undefined && catchupPassId !== coldPassId) return
+    if (entryPassId !== coldPassId) return
+    if (boundPersistence !== undefined && getPersistence() !== boundPersistence) return
     const entry = queues.get(sessionId)
     if (!entry || entry.epoch !== owner.epoch) return
     if (sessions.get?.(SessionId(sessionId))) {
@@ -1165,7 +1172,8 @@ export function createSessionIngestion(
     entry.coldRetryTimer = setTimeout(() => {
       entry.coldRetryTimer = null
       if (closed || entry.epoch !== owner.epoch) return
-      if (catchupPassId !== undefined && catchupPassId !== coldPassId) return
+      if (entryPassId !== coldPassId) return
+      if (boundPersistence !== undefined && getPersistence() !== boundPersistence) return
       if (sessions.get?.(SessionId(sessionId))) {
         if (catchupPassId !== undefined && catchupPassId === coldPassId) {
           coldPassActiveIds.add(sessionId)
@@ -1175,18 +1183,21 @@ export function createSessionIngestion(
       }
       void scanCold(sessionId, header, catchupPassId).catch(err => {
         onError?.(err)
-        scheduleColdSessionRetry(sessionId, header, catchupPassId)
+        scheduleColdSessionRetry(sessionId, header, catchupPassId, entryPassId, boundPersistence)
       })
     }, delayMs)
     entry.coldRetryTimer.unref?.()
   }
 
-  async function readAllPersistedFrom(sessionId: string, cursorNextSeq: number | null): Promise<
+  async function readAllPersistedFrom(
+    sessionId: string,
+    cursorNextSeq: number | null,
+    persistence: PersistenceLike | undefined = getPersistence(),
+  ): Promise<
     | { status: 'ok', events: SessionEvent[], inheritedSeq: number, fromSeq: number, endSeq: number }
     | { status: 'not-found' }
     | { status: 'error', error: unknown }
   > {
-    const persistence = getPersistence()
     if (!persistence) return { status: 'error', error: new Error('Session persistence service unavailable') }
     let handle
     try {
@@ -1216,14 +1227,17 @@ export function createSessionIngestion(
   }
 
   function scanCold(sessionId: string, header: SessionHeader, catchupPassId?: number): Promise<void> {
-    // Capture liveEpoch once at entry (before enqueue/cursor/read) so any session opening
-    // (and even closing again) while this cold scan waits or reads supersedes it cleanly.
-    // Also reject scans belonging to a superseded startColdCatchup pass before retiring receipts or settling.
+    // Capture liveEpoch, coldPassId, and bound persistence identity at entry so any live
+    // reopen, newer catch-up pass, or persistence rebind (including for disposal-initiated
+    // scans) supersedes stale reads before retiring receipts or settling turns.
     const startEpoch = liveEpoch.get(sessionId) ?? 0
+    const entryPassId = catchupPassId ?? coldPassId
+    const entryPersistence = getPersistence()
     const stale = () => closed
       || Boolean(sessions.get?.(SessionId(sessionId)))
       || (liveEpoch.get(sessionId) ?? 0) !== startEpoch
-      || (catchupPassId !== undefined && catchupPassId !== coldPassId)
+      || coldPassId !== entryPassId
+      || (entryPersistence !== undefined && getPersistence() !== entryPersistence)
     let transientFailure = false
     const work = enqueue(sessionId, async () => {
       if (stale()) return
@@ -1231,8 +1245,9 @@ export function createSessionIngestion(
         if (stale()) return
         const cursor = await owner.intakeCursor(sessionId)
         if (stale()) return
-        const read = await readAllPersistedFrom(sessionId, cursor.nextSeq)
-        if (stale()) return
+        const readPersistence = getPersistence()
+        const read = await readAllPersistedFrom(sessionId, cursor.nextSeq, readPersistence)
+        if (stale() || (readPersistence !== undefined && getPersistence() !== readPersistence)) return
         if (read.status === 'not-found') {
           await owner.retireSessionQuestionReceipts?.(sessionId)
           return
@@ -1241,7 +1256,7 @@ export function createSessionIngestion(
           transientFailure = true
           if (catchupPassId && catchupPassId === coldPassId) pendingColdRetries.add(sessionId)
           onError?.(read.error)
-          scheduleColdSessionRetry(sessionId, header, catchupPassId)
+          scheduleColdSessionRetry(sessionId, header, catchupPassId, entryPassId, readPersistence)
           return
         }
         if (read.events.length === 0) return
@@ -1320,9 +1335,9 @@ export function createSessionIngestion(
         const sid = String(snap.header.id)
         if (activeIds.has(sid) || sessions.get?.(snap.header.id)) continue
         const task = scanCold(sid, snap.header, passId).catch(err => {
-          if (passId === coldPassId) pendingColdRetries.add(sid)
+          if (passId === coldPassId && getPersistence() === persistence) pendingColdRetries.add(sid)
           onError?.(err)
-          scheduleColdSessionRetry(sid, snap.header, passId)
+          scheduleColdSessionRetry(sid, snap.header, passId, passId, persistence)
         })
         coldTasks.push(task)
       }

@@ -87,7 +87,9 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-api-qual', question: 'What is the API key for staging?', header: 'Deploy' },
     { id: 'c-api-rot-val', question: 'What is the new API key after rotation?', header: 'Deploy' },
     { id: 'c-api-rot-short', question: 'New API key after rotation?', header: 'Deploy' },
+    { id: 'c-api-clause-smuggle', question: 'Which API key should the integration use, and how long is it valid?', header: 'Deploy' },
     { id: 'c-pwd-rot-which', question: 'Which password should I use after rotation?', header: 'Login' },
+    { id: 'c-totp-prompt', question: 'Enter the TOTP from your authenticator', header: '2FA' },
     { id: 'c-totp-custom', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-otp-compact', question: 'Any additional information?', header: 'Notes' },
     { id: 'c-hdr', question: 'Enter value', header: `${' '.repeat(210)}OTP` },
@@ -111,7 +113,9 @@ test('Phase 4B §5.5: shared Node helper screens raw option 9+, >200-char header
     { id: 'c-api-qual', selected: [], custom: 'my-staging-key' },
     { id: 'c-api-rot-val', selected: [], custom: 'new-key-123' },
     { id: 'c-api-rot-short', selected: [], custom: 'short-key' },
+    { id: 'c-api-clause-smuggle', selected: [], custom: 'example-key, valid for 30 days' },
     { id: 'c-pwd-rot-which', selected: [], custom: 'shortpw2' },
+    { id: 'c-totp-prompt', selected: [], custom: '123 456' },
     { id: 'c-totp-custom', selected: [], custom: 'TOTP: 123456' },
     { id: 'c-otp-compact', selected: [], custom: 'OTP123456' },
     { id: 'c-hdr', selected: [], custom: '123456' },
@@ -1127,4 +1131,72 @@ test('Phase 4B Codex R2 P2-3..P2-4: malformed/colliding PTC step recovery and TT
   defer(() => dbOldNf.close())
   const nfRows = dbOldNf.prepare("SELECT text FROM memory_sources WHERE session=? AND author='answer'").all(nfSid) as Array<{ text: string }>
   assert.deepEqual(nfRows.map(r => r.text), [rebindCustom], 'superseded cold read not-found must not retire receipt before replacement pass replays')
+
+  // 5. Disposal-initiated release() cold scan whose old persistence returns NotFoundError after rebind
+  //    MUST ALSO be guarded against retiring the fresh receipt before replacement catch-up replays it!
+  const rootReleaseNf = path.join(dir, 'mem-release-rebind-nf')
+  const ownerRelNf = openMemoryOwner({
+    root: rootReleaseNf, hostNamespace: 'viva', now: () => baseMs, dailyNotes: { noteInterval: 5, timezone: 'UTC' },
+    route: () => null, compute: () => null,
+  })
+  defer(() => ownerRelNf.close())
+  await ownerRelNf.recover()
+  const relSid = 'sess-release-rebind'
+  ownerRelNf.recordQuestionReceipt({
+    sessionId: relSid, turn: 1, callSeq: 1, callIdHash: questionCallIdHash(rebindCallId), conversationId: 'conv-rel',
+    answeredAt: baseMs + 2, questionProfileGen: 0, answerProfileGen: 0,
+    answerBatchDigest: canonicalEligibleAnswersDigest([{ id: 'q1', question: rebindQuestion, custom: rebindCustom }]),
+  })
+  const enteredRelOpen = deferred<void>()
+  const relOldOpen = deferred<never>()
+  const relPruned = deferred<void>()
+  let relProvider: { list: () => Promise<Array<{ header: SessionHeader }>>, open: () => Promise<never> } = {
+    list: async () => [{ header: { id: SessionId(relSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader }],
+    open: () => {
+      enteredRelOpen.resolve()
+      return relOldOpen.promise
+    },
+  }
+  const relIntake = createSessionIngestion(
+    {
+      epoch: ownerRelNf.epoch,
+      inEpoch: (_e, fn) => fn(),
+      intakeCursor: async sid => ownerRelNf.intakeCursor(sid),
+      advanceIntakeCursor: async input => ownerRelNf.advanceIntakeCursor(input),
+      beginTurn: async input => ownerRelNf.beginTurn(input),
+      retireSessionQuestionReceipts: async sid => ownerRelNf.retireSessionQuestionReceipts(sid),
+      pruneExpiredQuestionReceipts: async (maxAgeMs, exclude) => {
+        ownerRelNf.pruneExpiredQuestionReceipts(maxAgeMs, exclude)
+        relPruned.resolve()
+      },
+      stageOpenTurnSources: async input => ownerRelNf.stageOpenTurnSources(input),
+      settleTurn: async input => ownerRelNf.settleTurn(input),
+    },
+    { flush: async () => true, get: () => undefined, list: () => [] },
+    () => relProvider as never,
+    { host: true },
+  )
+  relIntake.release({
+    id: SessionId(relSid),
+    seq: SessionSeq(4),
+    inheritedEventCount: 0,
+    header: { id: SessionId(relSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader,
+  } as unknown as Session)
+  await enteredRelOpen.promise
+  relProvider = {
+    list: async () => [{ header: { id: SessionId(relSid), cwd: dir, version: 4, createdAt: baseMs, isSeeded: false } as SessionHeader }],
+    open: async () => ({
+      inheritedEventCount: 0,
+      read: async (offset: number, limit: number) => ({ events: rebindEvents.slice(offset, offset + limit) }),
+      close: async () => {},
+    }) as never,
+  }
+  relIntake.startColdCatchup()
+  relOldOpen.reject(new SessionPersistenceNotFoundError(SessionId(relSid)))
+  await relPruned.promise
+  await relIntake.drain()
+  const dbRelNf = new DatabaseSync(path.join(rootReleaseNf, 'memory.db'), { readOnly: true })
+  defer(() => dbRelNf.close())
+  const relRows = dbRelNf.prepare("SELECT text FROM memory_sources WHERE session=? AND author='answer'").all(relSid) as Array<{ text: string }>
+  assert.deepEqual(relRows.map(r => r.text), [rebindCustom], 'disposal-initiated cold scan from old provider must not retire receipt after persistence rebinds')
 })

@@ -31,11 +31,10 @@ export type EligibleQuestionAnswer = {
 }
 
 const TRAILING_PROMPT_CHAR = /[\s?？:：!！。.,，;；]/u
-const EXPLICIT_OTP_PROMPT = /(?:验证码|动态码|\b(?:otp|one[- ]time[- ]pass(?:code|word)|verification[- ]code)\b)/iu
+const EXPLICIT_OTP_PROMPT = /(?:验证码|动态码|otp|\b(?:one[- ]time[- ]pass(?:code|word)|verification[- ]code)\b)/iu
 const EXPLICIT_CREDENTIAL_PROMPT = /(?:密码|口令|密钥|私钥|访问令牌|\b(?:password|passwd|pwd|passphrase|api[_ -]?key|access[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|bearer[_ -]?token|client[_ -]?secret|webhook[_ -]?secret)\b)/iu
 const CREDENTIAL_COMPOUND_NOUN = /(?:(?:密码|口令|密钥|私钥|令牌)(?:管理器|管理|策略|规则|轮换|更换|过期|强度|长度|要求|规范|方案)|\b(?:password|passwd|pwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|access[_ -]?token|auth[_ -]?token)\s+(?:manager|managers|policy|policies|rotation|expiry|expiration|strength|length|requirement|requirements|rule|rules|hashing|storage|vault)\b)/giu
-const CADENCE_QUESTION = /(?:(?:多久|多长时间|多频繁|频率)|\b(?:how\s+(?:often|long|many\s+(?:days|weeks|months|hours|minutes|seconds)))\b)/iu
-const VALUE_REQUEST_CUE = /(?:(?:请输入|输入|提供|填写|粘贴|告知|是什么|是多少)|\b(?:what\s+is|what's|enter|input|provide|paste|type|supply|share|give\s+me)\b)/iu
+const PURE_ROTATION_CADENCE_QUESTION = /^(?:how\s+often\s+(?:should|do|does|will|must|can|to)\b[^,;?？]*(?:rotate|change|renew|refresh|cycle)\b[^,;?？]*|(?:(?:密码|口令|密钥|私钥|令牌|api[_ -]?key|access[_ -]?key|access[_ -]?token|password)\s*)?(?:每)?(?:多久|多长时间|多频繁)[^，,；;?？]*(?:轮换|更换|更新)[^，,；;?？]*)[?？.\s]*$/iu
 
 /**
  * Reject NUL bytes and unpaired UTF-16 surrogates that SQLite (`node:sqlite`)
@@ -109,7 +108,7 @@ function asksForCredentialValue(card: RawQuestionCard): boolean {
   const cleanedHeader = card.header ? card.header.replace(CREDENTIAL_COMPOUND_NOUN, ' ') : ''
   const hasCredentialTerm = EXPLICIT_CREDENTIAL_PROMPT.test(cleanedQuestion) || EXPLICIT_CREDENTIAL_PROMPT.test(cleanedHeader)
   if (!hasCredentialTerm) return false
-  if (CADENCE_QUESTION.test(card.question) && !VALUE_REQUEST_CUE.test(card.question)) return false
+  if (PURE_ROTATION_CADENCE_QUESTION.test(card.question.trim())) return false
   return true
 }
 
