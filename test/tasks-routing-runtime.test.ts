@@ -140,9 +140,11 @@ test('the app binds a main session and waits for the plugin; decisions go to the
 
 test('request images persist on the request record without leaking into events and accompany start and message actions', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'request-images-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const app = openAppDb({ file: path.join(dir, 'app.db') })
-  t.after(() => app.close())
+  t.after(() => {
+    app.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
   const core = createEventCore({ app, publish: () => {} })
   const seen: Array<{ kind: string, images: unknown }> = []
   const store = createRequestStore({ db: app.db })

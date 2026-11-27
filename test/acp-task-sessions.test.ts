@@ -144,9 +144,11 @@ test('task prompts forward pasted image blocks ahead of text and preserve image 
   const { createTaskRuntime } = await import('../src/backend/task-runtime.ts')
 
   const dir = mkdtempSync(path.join(tmpdir(), 'task-img-rt-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
   const app = openAppDb({ file: path.join(dir, 'app.db') })
-  t.after(() => app.close())
+  t.after(() => {
+    app.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
   const db = openHistoryDb({ db: app.db })
   const store = createTaskStore({ db: app.db })
   const main = db.create({ sessionId: 'main-s', mode: 'live', model: 'm', cwd: '/work' })

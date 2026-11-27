@@ -648,7 +648,7 @@ const routeDropOutside: LiveScenario = {
       await window.agent.appendDraftFiles(current.key, [${JSON.stringify(outsideFile)}])
       return true
     })()`)
-    await until(win, `Boolean(document.querySelector('#composer [title=${JSON.stringify(outsideFile)}]'))`, 'the dropped outside file chip in composer')
+    await until(win, `[...document.querySelectorAll('#composer [title]')].some((el) => el.getAttribute('title') === ${JSON.stringify(outsideFile)})`, 'the dropped outside file chip in composer')
     // Deny any cross-directory permission card: host-side <attached-file> inlining must answer without needing DSH read.
     const out = await ask(win, '这份拖进来的通知写在哪间报告厅举行、进场凭证号是多少？直接告诉我。', { permission: 'deny' })
     const numbers = summary(ctx, since)

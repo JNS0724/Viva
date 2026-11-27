@@ -240,7 +240,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
 
   /** What a task has said, from its own words on, into its segment after what came before them. */
   function persist(taskId: string, messages: readonly unknown[]) {
-    const task = tasks.get(taskId)
+    const task = tasks.get(taskId) ?? store.list().find(item => item.id === taskId)
     const found = task ? db.get(task.segmentId) : null
     if (!task || !found) return
     db.save(found.conversation, [...found.messages.slice(0, task.keep), ...messages])
@@ -556,21 +556,22 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     }
     if (reattached) attached = new Set([...attached, taskId])
     const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, terminalMessage: _terminalMessage, ...going } = kept
+    const sourceId = dispatch.origin === 'human' ? (dispatch.sourceId ?? randomUUID()) : undefined
     const runId = newRunId()
-    const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    const savedBefore = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? savedBefore
     const runStart = before.length
     const running = { ...going, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
+      if (!taskWords.has(taskId)) taskWords.track(taskId, savedBefore)
+      taskWords.userSaid(taskId, text, undefined, sourceId, images?.refs, { strict: true })
       opens(taskId, { words: text, ...(images?.refs.length ? { images: [...images.refs] } : {}) })
       registry.restart(taskId, runId)
     })
     counted()
     tasks.set(taskId, running)
-    if (!taskWords.has(taskId)) taskWords.track(taskId, before)
-    const sourceId = dispatch.origin === 'human' ? (dispatch.sourceId ?? randomUUID()) : undefined
-    taskWords.userSaid(taskId, text, undefined, sourceId, images?.refs)
     agent.promptTask(taskId, text, {
       origin: dispatch.origin,
       conversationId: kept.segmentId,

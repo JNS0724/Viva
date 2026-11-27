@@ -80,7 +80,8 @@ export function grantPlan(current: TurnGrants, plan: unknown): TurnGrants {
   if (!('plan' in parsed)) return current
   const addedApp = parsed.plan.actions.flatMap(action => action.kind === 'app_action' ? [action.operation] : [])
   const hasReply = parsed.plan.actions.some(action => action.kind === 'reply')
-  const addedDirPeek = hasReply ? Math.max(0, Math.min(DIR_PEEK_PER_REPLY, DIR_PEEK_TURN_CAP - current.dirPeekGranted)) : 0
+  const usedPreRoute = PRE_ROUTE_GLOB_LIMIT - current.preRouteGlob
+  const addedDirPeek = hasReply ? Math.max(0, Math.min(DIR_PEEK_PER_REPLY, DIR_PEEK_TURN_CAP - usedPreRoute - current.dirPeekGranted)) : 0
   const addedPeek = hasReply ? Math.max(0, Math.min(PEEK_PER_REPLY, PEEK_TURN_CAP - current.peekGranted)) : 0
   if (!addedApp.length && addedDirPeek === 0 && addedPeek === 0) return current
   return Object.freeze({
@@ -109,7 +110,8 @@ export function admit(state: TurnGrants, tool: string, { hasPending = false }: {
     if (!hasPending && state.dirPeek > 0) {
       return { allowed: true, state: Object.freeze({ ...state, dirPeek: state.dirPeek - 1 }) }
     }
-    if (hasPending && state.preRouteGlob > 0) {
+    const usedPreRoute = PRE_ROUTE_GLOB_LIMIT - state.preRouteGlob
+    if (hasPending && state.preRouteGlob > 0 && usedPreRoute + state.dirPeekGranted < DIR_PEEK_TURN_CAP) {
       return { allowed: true, state: Object.freeze({ ...state, preRouteGlob: state.preRouteGlob - 1 }) }
     }
     return {

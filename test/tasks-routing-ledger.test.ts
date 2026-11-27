@@ -106,6 +106,14 @@ test('the main agent\'s tools: route, context and app queries free; dir-peek onc
   assert.equal(admit(peek2.state, 'read_image', { hasPending: false }).allowed, false, 'used up its 2 peeks')
   const secondReply = grantPlan(peek2.state, replyPlan)
   assert.equal(secondReply.peek, 1, 'turn cap of 3 limits second reply to 1 more peek')
+  assert.equal(secondReply.dirPeek, 1, 'turn cap of 3 limits second reply to 1 more glob')
+  const glob3 = admit(secondReply, 'glob', { hasPending: false })
+  assert.equal(glob3.allowed, true)
+  assert.equal(admit(glob3.state, 'glob', { hasPending: true }).allowed, false, '4th glob denied even for a later pending interjection once 3 globs were granted')
+  const afterPreGlobReply1 = grantPlan(firstGlob.state, replyPlan)
+  assert.equal(afterPreGlobReply1.dirPeek, 2)
+  const afterPreGlobReply2 = grantPlan(afterPreGlobReply1, replyPlan)
+  assert.equal(afterPreGlobReply2.dirPeek, 2, 'pre-route glob counts toward the 3-per-turn glob cap')
 
   // App-change grants remain one-for-one.
   assert.match(String(admit(INITIAL_TURN_GRANTS, 'schedule_create').reason), /app_operation/)

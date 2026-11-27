@@ -90,11 +90,11 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
   }
 
   /** The user said something to the task: its first words, words into its turn, its next question. */
-  function userSaid(taskId: string, words: string, key?: string, sourceId?: string, images?: readonly ImageRef[]) {
+  function userSaid(taskId: string, words: string, key?: string, sourceId?: string, images?: readonly ImageRef[], { strict = false } = {}) {
     const transcript = transcripts.get(taskId)
     if (!transcript) return
     change(taskId, said(transcript, words, key, sourceId, images))
-    if (sourceId || images?.length) save(taskId)
+    if (strict || sourceId || images?.length) save(taskId, strict)
   }
 
   /** Retract a steered user message after dsh explicitly rejects delivery, persisting the clean history. */
