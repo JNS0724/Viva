@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
 import { openMemoryFileIndex } from '../src/memory/node/memory-file-index.ts'
-import { APP_DB_PRAGMAS } from '../src/memory/node/sqlite.ts'
+import { createEffects } from '../src/memory/node/effects.ts'
+import { APP_DB_PRAGMAS, transaction } from '../src/memory/node/sqlite.ts'
 import type { MemoryFileSnapshot } from '../src/memory/core/ports/file-index.ts'
 const workspace='a'.repeat(64)
 function file(id: string, text='喜欢茶', patch: Partial<MemoryFileSnapshot>={}): MemoryFileSnapshot {
@@ -186,4 +187,146 @@ test('persisted multi-chunk passages store only file identity without repeating 
     assert.equal('tags' in payload.file, false)
   }
   assert.equal(index.chunks([multi]).length, chunks.length)
+})
+
+test('legacy chunks without ref_key backfill on open, chunkRefs filters identically, and raw vector corruption invalidates cache', t => {
+  const temp = scratch(t, 'viva-file-index-legacy-')
+  const dbPath = join(temp.dir, 'legacy.db')
+  const db = new DatabaseSync(dbPath)
+  db.exec(APP_DB_PRAGMAS)
+  temp.defer(() => db.close())
+
+  // Simulate pre-ref_key schema populated by an older version
+  db.exec(`
+    CREATE TABLE memory_file_index_nodes(rowid INTEGER PRIMARY KEY,workspace TEXT NOT NULL,id TEXT NOT NULL,path TEXT NOT NULL,kind TEXT NOT NULL,day TEXT,updated_at INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,id),UNIQUE(workspace,path));
+    CREATE TABLE memory_file_index_chunks(rowid INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT NOT NULL,file_id TEXT NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,file_id,ordinal));
+  `)
+  const legacyDoc = file('legacy', 'legacy tea body')
+  const { chunks: _c, ...legacyNode } = legacyDoc
+  const legacyRef = { workspace, fileId: 'legacy', ordinal: 0, revision: legacyDoc.revision, usageVersion: legacyDoc.usageVersion, policyToken: legacyDoc.policyToken }
+  db.prepare('INSERT INTO memory_file_index_nodes(workspace,id,path,kind,day,updated_at,payload) VALUES(?,?,?,?,?,?,?)')
+    .run(workspace, legacyDoc.id, legacyDoc.path, legacyDoc.kind, null, legacyDoc.updatedAt, JSON.stringify(legacyNode))
+  db.prepare('INSERT INTO memory_file_index_chunks(workspace,file_id,ordinal,payload) VALUES(?,?,?,?)')
+    .run(workspace, legacyDoc.id, 0, JSON.stringify({ ...legacyDoc.chunks[0]!, file: legacyNode, ref: legacyRef }))
+
+  const index = openMemoryFileIndex({ db })
+  const freshDoc = file('fresh', 'fresh tea body')
+  index.accept(freshDoc, null)
+
+  const candidates = [
+    legacyDoc,
+    { ...freshDoc, path: 'digest/wiki/wrong-path.md' },
+    { ...freshDoc, policyToken: 'stale-policy' },
+  ]
+  assert.deepEqual(index.chunkRefs!(candidates), index.chunks(candidates).map(c => c.ref))
+  assert.deepEqual(index.chunkRefs!([legacyDoc, freshDoc]), index.chunks([legacyDoc, freshDoc]).map(c => c.ref))
+
+  const space = { fingerprint: 'v1', dimensions: 2 }
+  const gen = index.beginVectors(space)
+  const allRefs = index.chunkRefs!([legacyDoc, freshDoc])
+  assert.equal(index.missingVectors(gen).length, 2)
+  index.stageVectors(gen, allRefs.map(ref => ({ ref, vectors: [new Float32Array([1, 0])] })))
+  assert.equal(index.finishVectors(gen, allRefs), true)
+  assert.deepEqual(index.missingVectors(gen), [])
+
+  // Corrupting a stored vector from a second connection followed by a normal accept(B) must still rebuild both A and B
+  const writer2 = new DatabaseSync(dbPath)
+  temp.defer(() => writer2.close())
+  writer2.exec(APP_DB_PRAGMAS)
+  writer2.exec("UPDATE memory_file_index_vectors SET vector = x'0000c07f00000000'") // NaN float32 across both rows
+  const afterCorruptDoc = file('after-corrupt', 'new tea body')
+  index.accept(afterCorruptDoc, null)
+  const rebuiltGen = index.beginVectors(space)
+  assert.equal(rebuiltGen, gen + 1)
+  const missingAfterRebuild = index.missingVectors(rebuiltGen)
+  assert.equal(missingAfterRebuild.length, 3)
+  index.stageVectors(rebuiltGen, missingAfterRebuild.map(c => ({ ref: c.ref, vectors: [new Float32Array([1, 0])] })))
+  assert.equal(index.finishVectors(rebuiltGen, missingAfterRebuild.map(c => c.ref)), true)
+  assert.equal(index.vector(new Float32Array([1, 0]), space, [legacyDoc, freshDoc, afterCorruptDoc], 10)?.length, 3)
+
+  // Concurrent corruption right after missingVectors checks vector-write-seq must not be stamped verified:
+  // finishVectors must reject activation and the next beginVectors must bump generation
+  let injectConcurrentCorrupt = false
+  const origPrepare = db.prepare.bind(db)
+  db.prepare = ((sql: string) => {
+    const stmt = origPrepare(sql)
+    if (sql === 'SELECT value FROM memory_file_index_meta WHERE key=?') {
+      stmt.get = new Proxy(stmt.get, {
+        apply(target, thisArg, argArray) {
+          const row = Reflect.apply(target, thisArg, argArray)
+          if (injectConcurrentCorrupt && argArray[0] === 'vector-write-seq') {
+            injectConcurrentCorrupt = false
+            writer2.exec("UPDATE memory_file_index_vectors SET vector = x'0000c07f00000000'")
+          }
+          return row
+        }
+      })
+    }
+    return stmt
+  }) as typeof db.prepare
+
+  injectConcurrentCorrupt = true
+  assert.deepEqual(index.missingVectors(rebuiltGen), [])
+  assert.equal(index.finishVectors(rebuiltGen, missingAfterRebuild.map(c => c.ref)), false)
+  assert.equal(index.beginVectors(space), rebuiltGen + 1)
+})
+
+test('production-style publication transactions with effects updates skip full-generation vector scans', t => {
+  const { db } = fixture(t)
+  const effects = createEffects({ db })
+  let fullVectorScans = 0
+  const origPrepare = db.prepare.bind(db)
+  db.prepare = ((sql: string) => {
+    const stmt = origPrepare(sql)
+    if (sql.includes('SELECT vector FROM memory_file_index_vectors WHERE generation=?') && !sql.includes('ref=?')) {
+      stmt.iterate = new Proxy(stmt.iterate, {
+        apply(target, thisArg, argArray) {
+          fullVectorScans++
+          return Reflect.apply(target, thisArg, argArray)
+        }
+      })
+    }
+    return stmt
+  }) as typeof db.prepare
+
+  const index = openMemoryFileIndex({ db })
+  const space = { fingerprint: 'prod-pub', dimensions: 2 }
+  const docA = file('doc-a', 'alpha')
+  index.accept(docA, null)
+  const gen = index.beginVectors(space)
+  const refsA = index.chunkRefs!([docA])
+  index.stageVectors(gen, refsA.map(ref => ({ ref, vectors: [new Float32Array([1, 0])] })))
+  assert.equal(index.finishVectors(gen, refsA), true)
+  const scansAfterInit = fullVectorScans
+
+  // Mirror memory-runtime publishFileEffect: queue an effect, then inside one transaction accept(docB) + finishGeneration(job)
+  effects.queue('index.publish', 'doc-b', { id: 'doc-b' })
+  const job = effects.get('index.publish', 'doc-b')!
+  const docB = file('doc-b', 'beta')
+  transaction(db, () => {
+    assert.equal(index.accept(docB, null), true)
+    assert.equal(effects.finishGeneration(job), true)
+  })
+
+  assert.equal(index.beginVectors(space), gen)
+  const missing = index.missingVectors(gen)
+  assert.deepEqual(missing.map(c => c.file.id), ['doc-b'])
+  index.stageVectors(gen, missing.map(c => ({ ref: c.ref, vectors: [new Float32Array([0, 1])] })))
+  assert.equal(index.finishVectors(gen, index.chunkRefs!([docA, docB])), true)
+  assert.equal(fullVectorScans, scansAfterInit, 'normal publication with effects cleanup must not rescan existing vector blobs')
+})
+
+test('bounded HMAC token cache rollover preserves exact FTS term frequency ranking on equal-length equal-vocab docs', t => {
+  const { index } = fixture(t)
+  // Overflow the 32,768-entry token cache while indexing synthetic distinct identifiers
+  const vocab = Array.from({ length: 34_000 }, (_, i) => `tok${i}`).join(' ')
+  index.accept(file('bulk-vocab', vocab), null)
+  // Identical vocabulary {targetword, filler} and identical 4-token length; deduplication would make both 'targetword filler'
+  index.accept(file('rare-hit', 'targetword filler filler filler'), null)
+  index.accept(file('frequent-hit', 'targetword targetword targetword filler'), null)
+
+  const hits = index.lexicalCandidates('targetword', { workspaces: [workspace] }, 10)
+  assert.equal(hits.mode, 'fts')
+  assert.deepEqual(hits.rows.map(r => r.file.id), ['frequent-hit', 'rare-hit'])
+  assert.ok((hits.rows[0]?.score ?? 0) > (hits.rows[1]?.score ?? 0))
 })

@@ -5,6 +5,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { activeHours, MIN_SAMPLES } from '../src/backend/habits.ts'
+import { DatabaseSync } from 'node:sqlite'
+import { openIndependentHistory } from './fixtures/independent-history.ts'
 import { formatAutomaticRecallMessage, formatMemoryRulesSection, formatProfileContext } from '../src/memory/core/memory-context.ts'
 import { assembleDreamProfileBody, MAX_PROFILE_L2_CHARS, measureConfirmedSectionL2, mergeUserProfileEdit, projectProfileL2 } from '../src/memory/core/resident-profile.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
@@ -158,4 +160,43 @@ test('memory IPC rebuilds derived indexes without modifying the canonical record
   assert.deepEqual(await handlers.get('memory:rebuild-indexes')!({}), { fullText: true, semantic: true, files: { lexical: true, vectorGeneration: 1 } })
   assert.throws(() => handlers.get('memory:rebuild-indexes')!({}, 'invalid'), /invalid memory:rebuild-indexes arguments/)
   assert.deepEqual(runtime.readFile(created.identity), before)
+})
+
+test('questionTimes uses the partial user covering index without temp B-tree and skips soft-deleted conversations', t => {
+  const { dir, defer } = scratch(t, 'history-question-times-')
+  const dbFile = path.join(dir, 'app.db')
+  let clock = 1_700_000_000_000
+  const history = openIndependentHistory({ file: dbFile, now: () => clock })
+  defer(() => history.close())
+
+  const kept = history.create({ sessionId: 's-kept', cwd: dir })
+  clock = 1_700_000_010_000
+  history.save(kept, [
+    { role: 'user', text: 'q1', receipt: null },
+    { role: 'assistant', text: 'a1', receipt: null },
+  ])
+  const deleted = history.create({ sessionId: 's-del', cwd: dir })
+  clock = 1_700_000_020_000
+  history.save(deleted, [
+    { role: 'user', text: 'q-deleted', receipt: null },
+    { role: 'assistant', text: 'a-deleted', receipt: null },
+  ])
+  const latest = history.create({ sessionId: 's-latest', cwd: dir })
+  clock = 1_700_000_030_000
+  history.save(latest, [
+    { role: 'user', text: 'q2', receipt: null },
+    { role: 'assistant', text: 'a2', receipt: null },
+  ])
+  history.softDelete(deleted.id)
+
+  assert.deepEqual(history.questionTimes(), [1_700_000_030_000, 1_700_000_010_000])
+  assert.deepEqual(history.questionTimes(1), [1_700_000_030_000])
+
+  const raw = new DatabaseSync(dbFile)
+  defer(() => raw.close())
+  const plan = raw.prepare(`EXPLAIN QUERY PLAN SELECT m.created_at FROM messages m
+    CROSS JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
+    ORDER BY m.id DESC LIMIT ?`).all(1000).map(row => String(row.detail))
+  assert.ok(plan.some(line => line.includes('messages_user_order')), JSON.stringify(plan))
+  assert.equal(plan.some(line => line.includes('TEMP B-TREE')), false, JSON.stringify(plan))
 })

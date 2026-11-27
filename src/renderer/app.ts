@@ -1105,7 +1105,7 @@ async function boot() {
   document.addEventListener('visibilitychange', () => doneNotice?.check())
   api.onFocusComposer?.(() => dom.input.focus())
   api.onEvent(value => initialization.receive(value))
-  void memoryActions.loadMemory()
+  if (state.memory.open) void memoryActions.loadMemory()
   void workDirActions.refresh()
   void loadSettings()
   void feedActions.loadFeed()

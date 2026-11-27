@@ -347,3 +347,74 @@ test('passive confirmation of a joined Dream lets the next click start a fresh o
   assert.equal(operations.length, 2)
   assert.notEqual(operations[0], operations[1])
 })
+
+test('onMemoryChanged skips background IPC while closed and hub_close prevents in-flight retries', async () => {
+  let state: State = initialState
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  const openStatesOnCall: boolean[] = []
+  let pendingCall: ((data: Awaited<ReturnType<AgentApi['getMemory']>>) => void) | undefined
+  let fileLists = 0
+  const toasts: string[] = []
+  const api: Pick<AgentApi, 'getMemory' | 'listMemoryFiles'> = {
+    getMemory: () => {
+      openStatesOnCall.push(state.memory.open)
+      if (openStatesOnCall.length <= 2) {
+        return new Promise(resolve => { pendingCall = resolve })
+      }
+      return Promise.resolve({
+        cleanupPending: 0,
+        revision: openStatesOnCall.length,
+        residentProfile: null,
+        habits: { text: '9–12 点', samples: openStatesOnCall.length },
+      })
+    },
+    listMemoryFiles: async () => {
+      fileLists++
+      return { status: 'ok', snapshot: `s-${fileLists}`, items: [], nextCursor: null }
+    },
+  }
+  const actions = createMemoryActions({
+    api: api as AgentApi,
+    getState: () => state,
+    dispatch,
+    errorMessage: String,
+    showToast: msg => { toasts.push(msg) },
+    ask: () => false,
+  })
+
+  // 1) Closed panel: background change fires zero RPCs while surfacing failure toasts
+  actions.onMemoryChanged({ failure: '整理失败提示' })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(openStatesOnCall.length, 0)
+  assert.equal(fileLists, 0)
+  assert.deepEqual(toasts, ['整理失败提示'])
+
+  // 2) Open starts in-flight call #1, user presses Esc (hub_close), two memory_changed events arrive, then #1 settles:
+  //    no closed-panel retry RPCs may fire
+  actions.openProfile()
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(openStatesOnCall.length, 1)
+  dispatch({ type: 'hub_close' })
+  assert.equal(state.memory.open, false)
+  actions.onMemoryChanged({})
+  actions.onMemoryChanged({})
+  pendingCall?.({ cleanupPending: 1, revision: 99, residentProfile: null, habits: { text: 'stale', samples: 9 } })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.deepEqual(openStatesOnCall, [true])
+
+  // 3) Reverse order: open starts call #2, memory_changed arrives while open (bumping generation), then user presses Esc
+  //    before call #2 settles: settling call #2 while closed still fires zero closed-panel retries, and reopening loads fresh
+  actions.openProfile()
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(openStatesOnCall.length, 2)
+  actions.onMemoryChanged({})
+  dispatch({ type: 'hub_close' })
+  pendingCall?.({ cleanupPending: 1, revision: 100, residentProfile: null, habits: { text: 'stale-2', samples: 10 } })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.deepEqual(openStatesOnCall, [true, true])
+
+  actions.openProfile()
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.deepEqual(openStatesOnCall, [true, true, true])
+  assert.equal(state.memory.habits.samples, 3)
+})

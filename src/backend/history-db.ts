@@ -73,6 +73,7 @@ const SCHEMA = `
     foreground_only INTEGER NOT NULL DEFAULT 0,
     UNIQUE (conversation_id, seq)
   );
+  CREATE INDEX IF NOT EXISTS messages_user_order ON messages (id DESC, conversation_id, created_at) WHERE role = 'user';
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5 (
     text, content = 'messages', content_rowid = 'id', tokenize = 'trigram'
   );
@@ -330,6 +331,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       WHERE m.text LIKE ? ESCAPE '\\' AND c.deleted_at IS NULL ORDER BY c.updated_at DESC, m.seq LIMIT ${SEARCH_SCAN_LIMIT}`),
     titleHits: db.prepare(`SELECT id, title AS text FROM conversations
       WHERE title LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ${SEARCH_SCAN_LIMIT}`),
+    questionTimes: db.prepare(`SELECT m.created_at FROM messages m
+      CROSS JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
+      ORDER BY m.id DESC LIMIT ?`),
   }
 
   const transaction = <T>(work: () => T): T => inTransaction(db, work)
@@ -816,9 +820,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const sessionIds = (id: unknown): string[] => sql.sessions.all(assertId(id)).map((row) => row.session_id)
 
   /** When the user asked their latest questions (ms), newest first; feeds the habit analysis. @returns {number[]} */
-  const questionTimes = (limit = QUESTION_TIMES_LIMIT) => db.prepare(`SELECT m.created_at FROM messages m
-    JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
-    ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
+  const questionTimes = (limit = QUESTION_TIMES_LIMIT) => sql.questionTimes
+    .all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT))
+    .map((row) => Number(row.created_at))
 
   function reservePromptDelivery(sources: readonly string[]) {
     return transaction(() => sources.reduce((count, source) => count + Number(sql.promptReserve.run(source).changes), 0))
