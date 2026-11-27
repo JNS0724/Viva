@@ -6,10 +6,11 @@ import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
 import { MemoryComputeError } from '../contracts/compute.ts'
 import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
-import { NOTE_SYSTEM, WRITE_NOTE, noteReply } from './memory-notes.ts'
+import { assembleNoteMarkdown, compareWatermark, NOTE_SYSTEM, noteReply, parseNoteSections, rangeWatermarkKey, WRITE_NOTE } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
+import type { MemorySessionKind } from '../contracts/records.ts'
 import type { MemorySource, MemoryStore } from './ports/store.ts'
-import { todayAt } from './memory-calendar.ts'
+import { previousDay, todayAt } from './memory-calendar.ts'
 import type { DocumentSourceRef } from './ports/documents.ts'
 
 type Calculate = (job: Effect, source: MemorySource, stage: 'note' | 'dream', system: string, input: object,
@@ -53,6 +54,10 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
    */
   function recordRangeInTx(input: {
     session: string
+    groupKey?: string
+    sessionKind?: MemorySessionKind
+    turnAt?: number
+    hostDay?: string | null
     fromSeq: number
     toSeq: number
     turn: number
@@ -69,12 +74,29 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     })
     const source = sources[0]
     if (!source) return null
-    const day = todayAt(sources.at(-1)!.at, timezone)
+    const turnAt = input.turnAt ?? sources.at(-1)!.at
+    const completionDay = todayAt(turnAt, timezone)
+    const effectiveGroupKey = input.groupKey ?? session
+    const workspace = hash(JSON.stringify([source.scope, source.context, source.project ?? null]))
+    const day = input.sessionKind === 'task'
+      && typeof input.hostDay === 'string'
+      && input.hostDay === previousDay(completionDay)
+      && notes.canAttachHostDay?.(effectiveGroupKey, input.hostDay, workspace) === true
+      ? input.hostDay
+      : completionDay
     const dependencies = notes.contextSources(session, source, new Set(sources.map(item => item.id)))
     const contextCurrent = dependencies !== null && dependencies.every(id => readable(id))
     const safeAssistant = contextCurrent && assistant && sources.every(item => allowsText(assistant, item)) ? assistant : ''
     const key = notes.addRange({
-      session, day, fromSeq, toSeq, turn, sources,
+      session,
+      groupKey: effectiveGroupKey,
+      sessionKind: input.sessionKind,
+      day,
+      fromSeq,
+      toSeq,
+      turn,
+      turnAt,
+      sources,
       assistantDigest: safeAssistant ? hash(safeAssistant) : null,
       assistantSources: safeAssistant && dependencies ? dependencies : [],
       questionSources: dependencies ?? [],
@@ -82,11 +104,15 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       ...(sourceEventSeqs ? { sourceEventSeqs } : {}),
     })
     if (!key) return null
-    let pendingCount = 0
-    for (const group of notes.pendingGroups()) {
-      pendingCount += group.count
-      if (group.session === session && (flush || group.day !== day || group.count >= noteInterval)) {
-        schedule(group.note, flush)
+    const groups = notes.pendingGroups()
+    const pendingCount = groups.reduce((sum, group) => sum + group.count, 0)
+    const ownGroup = groups.find(group => group.note === key)
+    if (flush || (ownGroup?.count ?? 0) >= noteInterval) {
+      schedule(key, flush)
+    }
+    for (const item of notes.pendingKeysForSession?.(session) ?? []) {
+      if (item.note !== key && item.day !== day) {
+        schedule(item.note, flush)
       }
     }
     diagnostics.emit({ event: 'state.changed', operation: 'memory.daily', stage: 'received',
@@ -113,9 +139,12 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (!key) return
     let pendingCount = 0
     store.tx(() => {
-      for (const group of notes.pendingGroups()) {
-        pendingCount += group.count
-        if (group.session === session && (group.day !== day || group.count >= noteInterval)) schedule(group.note)
+      const groups = notes.pendingGroups()
+      pendingCount = groups.reduce((sum, group) => sum + group.count, 0)
+      const ownGroup = groups.find(group => group.note === key)
+      if ((ownGroup?.count ?? 0) >= noteInterval) schedule(key)
+      for (const item of notes.pendingKeysForSession?.(session) ?? []) {
+        if (item.note !== key && item.day !== day) schedule(item.note)
       }
     })
     diagnostics.emit({ event: 'state.changed', operation: 'memory.daily', stage: 'received',
@@ -137,7 +166,12 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (!verifyRange && !wantsAssistant) {
       return { status: 'ok', text: '' }
     }
-    const fetched = await readSessionRange({ sessionId: row.session, fromSeq: row.fromSeq, toSeq: row.toSeq })
+    const fetched = await readSessionRange({
+      sessionId: row.session,
+      fromSeq: row.fromSeq,
+      toSeq: row.toSeq,
+      sessionKind: row.sessionKind,
+    })
     if (fetched.status === 'deleted' || fetched.status === 'unavailable') return fetched
     if (!wantsAssistant) return { status: 'ok', text: '' }
     const verified = fetched.assistant && hash(fetched.assistant) === row.assistantDigest ? fetched.assistant : ''
@@ -177,18 +211,34 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (!rawRows.length) return 'done'
     const priorRefs = existing ? notes.references(job.key) : []
     const priorSources = priorRefs.map(ref => ref.id)
-    if (rawRows.some(row => !row.sourceIds.every(readable)) || priorSources.some(id => !readable(id))) return 'wait'
+    if (priorSources.some(id => !readable(id))) return 'wait'
+    const readablePrefix: typeof rawRows = []
+    let blockedOnReadable = false
+    for (const row of rawRows) {
+      if (!row.sourceIds.every(readable)) {
+        blockedOnReadable = true
+        break
+      }
+      readablePrefix.push(row)
+    }
+    if (!readablePrefix.length) return blockedOnReadable ? 'wait' : 'done'
 
-    // Resolve persisted assistant text on demand via readSessionRange (§5.2 item 4).
+    // Resolve persisted assistant text on demand via readSessionRange with per-range fault isolation (§4.1.4):
+    // - confirmed `deleted` ranges are retired immediately in an independent transaction;
+    // - transient `unavailable` stops the batch without starving healthy ranges sorted before it.
     const deletedRows: typeof rawRows = []
     const activeRows: typeof rawRows = []
     const assistantByRange = new Map<string, string>()
-    for (const row of rawRows) {
+    let hitUnavailable = false
+    for (const row of readablePrefix) {
       const fetched = await resolveRangeAssistant(row, true)
-      if (fetched.status === 'unavailable') return 'retry'
       if (fetched.status === 'deleted') {
         deletedRows.push(row)
         continue
+      }
+      if (fetched.status === 'unavailable') {
+        hitUnavailable = true
+        break
       }
       assistantByRange.set(row.id, fetched.text)
       activeRows.push(row)
@@ -198,8 +248,10 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
         notes.finish(deletedRows, false)
       })
     }
-    const rows = activeRows
+    let rows = activeRows
     if (!rows.length) {
+      if (hitUnavailable) return 'retry'
+      if (blockedOnReadable) return 'wait'
       store.tx(() => {
         effects.finishGeneration(job)
         if (notes.pending(job.key, noteInterval).length) schedule(job.key, Boolean(job.payload))
@@ -207,6 +259,34 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       wake()
       return 'done'
     }
+
+    // Split mixed batches crossing `watermark` into two steps (§4.1.3):
+    // late out-of-order rows (`pos <= watermark`) run first with `freezeState = true`,
+    // while newer rows remain pending for the immediately scheduled follow-up generation.
+    const existingWatermarkAt = existing?.stateWatermarkAt ?? 0
+    const existingWatermarkKey = existing?.stateWatermarkKey ?? ''
+    const hasWatermark = Boolean(existing && (existingWatermarkAt > 0 || existingWatermarkKey !== ''))
+    let lateCount = 0
+    if (hasWatermark && existing) {
+      while (
+        lateCount < rows.length
+        && compareWatermark(
+          rows[lateCount]!.turnAt,
+          rangeWatermarkKey(rows[lateCount]!.session, rows[lateCount]!.toSeq),
+          existingWatermarkAt,
+          existingWatermarkKey,
+        ) <= 0
+      ) {
+        lateCount++
+      }
+      if (lateCount > 0 && lateCount < rows.length) {
+        rows = rows.slice(0, lateCount)
+      }
+    }
+    const freezeState = lateCount > 0
+    const partialBatch = (hasWatermark && lateCount > 0 && lateCount < activeRows.length)
+      || hitUnavailable
+      || blockedOnReadable
 
     const projectTurns = (inputRows: typeof rows) => inputRows.map(row => {
       const sources = row.sourceIds.flatMap(id => sourceOf(id) ?? [])
@@ -240,52 +320,104 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const sources = turns.flatMap(turn => turn.user.map(item => item.source))
     if (!sources.length) {
       store.tx(() => {
+        const flush = Boolean(effects.get(WRITE_NOTE, job.key)?.payload) || partialBatch
         notes.finish(rows, false)
         effects.finishGeneration(job)
-        if (notes.pending(job.key, noteInterval).length) schedule(job.key, Boolean(job.payload))
+        const remainder = notes.pending(job.key, noteInterval)
+        if (remainder.length && (flush || remainder.length >= noteInterval)) schedule(job.key, flush)
       })
       wake()
       return 'done'
     }
     if (sources.some(source => !eligible(source))) return 'wait'
-    const lastTurn = notes.previous(job.key, rows[0]!.id)
-    let previousAssistant: string | null = null
-    if (lastTurn && [...lastTurn.sourceIds, ...lastTurn.assistantSourceIds].every(readable)) {
-      const fetchedPrev = await resolveRangeAssistant(lastTurn, false)
-      if (fetchedPrev.status === 'unavailable') return 'retry'
-      if (fetchedPrev.status === 'ok' && fetchedPrev.text && sources.every(source => allowsText(fetchedPrev.text, source))) {
-        previousAssistant = fetchedPrev.text
+    const previousAssistantByRange = new Map<string, string | null>()
+    const previousDeps: string[] = []
+    const previousContributedIds: string[] = []
+    const seenSessionInBatch = new Set<string>()
+    for (const turn of turns) {
+      if (seenSessionInBatch.has(turn.row.session)) {
+        previousAssistantByRange.set(turn.row.id, null)
+        continue
       }
+      seenSessionInBatch.add(turn.row.session)
+      const lastTurn = notes.previous(job.key, turn.row.id)
+      let prevText: string | null = null
+      if (lastTurn && [...lastTurn.sourceIds, ...lastTurn.assistantSourceIds].every(readable)) {
+        const fetchedPrev = await resolveRangeAssistant(lastTurn, false)
+        if (fetchedPrev.status === 'unavailable') return 'retry'
+        if (fetchedPrev.status === 'ok' && fetchedPrev.text && sources.every(source => allowsText(fetchedPrev.text, source))) {
+          prevText = fetchedPrev.text
+          previousContributedIds.push(...lastTurn.sourceIds)
+          previousDeps.push(...lastTurn.sourceIds, ...lastTurn.assistantSourceIds)
+        }
+      }
+      previousAssistantByRange.set(turn.row.id, prevText)
     }
-    const assistantIds = [...new Set([...turns.flatMap(turn => [
-      ...(turn.assistant ? [...turn.row.sourceIds, ...turn.row.assistantSourceIds] : []),
-      ...turn.user.flatMap(item => item.question ? item.questionDepIds : []),
-    ]),
-      ...(previousAssistant ? [...lastTurn!.sourceIds, ...lastTurn!.assistantSourceIds] : [])])]
+    const assistantIds = [...new Set([
+      ...turns.flatMap(turn => [
+        ...(turn.assistant ? [...turn.row.sourceIds, ...turn.row.assistantSourceIds] : []),
+        ...turn.user.flatMap(item => item.question ? item.questionDepIds : []),
+      ]),
+      ...previousDeps,
+    ])]
+    const contributedIds = new Set([
+      ...priorRefs.filter(ref => !ref.dependencyOnly).map(ref => ref.id),
+      ...turns.flatMap(turn => turn.user.map(item => item.source.id)),
+      ...previousContributedIds,
+    ])
     const related = [...new Set([...sources.map(source => source.id), ...priorSources, ...assistantIds])]
     const versions = notes.snapshot(related)
     const used = new Map<string, DocumentSourceRef>()
     const add = (ref: DocumentSourceRef) => {
       const old = used.get(ref.id)
-      used.set(ref.id, !old ? ref : { ...ref, spans: old.spans && ref.spans ? [...old.spans, ...ref.spans] : undefined })
+      const dependencyOnly = !contributedIds.has(ref.id)
+      const spans = !old ? ref.spans : (old.spans && ref.spans ? [...old.spans, ...ref.spans] : undefined)
+      used.set(ref.id, {
+        id: ref.id,
+        token: ref.token,
+        ...(spans ? { spans } : {}),
+        ...(dependencyOnly ? { dependencyOnly: true } : {}),
+      })
     }
     for (const ref of [...priorRefs, ...turns.flatMap(turn => turn.user.map(item => item.ref)), ...notes.snapshot(assistantIds)]) add(ref)
     const refs = versions.map(ref => used.get(ref.id)!)
+    const existingParsed = existing ? parseNoteSections(existing.markdown) : undefined
     const input = {
-      existing: existing ? { title: existing.title, markdown: existing.markdown } : undefined,
-      previousAssistant,
-      turns: turns.map(({ user, assistant }) => ({
-        user: user.map(({ source, text, question }) => ({ sourceId: source.id, text, author: source.author, version: source.version,
-          question, at: source.at })),
+      existing: existing && existingParsed
+        ? {
+            title: existing.title,
+            state: existingParsed.state,
+            recentEvents: existingParsed.eventLines.slice(-20),
+          }
+        : undefined,
+      ...(freezeState ? { freezeState: true as const } : {}),
+      turns: turns.map(({ row, user, assistant }) => ({
+        sessionKind: row.sessionKind,
+        previousAssistant: previousAssistantByRange.get(row.id) ?? null,
+        user: user.map(({ source, text, question }) => ({
+          sourceId: source.id,
+          text,
+          author: source.author,
+          ...(source.sourceKind ? { sourceKind: source.sourceKind } : {}),
+          version: source.version,
+          question,
+          at: source.at,
+        })),
         assistant,
       })),
     }
-    // Validate all text actually sent, including stored documents and question context, not only new sources.
-    const material = [input.existing?.title, input.existing?.markdown, input.previousAssistant,
-      ...input.turns.flatMap(turn => [turn.assistant, ...turn.user.flatMap(user => [user.text, user.question])])]
+    // Validate all text actually sent and stored, including stored documents and question context.
+    const material = [
+      existing?.title,
+      existing?.markdown,
+      input.existing?.state,
+      ...(input.existing?.recentEvents ?? []),
+      ...input.turns.flatMap(turn => [turn.previousAssistant, turn.assistant, ...turn.user.flatMap(user => [user.text, user.question])]),
+    ]
     const current = () => {
       const latest = notes.read(job.key)
       return latest?.fileRevision === existing?.fileRevision && latest?.revision === existing?.revision
+        && latest?.stateWatermarkAt === existing?.stateWatermarkAt && latest?.stateWatermarkKey === existing?.stateWatermarkKey
         && related.every(readable) && JSON.stringify(notes.snapshot(related)) === JSON.stringify(versions)
         && materialAllowed(material, related)
     }
@@ -294,11 +426,32 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (result === undefined) return 'wait'
     const reply = noteReply.parse(result)
     if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return 'retry'
-    const output = reply.status === 'write' ? [reply.title, reply.markdown, reply.filename ?? ''] : []
-    if (output.length && sources.some(source => !allowsText(output.join('\n'), source))) return 'retry'
+    let commitReply: Parameters<typeof notes.commit>[2] = { status: 'skip' }
+    let commitWatermark: { at: number, key: string } | undefined
+    if (reply.status === 'write' && (!freezeState || reply.events.length > 0)) {
+      const rawOutput = freezeState ? [...reply.events] : [reply.title, reply.state, ...reply.events]
+      if (rawOutput.length && sources.some(source => !allowsText(rawOutput.join('\n'), source))) return 'retry'
+      const finalTitle = freezeState ? existing!.title : reply.title
+      const lastRow = rows.at(-1)!
+      const assembled = assembleNoteMarkdown({
+        existingMarkdown: existing?.markdown,
+        title: finalTitle,
+        state: reply.state,
+        events: reply.events,
+        turnAt: rows.length === 1 ? lastRow.turnAt : undefined,
+        timezone,
+        freezeState,
+      })
+      if (sources.some(source => !allowsText(`${finalTitle}\n${assembled.markdown}`, source))) return 'retry'
+      commitReply = { status: 'write', title: finalTitle, markdown: assembled.markdown }
+      commitWatermark = freezeState && existing
+        ? { at: existingWatermarkAt, key: existingWatermarkKey }
+        : { at: lastRow.turnAt, key: rangeWatermarkKey(lastRow.session, lastRow.toSeq) }
+    }
     const commit = () => {
       if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return false
-      return notes.commit(job.key, rows, reply, job.generation, now(), refs, existing)
+      if (partialBatch && !effects.get(WRITE_NOTE, job.key)?.payload && !effects.amend(job, { flush: true })) return false
+      return notes.commit(job.key, rows, commitReply, job.generation, now(), refs, existing, commitWatermark)
     }
     if (!commit()) {
       store.tx(() => { effects.finishGeneration(job); schedule(job.key, true) })
@@ -306,13 +459,15 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       return 'done'
     }
     store.tx(() => {
-      const flush = Boolean(effects.get(WRITE_NOTE, job.key)?.payload) || rows[0]!.day !== todayAt(now(), timezone)
+      const flush = Boolean(effects.get(WRITE_NOTE, job.key)?.payload)
+        || rows[0]!.day !== todayAt(now(), timezone)
+        || partialBatch
       effects.finishGeneration(job)
       const remainder = notes.pending(job.key, noteInterval)
       if (remainder.length && (flush || remainder.length >= noteInterval)) schedule(job.key, flush)
     })
     diagnostics.emit({ event: 'operation.progress', operation: 'memory.daily', stage: 'checkpoint',
-      identities: { jobId: job.key, generation: job.generation }, metrics: { count: rows.length, completedCount: sources.length, ok: reply.status === 'write' } })
+      identities: { jobId: job.key, generation: job.generation }, metrics: { count: rows.length, completedCount: sources.length, ok: commitReply.status === 'write' } })
     wake()
     return 'done'
   }
@@ -365,7 +520,11 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     list: notes.list,
     flush(session?: string) {
       store.tx(() => {
-        for (const group of notes.pendingGroups()) if (!session || group.session === session) schedule(group.note, true)
+        if (session) {
+          for (const item of notes.pendingKeysForSession?.(session) ?? []) schedule(item.note, true)
+          return
+        }
+        for (const group of notes.pendingGroups()) schedule(group.note, true)
       })
       wake()
     },

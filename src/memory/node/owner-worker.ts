@@ -139,6 +139,7 @@ const questionReceiptSchema = z.strictObject({
   questionProfileGen: z.number().int().nonnegative().nullable(),
   answerProfileGen: z.number().int().nonnegative().nullable(),
   answerBatchDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  selectionBatchDigest: z.string().regex(/^[0-9a-f]{64}$/u).nullish(),
 })
 const inputFrame = z.strictObject({ method: z.string(), args: z.array(z.unknown()).max(8) })
 function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {

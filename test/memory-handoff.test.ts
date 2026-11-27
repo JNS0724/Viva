@@ -674,7 +674,7 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     if (!JSON.stringify(request.system).includes('整理最近完成的会话回合')) return null
     const input = JSON.parse(questionOf(request.messages)) as { turns: typeof incoming }
     incoming.push(...input.turns)
-    return { text: JSON.stringify({ status: 'write', title: '周报安排', markdown: '沿用上周模板，周五提交周报。' }) }
+    return { text: JSON.stringify({ status: 'write', title: '周报安排', state: '沿用上周模板，周五提交周报。', events: ['沿用上周模板，周五提交周报。'] }) }
   }, { dailyNotes: true })
   for (const text of turns.slice(0, -1)) await app.ask(text)
   assert.equal(incoming.length, 0)
@@ -704,7 +704,8 @@ test('Viva writes and recalls global daily notes across broken, valid and absent
   const app = await setup(t, request => {
     if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
       const input = JSON.parse(questionOf(request.messages)) as { turns: { user: { text: string }[] }[] }
-      return { text: JSON.stringify({ status: 'write', title: '测试日记', markdown: input.turns.flatMap(row => row.user.map(user => user.text)).join('\n') }) }
+      const turnTexts = input.turns.flatMap(row => row.user.map(user => user.text))
+      return { text: JSON.stringify({ status: 'write', title: '测试日记', state: turnTexts.join('\n'), events: turnTexts }) }
     }
     const question = questionOf(request.messages)
     if (question === '从记忆查找雪松清单' && !modelToolResults(request, 'memory_recall').length) {
@@ -758,9 +759,10 @@ test('a real background tool loop keeps its result when the foreground appends t
   const observed: Request[] = []
   const app = await setup(t, request => {
     if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
-      const input = JSON.parse(questionOf(request.messages)) as { turns: { user: { text: string }[] }[], existing?: { markdown: string } }
-      const markdown = [input.existing?.markdown, ...input.turns.flatMap(row => row.user.map(user => user.text))].filter(Boolean).join('\n')
-      return { text: JSON.stringify({ status: 'write', title: '青岚项目周会', markdown }) }
+      const input = JSON.parse(questionOf(request.messages)) as { turns: { user: { text: string }[] }[], existing?: { state: string } }
+      const turnTexts = input.turns.flatMap(row => row.user.map(user => user.text))
+      const state = [input.existing?.state, ...turnTexts].filter(Boolean).join('\n')
+      return { text: JSON.stringify({ status: 'write', title: '青岚项目周会', state, events: turnTexts }) }
     }
     const latest = questionOf(request.messages)
     const recalled = modelToolResults(request, 'memory_recall')
@@ -804,7 +806,7 @@ for (const failure of ['invalid-json', 'http-error'] as const) {
     let dreamRequests = 0
     const app = await setup(t, request => {
       const system = JSON.stringify(request.system)
-      if (system.includes('整理最近完成的会话回合')) return { text: JSON.stringify({ status: 'write', title: '周报', markdown: '周报提交邮箱已记录。' }) }
+      if (system.includes('整理最近完成的会话回合')) return { text: JSON.stringify({ status: 'write', title: '周报', state: '周报提交邮箱已记录。', events: ['周报提交邮箱已记录。'] }) }
       const blocks: readonly unknown[] = Array.isArray(request.system) ? request.system : [request.system]
       if (blocks.some(block => block === DREAM_CONSOLIDATE_SYSTEM
         || (typeof block === 'object' && block !== null && 'text' in block && block.text === DREAM_CONSOLIDATE_SYSTEM))) {
@@ -1500,7 +1502,7 @@ test('a generated task brief stays derived while the native answer joins global 
     assert.notEqual(source.conversation, event.taskId, 'fresh task conversation_id must be the Viva segmentId, distinct from DSH sessionId')
     assert.deepEqual(JSON.parse(String(source.context)), { kind: 'user' })
     assert.equal(source.source_kind, 'task-question-answer')
-    assert.equal(source.profile_eligible, 1)
+    assert.equal(source.profile_eligible, 0)
     assert.ok(await eventually(() => Number(memory.prepare('SELECT next_seq FROM owner_intake_cursors WHERE session=?').get(event.taskId)?.next_seq ?? 0) > 0),
       'task turn containing brief + answer + conclusion must settle its intake cursor cleanly')
     assert.equal(Number(memory.prepare('SELECT COUNT(*) AS n FROM owner_question_receipts WHERE session=?').get(event.taskId)?.n ?? 0), 0,

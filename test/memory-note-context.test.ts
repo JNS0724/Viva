@@ -8,12 +8,11 @@ import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 
 type NoteInput = {
-  existing: { title: string, markdown: string } | null
-  previousAssistant: string | null
-  turns: Array<{ user: Array<{ sourceId: string, text: string }>, assistant: string }>
+  existing: { title: string, state: string, recentEvents: string[] } | null
+  turns: Array<{ previousAssistant: string | null, user: Array<{ sourceId: string, text: string }>, assistant: string }>
 }
 const origin = { conversation: 'conversation', session: 'session' }
-const write = (markdown: string) => JSON.stringify({ status: 'write', title: '个人资料', markdown })
+const write = (state: string) => JSON.stringify({ status: 'write', title: '个人资料', state, events: [] })
 const skip = JSON.stringify({ status: 'skip' })
 
 for (const kind of ['file metadata', 'credential'] as const) {
@@ -93,7 +92,7 @@ test('the first daily batch after local midnight retains the previous question a
   memory.recordNoteTurn!(origin.session, [answer], '好的')
   await memory.wake()
   assert.equal(inputs.length, 2)
-  assert.equal(inputs[1]!.previousAssistant, question)
+  assert.equal(inputs[1]!.turns[0]!.previousAssistant, question)
   const recalled = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '深圳', start_date: '2026-11-15' }, origin)) as {
     notes: Array<{ id: string, workspace: string }>,
   }
@@ -122,6 +121,6 @@ test('previous assistant context cannot cross authorized workspaces when a sessi
     await memory.wake()
   }
   assert.equal(inputs.length, 2)
-  assert.equal(inputs[1]!.previousAssistant, null)
+  assert.equal(inputs[1]!.turns[0]!.previousAssistant, null)
   assert.equal(JSON.stringify(inputs[1]).includes('甲项目'), false)
 })

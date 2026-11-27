@@ -194,7 +194,7 @@ test('a daily note requests model computation across IPC while the parent can st
   }
   await entered.promise
   assert.equal((await supervisor.callHost('listFiles', { args: [{}] })).status, 'ok')
-  reply.resolve(JSON.stringify({ status: 'write', title: 'Weekly reporting', markdown: 'The weekly report is submitted on Friday.' }))
+  reply.resolve(JSON.stringify({ status: 'write', title: 'Weekly reporting', state: 'The weekly report is submitted on Friday.', events: ['The weekly report is submitted on Friday.'] }))
   assert.ok(await eventually(async () => (await supervisor.callHost('listFiles', { args: [{ kind: 'daily' }] })).items.length > 0))
   assert.equal(attempts.size, 1)
 })

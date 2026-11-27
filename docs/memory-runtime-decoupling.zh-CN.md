@@ -522,16 +522,17 @@ export type AutomaticRecallResult =
    - 全路径统一约定 **`humanSpans: Array<{ start, end }>` 为剥离顶层结构头之后的转义正文（`payload`）上的 UTF-16 相对偏移**（经 `agent/pre-step` 的 `liftProvenance` 拆包后，该坐标直接对应已提交 `user/message` 的正文；[task-header.ts](../src/shared/request-routing/task-header.ts) `withTaskRequestSource` 若内部产出含头部的 wire 偏移，必须在生产端序列化头或构造 `viva-task-human-steer` 前减去头部长度转为 payload 相对偏移）；[compose.ts](../src/backend/compose.ts) 拼装携带上下文（`carried + "\n\n" + question`）或 Feed 续写（生成正文 + 可选 `supplement`）时，继续保留纵深防御的同类头转义（含 `PROVENANCE_QUOTED`，`QUOTE = '\u200B'`，防任意未封包入口被仿冒），并写入仅跳过 Viva 自插 `QUOTE` 的不相交 payload 相对区间列表（纯 Feed 无补充时为 `humanSpans: []`）；
    - 消费端（实时 L3 召回与冷回放摄取共用同一坐标）直接从 `message.source`（`vivaProvenance` / 类型化插话来源；若遇未拆包旧事件可兼容兜底解析）读取 payload 相对 `humanSpans`，校验有序且合法后直接按 `humanSpans.map(s => payload.slice(s.start, s.end)).join('')` 拼出原始用户正文，**绝不对抽取出的 span 再做通用 `unquote()`**，保证原始引用头文本与用户字面 `\u200B` 100% 逐字无损往返；`carried` 与 Feed 生成正文绝不进入 `memory_sources`、`memory_remember`、Daily Note 或 L2；独立 DSH（`hostNamespace === undefined`、`host: false`）仍整段接纳非敏感用户输入。
 3. **完整来源分类矩阵（保持 `author` 向后兼容与项目域隔离）**：
-   - 持久化 `memory_sources.author` 增量扩展为 **`'user' | 'manual' | 'answer' | 'agent' | 'assistant'`**（兼容 [records.ts](../src/memory/contracts/records.ts) 与 `explicitFileSource`）：
+   - 持久化 `memory_sources.author` 增量扩展为 **`'user' | 'manual' | 'answer' | 'selection' | 'agent' | 'assistant'`**（兼容 [records.ts](../src/memory/contracts/records.ts) 与 `explicitFileSource`）：
 
    | 发起动作 / 投递入口 | 持久化 `author` | `sourceKind` | Daily Note | 检索可见域 | `memory_remember` | L2 常驻画像 (`profileEligible`) |
    |---|---|---|---|---|---|---|
    | Viva 主对话用户输入 / 主对话人工 `steer`（`viva-main-human-steer` / `humanSpans` 切片） | `user` | `main-human` | ✅ 是 | 全局 `user` | ✅ 是 | ✅ **是** |
    | 独立 DSH **非项目域**用户输入（`project == null`） | `user` | `main-human` | ✅ 是 | 全局 `user` | ✅ 是 | ✅ **是** |
    | 独立 DSH **项目域**用户输入（`project != null`） | `user` | `project-user` | ✅ 是 | 当前 `project` 域 | ✅ 是（项目域） | ❌ **否**（保持项目隔离） |
-   | 人类提交的主对话开放题自定义回答（经受信任交互 UI 写入 `owner_question_answers` `'human'` 记录，未证明程序化回答 fail-closed） | `answer` | `question-answer` | ✅ 是 | 全局 `user` | ✅ 是 | ✅ **是**（叠加删除水位校验） |
+   | 人类提交的主对话开放题自定义回答（经受信任交互 UI 写入 `owner_question_receipts` 标量回执，未证明程序化回答 fail-closed） | `answer` | `question-answer` | ✅ 是 | 全局 `user` | ✅ 是 | ✅ **是**（叠加删除水位校验） |
+   | 人类提交的主对话 / 后台任务问题卡选项点选（经 `selection_batch_digest` 认证） | `selection` | `question-selection` / `task-question-selection` | ✅ 是（话题级日记） | 全局 `user` | ❌ **否**（非原话） | ❌ **否** |
    | Viva 后台任务**用户卡片插话/追问**（`origin: 'human'`） | `user` | `task-human-steer` | ✅ 是 | 全局 `user`（主对话可召回） | ✅ 是 | ✅ **是** |
-   | Viva 后台任务**用户卡片开放题自定义回答**（`answerOrigin: 'human'`） | `answer` | `task-question-answer` | ✅ 是 | 全局 `user`（主对话可召回） | ✅ 是 | ✅ **是**（叠加删除水位校验） |
+   | Viva 后台任务**用户卡片开放题自定义回答**（`answerOrigin: 'human'`） | `answer` | `task-question-answer` | ✅ 是 | 全局 `user`（主对话可召回） | ✅ 是 | ❌ **否**（局部执行决策，不进全局画像） |
    | 主模型 `answer_background_task` 代答后台开放题（`answerOrigin: 'agent'`） | —（不作为人类原话入库） | `task-agent-answer` | ❌ **否** | — | ❌ **否** | ❌ **否**（严禁进画像） |
    | 后台任务**路由模型 `brief` / 路由 `message`**（`origin: 'router'`） | `agent` | `task-brief` | ✅ 是（任务目标背景） | 全局 `user`（主对话可召回） | ❌ **否** | ❌ **否**（模型转述，严禁进画像） |
    | 后台任务**助手最终结论**（`assistant/message`） | `assistant` | `task-assistant` | ✅ 是 | 全局 `user`（主对话可召回） | ❌ **否** | ❌ **否**（模型输出，严禁进画像） |

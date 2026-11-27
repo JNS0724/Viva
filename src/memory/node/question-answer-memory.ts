@@ -30,6 +30,13 @@ export type EligibleQuestionAnswer = {
   custom: string
 }
 
+/** One memory-eligible option selection after privacy, NUL/surrogate, and contextual-secret screening. */
+export type EligibleQuestionSelection = {
+  id: string
+  question: string
+  selected: string[]
+}
+
 const TRAILING_PROMPT_CHAR = /[\s?？:：!！。.,，;；]/u
 
 /**
@@ -99,7 +106,7 @@ export function areRawCardsMemoryEligible(cards: readonly RawQuestionCard[]): bo
   return true
 }
 
-function answerHitsContextualSecret(card: RawQuestionCard, custom: string): boolean {
+export function answerHitsContextualSecret(card: RawQuestionCard, custom: string): boolean {
   const questionStem = stripTrailingPromptPunctuation(card.question)
   if (looksSecret(`${questionStem}: ${custom}`) || looksSecret(`${card.question}: ${custom}`)) return true
   if (card.header) {
@@ -152,6 +159,56 @@ export function canonicalEligibleAnswersDigest(eligible: readonly EligibleQuesti
     .digest('hex')
 }
 
+/**
+ * Canonical projection of memory-eligible option selections for one `ask_user_question` occurrence:
+ * - requires full raw-card eligibility (`areRawCardsMemoryEligible`) and 1:1 card/answer mapping;
+ * - rejects multi-selection on single-select cards or options absent from `card.options`;
+ * - normalizes `selected` in `card.options` definition order;
+ * - screens every selected label and joined selection string with `answerHitsContextualSecret`
+ *   (blocking split credentials such as `"验证码？"` + `"123456"`).
+ */
+export function eligibleQuestionSelections(
+  cards: readonly RawQuestionCard[],
+  answers: readonly RawQuestionAnswer[],
+): EligibleQuestionSelection[] {
+  if (!areRawCardsMemoryEligible(cards)) return []
+  if (!Array.isArray(answers) || answers.length !== cards.length) return []
+  const answerById = new Map<string, RawQuestionAnswer>()
+  for (const answer of answers) {
+    if (!answer || typeof answer !== 'object' || !isNonEmptyString(answer.id)) return []
+    if (!Array.isArray(answer.selected) || !answer.selected.every((item: unknown) => typeof item === 'string')) return []
+    if (answer.custom !== undefined && typeof answer.custom !== 'string') return []
+    if (answerById.has(answer.id)) return []
+    answerById.set(answer.id, answer)
+  }
+  const eligible: EligibleQuestionSelection[] = []
+  for (const card of cards) {
+    const answer = answerById.get(card.id)
+    if (!answer) return []
+    const uniqueSelected = [...new Set(answer.selected)]
+    if (!card.multiSelect && uniqueSelected.length > 1) return []
+    const optionLabels = (card.options ?? []).map(option => option.label)
+    const allowedLabels = new Set(optionLabels)
+    if (!uniqueSelected.every(label => allowedLabels.has(label))) return []
+    if (uniqueSelected.length === 0) continue
+    const selected = optionLabels.filter(label => uniqueSelected.includes(label) && label.trim().length > 0)
+    const joined = selected.join('、')
+    if (selected.length === 0 || !joined.trim()) continue
+    if (selected.some(label => hasUnsupportedSqliteChars(label) || looksSecret(label) || answerHitsContextualSecret(card, label))) continue
+    if (hasUnsupportedSqliteChars(joined) || looksSecret(joined) || answerHitsContextualSecret(card, joined)) continue
+    eligible.push({ id: card.id, question: card.question, selected })
+  }
+  eligible.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return eligible
+}
+
+/** SHA-256 digest over ONLY the pre-filtered eligible `{ id, selected }` projection. */
+export function canonicalEligibleSelectionsDigest(eligible: readonly EligibleQuestionSelection[]): string {
+  return createHash('sha256')
+    .update(JSON.stringify(eligible.map(({ id, selected }) => ({ id, selected }))))
+    .digest('hex')
+}
+
 /** SHA-256 hash of provider `callId` (SQLite never stores raw provider `callId`). */
 export function questionCallIdHash(callId: string): string {
   return createHash('sha256').update(callId).digest('hex')
@@ -174,6 +231,22 @@ export function questionAnswerSourceId(
 ): string {
   const digest = createHash('sha256')
     .update(JSON.stringify(['question-answer', sessionId, callSeq, callId, questionId]))
+    .digest('hex')
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
+}
+
+/**
+ * Disjoint deterministic UUIDv4-shaped source ID for one option-selected question card.
+ * Never collides with `questionAnswerSourceId` on mixed answers (`selected` + `custom`).
+ */
+export function questionSelectionSourceId(
+  sessionId: string,
+  callSeq: number,
+  callId: string,
+  questionId: string,
+): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify(['question-selection', sessionId, callSeq, callId, questionId]))
     .digest('hex')
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
 }

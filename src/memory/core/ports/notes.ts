@@ -13,6 +13,8 @@ export interface NoteRow {
     updatedAt: number;
     file_revision: string;
     enabled: boolean;
+    stateWatermarkAt?: number;
+    stateWatermarkKey?: string;
 }
 type Note = NoteRow & {
     title: string;
@@ -20,6 +22,8 @@ type Note = NoteRow & {
     document: string;
     session?: string;
     fileRevision: string;
+    stateWatermarkAt?: number;
+    stateWatermarkKey?: string;
 };
 export interface DailyAllocation {
     key: string;
@@ -54,11 +58,13 @@ export interface NoteRangeTurn {
     id: string;
     note: string;
     session: string;
+    sessionKind: MemorySessionKind;
     day: string;
     workspace: string;
     fromSeq: number;
     toSeq: number;
     turn: number;
+    turnAt: number;
     sourceIds: string[];
     assistantSourceIds: string[];
     assistantDigest: string | null;
@@ -89,12 +95,16 @@ export interface MemoryNotes {
     blocked: (key: string) => boolean;
     contextSources(session: string, source: MemorySource, excludeIds?: ReadonlySet<string>): string[] | null;
     hasRange(session: string, fromSeq: number, toSeq: number): boolean;
+    canAttachHostDay?(groupKey: string, hostDay: string, workspace: string): boolean;
     addRange(input: {
         session: string;
+        groupKey?: string;
+        sessionKind?: MemorySessionKind;
         day: string;
         fromSeq: number;
         toSeq: number;
         turn: number;
+        turnAt?: number;
         sources: MemorySource[];
         assistantDigest: string | null;
         assistantSources?: readonly string[];
@@ -103,17 +113,17 @@ export interface MemoryNotes {
         sourceEventSeqs?: Readonly<Record<string, number>>;
         ephemeralAssistant?: string;
     }): string | null;
-    add(session: string, day: string, sources: MemorySource[], assistant: string, requestId?: string, assistantSources?: readonly string[], inputAssistant?: string, options?: { questionSources?: readonly string[], questionCurrent?: boolean }): string | null;
+    add(session: string, day: string, sources: MemorySource[], assistant: string, requestId?: string, assistantSources?: readonly string[], inputAssistant?: string, options?: { questionSources?: readonly string[], questionCurrent?: boolean, groupKey?: string, turnAt?: number }): string | null;
     list(from: string | null, through: string | null): Note[];
-    changedFiles(from: string, through: string): Array<Pick<NoteRow, 'key' | 'workspace' | 'path'>>;
+    changedFiles(from: string, through: string, updatedSinceMs?: number, backwriteBeforeDay?: string, backwriteSinceMs?: number): Array<Pick<NoteRow, 'key' | 'workspace' | 'path'>>;
     pendingGroups: () => Array<{
         note: string;
-        session: string;
         day: string;
         count: number;
     }>;
+    pendingKeysForSession?: (session: string) => Array<{ note: string; day: string }>;
     pending: (key: string, limit?: number) => NoteRangeTurn[];
-    previous(_key: string, id: string): NoteRangeTurn | undefined;
+    previous(key: string, id: string): NoteRangeTurn | undefined;
     sourceQuestionContext(sourceId: string): { current: boolean, refs: DocumentSourceRef[] };
     sources(key: string): string[];
     references(key: string): DocumentSourceRef[];
@@ -129,6 +139,6 @@ export interface MemoryNotes {
         title: string;
         markdown: string;
         filename?: string;
-    }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined): boolean;
+    }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined, watermark?: { at: number; key: string }): boolean;
     markProcessed(key: string, revision: number): boolean;
 }

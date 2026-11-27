@@ -1366,6 +1366,7 @@ export const zhCN = {
   "main.task-ipc.full": "同时最多 {max} 个后台任务在跑，等其中一个结束再开",
   "main.task-ipc.live.full": "当前最多保留 {max} 个活跃或待处理的后台任务，请先处理或关闭部分任务",
   "main.task-ipc.resume.default.prompt": "继续完成之前被中断的工作。",
+  "main.task-ipc.busy.in.other.topic": "该后台任务正在处理另一个话题的当前回合，请新开任务或等本轮结束再接着问",
   "main.work-dir.network.paths.server.share.are.not.supported": "不支持网络路径（\\\\服务器\\共享），可以先映射成本地盘符，或者复制到本机",
   "main.work-dir.choose.a.full.folder.path": "需要选一个文件夹的完整路径",
   "main.work-dir.this.is.not.a.folder.or.it": "这不是一个文件夹，或者它已经不在了",

@@ -27,6 +27,10 @@ export function nextDay(day: string) {
   return new Date(Date.parse(day) + 86_400_000).toISOString().slice(0, 10)
 }
 
+export function previousDay(day: string) {
+  return new Date(Date.parse(day) - 86_400_000).toISOString().slice(0, 10)
+}
+
 type CivilBoundary = { date: string, time?: string } | { daysFromSource: number, time?: string }
 export function localBoundary(boundary: CivilBoundary, assertedAt: number, timezone: string): number | null {
   const date = 'date' in boundary ? boundary.date

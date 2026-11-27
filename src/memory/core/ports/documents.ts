@@ -9,7 +9,7 @@ export interface MemoryPhysicalFile {
 export type ReadMemoryPhysicalFile = (workspace: string, path: string, signal?: AbortSignal) => Promise<MemoryPhysicalFile | null>
 
 /** Opaque canonical source versions, issued by the Node adapter, never by a model. */
-export interface DocumentSourceRef { id: string, token: string, spans?: Array<{ start: number, end: number }> }
+export interface DocumentSourceRef { id: string, token: string, spans?: Array<{ start: number, end: number }>, dependencyOnly?: boolean }
 export interface DocumentReadRef { id: string, revision: string, usageVersion: number }
 export interface DocumentFileRegistration extends DocumentReadRef {
   workspace: string

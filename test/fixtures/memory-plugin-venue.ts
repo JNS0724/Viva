@@ -29,10 +29,12 @@ export function createVenueModelFixture() {
     const system = typeof input.system === 'string' ? input.system : input.system?.map(part => part.text ?? '').join('\n') ?? ''
     const first = messages.find(message => message.role === 'user')
     if (system === NOTE_SYSTEM && JSON.stringify(messages).includes('萤火读书会')) {
-      const job = JSON.parse(text(first?.content)) as { existing?: { markdown: string }, turns: Array<{ user: Array<{ text: string }> }> }
+      const job = JSON.parse(text(first?.content)) as { existing?: { state: string, recentEvents?: string[] }, turns: Array<{ user: Array<{ text: string }> }> }
       const supplied = job.turns.flatMap(turn => turn.user.map(source => source.text))
-      const facts = venue.facts.filter(fact => supplied.includes(fact) || job.existing?.markdown.includes(fact))
-      return { text: JSON.stringify(facts.length ? { status: 'write', title: venue.topic, markdown: `# ${venue.topic}\n\n${facts.join('\n\n')}` } : { status: 'skip' }) }
+      const existingText = [job.existing?.state ?? '', ...(job.existing?.recentEvents ?? [])].join('\n')
+      const facts = venue.facts.filter(fact => supplied.includes(fact) || existingText.includes(fact))
+      const newEvents = venue.facts.filter(fact => supplied.includes(fact))
+      return { text: JSON.stringify(facts.length ? { status: 'write', title: venue.topic, state: facts.join('\n\n'), events: newEvents } : { status: 'skip' }) }
     }
     if (system === DREAM_CONSOLIDATE_SYSTEM) {
       const job = JSON.parse(text(first?.content)) as {

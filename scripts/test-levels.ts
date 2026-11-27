@@ -287,6 +287,7 @@ export const testLevels = {
     'memory-phase3-decoupling',
     'memory-phase4a-sot',
     'memory-phase4b-questions',
+    'memory-thread-notes',
     'app-plugins',
     'backend-keeper',
     'backend-wire',

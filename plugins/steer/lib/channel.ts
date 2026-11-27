@@ -1,5 +1,5 @@
 import { isReportId, isToken } from './reports.ts'
-import { validateHumanSpans, type HumanSpan, type SteerMessageSource } from '../../../src/shared/request-routing/provenance.ts'
+import { isValidHostDay, validateHumanSpans, type HumanSpan, type SteerMessageSource } from '../../../src/shared/request-routing/provenance.ts'
 import { stripLeadingTaskHeader } from '../../../src/shared/request-routing/task-header.ts'
 
 /**
@@ -41,11 +41,15 @@ function parseSteerSource(raw: unknown, wireText: string): SteerMessageSource | 
   if (raw === undefined) return undefined
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const obj = raw as Record<string, unknown>
+  const threadId = isText(obj.threadId, MAX_ID_CHARS) ? obj.threadId : undefined
+  const hostDay = isValidHostDay(obj.hostDay) ? obj.hostDay : undefined
   if (obj.kind === 'viva-task-router-message') {
     if (obj.conversationId !== undefined && !isText(obj.conversationId, MAX_ID_CHARS)) return null
     return {
       kind: 'viva-task-router-message',
       ...(typeof obj.conversationId === 'string' ? { conversationId: obj.conversationId } : {}),
+      ...(threadId !== undefined ? { threadId } : {}),
+      ...(hostDay !== undefined ? { hostDay } : {}),
     }
   }
   if (obj.kind === 'viva-main-human-steer' || obj.kind === 'viva-task-human-steer') {
@@ -63,11 +67,12 @@ function parseSteerSource(raw: unknown, wireText: string): SteerMessageSource | 
     const base = {
       ...(typeof obj.sourceId === 'string' ? { sourceId: obj.sourceId } : {}),
       ...(typeof obj.conversationId === 'string' ? { conversationId: obj.conversationId } : {}),
+      ...(threadId !== undefined ? { threadId } : {}),
       ...(humanSpans !== undefined ? { humanSpans } : {}),
     }
     return obj.kind === 'viva-main-human-steer'
       ? { kind: 'viva-main-human-steer', ...base }
-      : { kind: 'viva-task-human-steer', ...base }
+      : { kind: 'viva-task-human-steer', ...base, ...(hostDay !== undefined ? { hostDay } : {}) }
   }
   return null
 }

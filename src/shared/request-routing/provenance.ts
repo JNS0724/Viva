@@ -29,13 +29,15 @@ export type VivaProvenanceHeader = {
   sessionKind: SessionKind
   conversationId?: string
   sourceId?: string
+  threadId?: string
+  hostDay?: string
   humanSpans?: HumanSpan[]
 }
 
 export type SteerMessageSource =
-  | { kind: 'viva-main-human-steer', sourceId?: string, conversationId?: string, humanSpans?: HumanSpan[] }
-  | { kind: 'viva-task-human-steer', sourceId?: string, conversationId?: string, humanSpans?: HumanSpan[] }
-  | { kind: 'viva-task-router-message', conversationId?: string }
+  | { kind: 'viva-main-human-steer', sourceId?: string, conversationId?: string, threadId?: string, humanSpans?: HumanSpan[] }
+  | { kind: 'viva-task-human-steer', sourceId?: string, conversationId?: string, threadId?: string, hostDay?: string, humanSpans?: HumanSpan[] }
+  | { kind: 'viva-task-router-message', conversationId?: string, threadId?: string, hostDay?: string }
 
 export type VivaLiftedNonHumanKind = 'viva-report-batch' | 'viva-unattended' | 'viva-task-brief'
 
@@ -54,6 +56,30 @@ const SOURCE_KINDS: ReadonlySet<string> = new Set([
   'main-human', 'project-user', 'question-answer', 'task-human-steer', 'task-question-answer',
   'task-brief', 'task-assistant', 'viva-report', 'viva-report-batch', 'unattended',
 ])
+
+const INVALID_ID_CHAR = /[\u0000-\u0020\u007F-\u009F\uD800-\uDFFF]/u
+
+export function isValidOptionalId(value: unknown, maxChars = 256): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxChars && !INVALID_ID_CHAR.test(value)
+}
+
+export function formatHostDay(at: number, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(at)
+  } catch {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(at)
+  }
+}
+
+export function isValidHostDay(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false
+  const parsed = Date.parse(`${value}T00:00:00.000Z`)
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value
+}
 
 export function validateHumanSpans(raw: unknown, maxLength: number): HumanSpan[] | null {
   if (!Array.isArray(raw)) return null
@@ -159,6 +185,8 @@ export function encodeProvenancePrefix(meta: VivaProvenanceHeader): string {
   }
   if (meta.conversationId) wire.c = meta.conversationId
   if (meta.sourceId) wire.s = meta.sourceId
+  if (isValidOptionalId(meta.threadId)) wire.t = meta.threadId
+  if (isValidHostDay(meta.hostDay)) wire.hd = meta.hostDay
   if (meta.humanSpans !== undefined) wire.hs = meta.humanSpans.map(span => [span.start, span.end])
   const json = JSON.stringify(wire).replaceAll('】', '\\u3011')
   return `${PROVENANCE_HEAD}${json}】\n`
@@ -206,6 +234,8 @@ export function parseProvenanceHeader(wireText: string): { provenance: VivaProve
     if (!validated) return null
     humanSpans = validated
   }
+  const threadId = isValidOptionalId(obj.t) ? obj.t : undefined
+  const hostDay = isValidHostDay(obj.hd) ? obj.hd : undefined
   return {
     provenance: {
       origin: obj.o as DispatchOrigin,
@@ -213,6 +243,8 @@ export function parseProvenanceHeader(wireText: string): { provenance: VivaProve
       sessionKind: obj.k as SessionKind,
       ...(typeof obj.c === 'string' ? { conversationId: obj.c } : {}),
       ...(typeof obj.s === 'string' ? { sourceId: obj.s } : {}),
+      ...(threadId !== undefined ? { threadId } : {}),
+      ...(hostDay !== undefined ? { hostDay } : {}),
       ...(humanSpans !== undefined ? { humanSpans } : {}),
     },
     payload,
@@ -246,12 +278,16 @@ export function validateVivaProvenance(raw: unknown, payloadLength: number): Viv
     if (!validated) return null
     humanSpans = validated
   }
+  const threadId = isValidOptionalId(obj.threadId) ? obj.threadId : undefined
+  const hostDay = isValidHostDay(obj.hostDay) ? obj.hostDay : undefined
   return {
     origin: obj.origin as DispatchOrigin,
     sourceKind: obj.sourceKind as WireSourceKind,
     sessionKind: obj.sessionKind as SessionKind,
     ...(typeof obj.conversationId === 'string' ? { conversationId: obj.conversationId } : {}),
     ...(typeof obj.sourceId === 'string' ? { sourceId: obj.sourceId } : {}),
+    ...(threadId !== undefined ? { threadId } : {}),
+    ...(hostDay !== undefined ? { hostDay } : {}),
     ...(humanSpans !== undefined ? { humanSpans } : {}),
   }
 }

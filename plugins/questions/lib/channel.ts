@@ -1,7 +1,9 @@
 import {
   areRawCardsMemoryEligible,
   canonicalEligibleAnswersDigest,
+  canonicalEligibleSelectionsDigest,
   eligibleQuestionAnswers,
+  eligibleQuestionSelections,
   questionCallIdHash,
   type RawQuestionCard,
 } from '../../../src/memory/node/question-answer-memory.ts'
@@ -47,6 +49,7 @@ export interface HumanQuestionReceipt {
   questionProfileGen: number | null
   answerProfileGen: number | null
   answerBatchDigest: string
+  selectionBatchDigest?: string | null
 }
 /** What dsh hands over with user-questions/request: its questions, the turn's signal, the agent asking. */
 interface QuestionRequest {
@@ -129,8 +132,9 @@ export function createQuestionChannel(
     if (!entry.sessionId || !callId || !Number.isSafeInteger(callSeq) || callSeq < 0 || !Number.isSafeInteger(turn) || turn <= 0) return
     const provenance = parseHumanProvenance(rawProvenance)
     if (!provenance) return
-    const eligible = eligibleQuestionAnswers(entry.rawQuestions, answer.answers)
-    if (eligible.length === 0) return
+    const eligibleCustom = eligibleQuestionAnswers(entry.rawQuestions, answer.answers)
+    const eligibleSelections = eligibleQuestionSelections(entry.rawQuestions, answer.answers)
+    if (eligibleCustom.length === 0 && eligibleSelections.length === 0) return
     onHumanReceipt({
       sessionId: entry.sessionId,
       turn,
@@ -140,7 +144,8 @@ export function createQuestionChannel(
       answeredAt: provenance.answeredAt,
       questionProfileGen: openingProfileGen,
       answerProfileGen: provenance.answerProfileGen,
-      answerBatchDigest: canonicalEligibleAnswersDigest(eligible),
+      answerBatchDigest: canonicalEligibleAnswersDigest(eligibleCustom),
+      selectionBatchDigest: eligibleSelections.length > 0 ? canonicalEligibleSelectionsDigest(eligibleSelections) : null,
     })
   }
 
