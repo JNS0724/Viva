@@ -2727,6 +2727,8 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
     'reloaded ended task must preserve streamKey and apply late task_steer_retracted')
   assert.equal(nextRunState.tasks.list[0]!.view.messages.some(m => m.text === 'refused r6'), false,
     'task that already moved to a newer run must still apply late task_steer_retracted by unique key')
+  assert.equal(historyDbR6.get(taskStoreR6.list()[0]!.segmentId)!.messages.some(m => m.text === 'refused r6'), false,
+    'persisted SQLite task segment must also remove the retracted steer message after askReserved')
 
   // R6 P2-3 + R7 P2: Rejecting card 1 in the same requestId BEFORE settleTurn() must NOT invalidate sibling card 2 question
   // (while a later different-requestId card 3 STILL depends on card 1)!

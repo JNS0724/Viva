@@ -122,3 +122,131 @@ test('task prompts deliver the exact owner-bound wire text and closing during al
   await revoked
   assert.equal(sent.length, 1)
 })
+
+test('task prompts forward pasted image blocks ahead of text and preserve image refs across task runtime saves', async (t) => {
+  const sent: unknown[] = []
+  const h = harness({
+    operations: { run: async request => { sent.push(request.prompt) }, cancelInTime: async () => true, count: () => 0 },
+  })
+  await h.sessions.startTask()
+  await h.sessions.promptTask('task', 'inspect screenshot', { origin: 'router' }, [{ data: 'QUJD', mimeType: 'image/png' }])
+  assert.deepEqual(sent, [[
+    { type: 'image', data: 'QUJD', mimeType: 'image/png' },
+    { type: 'text', text: 'inspect screenshot' },
+  ]])
+
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const path = await import('node:path')
+  const { openAppDb } = await import('../src/backend/app-db.ts')
+  const { openHistoryDb } = await import('../src/backend/history-db.ts')
+  const { createTaskStore } = await import('../src/backend/task-store.ts')
+  const { createTaskRuntime } = await import('../src/backend/task-runtime.ts')
+
+  const dir = mkdtempSync(path.join(tmpdir(), 'task-img-rt-'))
+  const app = openAppDb({ file: path.join(dir, 'app.db') })
+  t.after(() => {
+    app.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const db = openHistoryDb({ db: app.db })
+  const store = createTaskStore({ db: app.db })
+  const main = db.create({ sessionId: 'main-s', mode: 'live', model: 'm', cwd: '/work' })
+  const taskPrompts: Array<{ taskId: string, text: string, images: unknown }> = []
+  let nextTask = 0
+  const runtime = createTaskRuntime({
+    db,
+    store,
+    current: () => main,
+    agentInfo: () => ({ mode: 'live', model: 'm' }),
+    agent: {
+      startTask: async () => ({ ok: true, taskId: `task-${++nextTask}` }),
+      promptTask: (taskId, text, _meta, images) => { taskPrompts.push({ taskId, text, images }) },
+      steerTask: async () => ({ ok: true }),
+      resumeTask: async () => ({ ok: true }),
+      cancelTask: () => {},
+      closeTask: () => {},
+    },
+  })
+  const imageId = `${'b'.repeat(64)}.png`
+  const imgs = { refs: [{ id: imageId }], payloads: [{ data: 'QUJD', mimeType: 'image/png' }] }
+  const started = await runtime.agent.start('对照截图查错', '查错', undefined, imgs)
+  assert.equal(taskPrompts.length, 1)
+  assert.deepEqual(taskPrompts[0]?.images, imgs.payloads)
+
+  await assert.rejects(
+    runtime.agent.message(started.taskId, '再补一张图', undefined, imgs),
+    /正在运行|running/i,
+  )
+
+  runtime.dsh.receive({ type: 'task_update', taskId: started.taskId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '已修复' } } })
+  runtime.dsh.receive({ type: 'task_end', taskId: started.taskId, stopReason: 'end_turn' })
+  const secondImageId = `${'c'.repeat(64)}.png`
+  const secondImgs = { refs: [{ id: secondImageId }], payloads: [{ data: 'REVG', mimeType: 'image/png' }] }
+  await runtime.agent.message(started.taskId, '对照新图复核', undefined, secondImgs)
+  runtime.dsh.receive({ type: 'task_end', taskId: started.taskId, stopReason: 'end_turn' })
+
+  const finished = runtime.window.finished().find(entry => entry.task.id === started.taskId)
+  assert.ok(finished)
+  const userMessages = finished.messages.filter(m => m.role === 'user')
+  assert.deepEqual(userMessages.map(m => m.images), [[{ id: imageId }], [{ id: secondImageId }]])
+
+  // Simulate restart + resume of an interrupted task before any chunk arrives: the image message must already be in SQLite.
+  const started2 = await runtime.agent.start('初始中断任务', '中断任务')
+  const runtimeAfterRestart = createTaskRuntime({
+    db,
+    store,
+    current: () => main,
+    agentInfo: () => ({ mode: 'live', model: 'm' }),
+    agent: {
+      startTask: async () => ({ ok: true, taskId: `task-${++nextTask}` }),
+      promptTask: (taskId, text, _meta, images) => { taskPrompts.push({ taskId, text, images }) },
+      steerTask: async () => ({ ok: true }),
+      resumeTask: async () => ({ ok: true }),
+      cancelTask: () => {},
+      closeTask: () => {},
+    },
+  })
+  const thirdImageId = `${'d'.repeat(64)}.png`
+  const thirdImgs = { refs: [{ id: thirdImageId }], payloads: [{ data: 'R0hJ', mimeType: 'image/png' }] }
+  await runtimeAfterRestart.agent.message(started2.taskId, '恢复并附带新图', undefined, thirdImgs)
+  const entry2 = store.list().find(item => item.id === started2.taskId)!
+  const persistedMessages = db.get(entry2.segmentId)?.messages ?? []
+  assert.deepEqual(persistedMessages.map(m => m.images), [undefined, [{ id: thirdImageId }]], 'resumed message and images persist atomically in SQLite')
+
+  const { initialState, reduce: windowReduce } = await import('../src/renderer/state.ts')
+  const madeState = windowReduce(initialState, {
+    type: 'task_snapshot',
+    snapshot: {
+      taskId: 't-img',
+      runId: 'run-1',
+      title: '看图',
+      status: 'running',
+      currentAction: null,
+      waitingFor: null,
+      startedAt: 10,
+      updatedAt: 10,
+      endedAt: null,
+      resultPreview: '',
+      revision: 1,
+      taskSeq: 0,
+      opening: {
+        words: '请看这张图',
+        images: [{ id: imageId }],
+        task: { id: 't-img', segmentId: 'seg-img', title: '看图', words: '请看这张图' },
+        hostSession: null,
+      },
+    },
+  })
+  assert.deepEqual(madeState.tasks.list[0]!.view.messages.map(m => m.images), [[{ id: imageId }]])
+  const restoredState = windowReduce(initialState, {
+    type: 'tasks_restored',
+    list: [{
+      task: { id: 't-restored', segmentId: 'seg-r', title: '历史图', words: '历史图' },
+      status: 'done',
+      endedAt: 20,
+      messages: [{ role: 'user', text: '历史图', images: [{ id: secondImageId }], receipt: null }],
+    }],
+  })
+  assert.deepEqual(restoredState.tasks.list[0]!.view.messages.map(m => m.images), [[{ id: secondImageId }]])
+})

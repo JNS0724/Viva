@@ -222,7 +222,7 @@ export interface ActionPayloads extends ConversationPayloads {
   workdir_switching: {}
   workdir_failed: { message: string | null }
   tasks_list_folded: { folded: boolean }
-  task_asked: { taskId: string, text: string, at: number }
+  task_asked: { taskId: string, text: string, images?: readonly { id: string }[], at: number }
   tasks_restored: { list: readonly KeptTask[] }
   tasks_page_open: { taskId?: string | null }
   tasks_page_close: {}

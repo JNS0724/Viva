@@ -3,6 +3,7 @@ import { diagnosticHub } from '../diagnostics/node/hub.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
+import { checkImages, type ImageRef } from '../shared/images.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -215,10 +216,10 @@ export function createAcpBridge({
   // The main conversation routes every request (the viva-routing plugin); its role is bound before each prompt.
   const routingDesk = createRoutingDesk({ send: toPlugins, handlers: routing })
   /** The user's words as the main agent reads them: under the header of the request they are taken as. */
-  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection', sourceId?: string, sourceText = words) => {
+  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection', sourceId?: string, sourceText = words, images?: readonly ImageRef[]) => {
     const context = contextFor(session)
     const requestId = randomUUID()
-    const request = { id: requestId, sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind, sourceId }
+    const request = { id: requestId, sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind, sourceId, ...(images?.length ? { images } : {}) }
     return { requestId, ...withRequestSource(words, requestId, sourceText), register: () => routing.receive(request) }
   }
   const operations = createAcpOperations({
@@ -522,7 +523,7 @@ export function createAcpBridge({
    * @param images pictures pasted with it, base64
    * @param request whether these are the user's words, a request of their own; a task's result coming back is not
    */
-  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart, sourceId, sourceText, held }: {
+  async function prompt(text: string, images: Array<{ id?: string, data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart, sourceId, sourceText, held }: {
     request?: boolean, userTurn?: boolean, onStart?: () => void, sourceId?: string, sourceText?: string, held?: () => boolean,
   } = {}) {
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
@@ -537,7 +538,8 @@ export function createAcpBridge({
     if (held && !held()) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
     const effectiveSourceText = sourceText !== undefined ? sourceText : text
-    const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, effectiveSourceText) : null
+    const imageRefs = checkImages(images.flatMap(item => typeof item.id === 'string' ? [{ id: item.id }] : [])) ?? []
+    const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, effectiveSourceText, imageRefs) : null
     const words = routed
       ? withProvenanceHeader(routed.text, {
         origin: 'human',
@@ -860,5 +862,13 @@ export function createAcpBridge({
     }
   }
 
-  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, bindFeedSourceSession, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, needsRecovery: () => recoveryRequired, isSwitching, dispose, pid, memoryOwnerPid, memory }
+  const promptTaskWithImages: typeof promptTask = async (taskId, text, meta, images = []) => {
+    if (images.length && !seesImages) {
+      if (!disposed && taskSessions.has(taskId)) emit({ type: 'task_end', taskId, stopReason: 'error', message: noImagesMessage() })
+      return
+    }
+    return promptTask(taskId, text, meta, images)
+  }
+
+  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, bindFeedSourceSession, promptTask: promptTaskWithImages, canReadImages: () => seesImages, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, needsRecovery: () => recoveryRequired, isSwitching, dispose, pid, memoryOwnerPid, memory }
 }

@@ -49,6 +49,7 @@ export const testLevels = {
     'assistant-stream',
     'assistant-stream-recovery',
     'attachments',
+    'attachments-inline',
     'backend-boundary',
     'capabilities-state',
     'capability-actions',

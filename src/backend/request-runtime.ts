@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { emitDiagnostic, emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
+import type { ImageRef } from '../shared/images.ts'
 import { isTaskAction, parsePlan, type Receipt, type TaskAction } from '../shared/request-routing/protocol.ts'
 import type { Decided, FastOutcome } from '../shared/request-routing/channel.ts'
 import type { Apply } from './journal.ts'
@@ -22,7 +23,7 @@ export type RequestFailure = 'unrouted' | 'turn_error' | 'cancelled' | 'undelive
 
 /** Where a request was said: its conversation and working folder, as kept when it arrived. */
 export interface RequestPlace {
-  sessionId: string, conversationId: string | null, cwd: string | null
+  sessionId: string, conversationId: string | null, cwd: string | null, images?: readonly ImageRef[]
 }
 
 /**
@@ -53,10 +54,10 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
   const halted = new Set<string>()
 
   /** A request of the main conversation, as it arrives; its id goes into the header the agent reads it under. */
-  function receive({ id = newId(), sessionId, conversationId, cwd, kind, sourceId }: {
-    id?: string, sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind, sourceId?: string,
+  function receive({ id = newId(), sessionId, conversationId, cwd, kind, sourceId, images }: {
+    id?: string, sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind, sourceId?: string, images?: readonly ImageRef[],
   }): string {
-    apply('request.received', { requestId: id, kind }, () => store.add({ id, sessionId, conversationId, cwd, kind, sourceId, at: now() }))
+    apply('request.received', { requestId: id, kind }, () => store.add({ id, sessionId, conversationId, cwd, kind, sourceId, images, at: now() }))
     emitDiagnostic({ event: 'state.changed', operation: 'task.route', stage: 'received', identities: { requestId: id, sessionId, conversationId } })
     return id
   }
@@ -70,8 +71,8 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
   }
 
   async function perform(request: StoredRequest, action: TaskAction, title: string): Promise<Receipt> {
-    const { sessionId, conversationId, cwd } = request
-    const place = { sessionId, conversationId, cwd }
+    const { sessionId, conversationId, cwd, images } = request
+    const place: RequestPlace = { sessionId, conversationId, cwd, ...(images.length ? { images } : {}) }
     try {
       if (action.kind === 'start') return { kind: 'start', ok: true, taskId: (await tasks.start({ title, brief: action.brief }, place)).taskId }
       if (action.kind === 'message') await tasks.message(action.taskId, action.text, place)

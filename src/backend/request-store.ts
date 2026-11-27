@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { checkImages, type ImageRef } from '../shared/images.ts'
 import type { Action, Plan, Receipt } from '../shared/request-routing/protocol.ts'
 
 /**
@@ -16,6 +17,7 @@ const SCHEMA = `
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
     failure TEXT,
+    images TEXT,
     received_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
@@ -60,13 +62,23 @@ export interface StoredRequest {
   kind: RequestKind
   status: RequestStatus
   failure: string | null
+  images: readonly ImageRef[]
   receivedAt: number
 }
 
-type Row = { id: string, session_id: string, conversation_id: string | null, cwd: string | null, kind: string, status: string, failure: string | null, received_at: number }
+type Row = { id: string, session_id: string, conversation_id: string | null, cwd: string | null, kind: string, status: string, failure: string | null, images: string | null, received_at: number }
+function parseImages(raw: string | null | undefined): readonly ImageRef[] {
+  if (!raw) return Object.freeze([])
+  try {
+    return Object.freeze(checkImages(JSON.parse(raw)) ?? [])
+  } catch {
+    return Object.freeze([])
+  }
+}
 const fromRow = (row: Row): StoredRequest => ({
   id: row.id, sessionId: row.session_id, conversationId: row.conversation_id, cwd: row.cwd,
-  kind: row.kind as RequestKind, status: row.status as RequestStatus, failure: row.failure, receivedAt: Number(row.received_at),
+  kind: row.kind as RequestKind, status: row.status as RequestStatus, failure: row.failure,
+  images: parseImages(row.images), receivedAt: Number(row.received_at),
 })
 
 /** Task actions wait for their receipt; the others (an answer, a question, leave for an app tool) are done once accepted. */
@@ -74,8 +86,10 @@ const initialStatus = (action: Action): ActionStatus => (action.kind === 'start'
 
 export function createRequestStore({ db }: { db: DatabaseSync }) {
   db.exec(SCHEMA)
-  const insert = db.prepare(`INSERT INTO routing_requests (id, session_id, conversation_id, cwd, kind, status, received_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'received', ?, ?)`)
+  const columns = db.prepare('PRAGMA table_info(routing_requests)').all() as Array<{ name: string }>
+  if (!columns.some(column => column.name === 'images')) db.exec('ALTER TABLE routing_requests ADD COLUMN images TEXT')
+  const insert = db.prepare(`INSERT INTO routing_requests (id, session_id, conversation_id, cwd, kind, status, images, received_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'received', ?, ?, ?)`)
   const putSource = db.prepare('INSERT INTO routing_request_sources VALUES (?, ?)')
   const readSource = db.prepare(`SELECT source FROM routing_request_sources s JOIN routing_requests r ON r.id=s.request_id
     WHERE r.id=? AND r.session_id=? AND r.status='received'`)
@@ -91,8 +105,9 @@ export function createRequestStore({ db }: { db: DatabaseSync }) {
   const markUncertain = db.prepare("UPDATE routing_actions SET status = 'uncertain', updated_at = ? WHERE status = 'pending'")
 
   return {
-    add(request: { id: string, sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind, sourceId?: string, at: number }) {
-      insert.run(request.id, request.sessionId, request.conversationId, request.cwd, request.kind, request.at, request.at)
+    add(request: { id: string, sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind, sourceId?: string, images?: readonly ImageRef[], at: number }) {
+      const checked = request.images?.length ? checkImages(request.images) : null
+      insert.run(request.id, request.sessionId, request.conversationId, request.cwd, request.kind, checked?.length ? JSON.stringify(checked) : null, request.at, request.at)
       if (request.sourceId) putSource.run(request.id, request.sourceId)
     },
     get(id: string): StoredRequest | null {

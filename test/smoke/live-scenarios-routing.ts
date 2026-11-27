@@ -5,12 +5,13 @@
  * records (app.db's routing tables, request-store.ts) and what the main agent called from its trace (trace.db), and
  * what tasks produced from the workspace.
  */
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { MAIN_SCOPE } from '../../plugins/routing/lib/policy.ts'
 import { ask, clip, escape, fileHolds, forgetMemories, fresh, latinShare, LIVE_TURN_MS, MEMORY_SETTLE_MS, memoryFilesWith, settle, writeWorkspace, type LiveContext, type LiveScenario } from './live-kit.ts'
-import { run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { run, submit, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 const TASK_DONE_MS = 6 * 60_000
 const POLL_MS = 500
@@ -432,4 +433,407 @@ const isolated = (scenario: LiveScenario): LiveScenario => ({
   },
 })
 
-export const ROUTING_SCENARIOS: readonly LiveScenario[] = [routeReply, routeHandoff, routeUpdate, routeInterject, routeInterjectCorrect, routeHistory, routeStop, routeSchedule, routeMemory, routeMcp].map(isolated)
+const routePeek: LiveScenario = {
+  id: 'route-peek',
+  title: '单点文件速查：先提交 reply 再用速查读单个配置文件直接回答，不开后台任务',
+  feature: '后台任务',
+  core: true,
+  async run(ctx) {
+    const { win, expect, tag } = ctx
+    const secret = `PK-${Math.random().toString(36).slice(2, 8).toUpperCase()}-${Date.now().toString(36).slice(-4).toUpperCase()}`
+    writeWorkspace(ctx, `service-${tag}.json`, JSON.stringify({ service: 'billing', releaseCode: secret, port: 8420 }, null, 2))
+    await fresh(win)
+    const since = Date.now(), before = await cardCount(ctx)
+    const out = await ask(win, `看一眼工作区里的 service-${tag}.json，里面的 releaseCode 是什么？直接告诉我。`, { permission: 'allow' })
+    const numbers = summary(ctx, since)
+    const peeks = numbers.tools.filter((t) => t === 'read' || t === 'grep')
+    expect(actionsOf(numbers.routed).some((a) => a.kind === 'reply'), 'single-file lookup should route as reply', brief(numbers))
+    expect(!actionsOf(numbers.routed).some((a) => a.kind === 'start'), 'single-file lookup should start no background task', brief(numbers))
+    expect(await cardCount(ctx) === before, 'no new task card should show', brief(numbers))
+    expect(numbers.tools[0] === 'commit_route', 'commit_route should be called first before peeking', brief(numbers))
+    expect(peeks.length >= 1 && peeks.length <= 2, '1 to 2 peek calls after commit_route', brief(numbers))
+    expect(numbers.forbidden.length === 0, 'no forbidden tool calls', brief(numbers))
+    expect(out.answer.includes(secret), 'the answer should contain the independent releaseCode from the file', clip(out.answer, 200))
+    keep(ctx, 'numbers', { turnMs: out.ms, ...brief(numbers) })
+    await ctx.shot('route-peek')
+  },
+}
+
+const CLEAR_DIGITS = '23456789'
+function clearDigits(length = 4): string {
+  return Array.from({ length }, () => CLEAR_DIGITS[crypto.randomInt(0, CLEAR_DIGITS.length)]!).join('')
+}
+
+/** Draws a high-contrast PNG banner on canvas and pastes it into `#composer-input` through the real paste pipeline. */
+async function pasteBannerImage(win: SmokeWindow, bannerText: string) {
+  const beforeCount: number = await run(win, `document.querySelectorAll('.draft-pic img').length`)
+  await run(win, `(async () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 560
+    canvas.height = 180
+    const g = canvas.getContext('2d')
+    g.fillStyle = '#ffffff'
+    g.fillRect(0, 0, canvas.width, canvas.height)
+    g.strokeStyle = '#111111'
+    g.lineWidth = 6
+    g.strokeRect(10, 10, canvas.width - 20, canvas.height - 20)
+    g.fillStyle = '#000000'
+    g.font = 'bold 54px monospace'
+    g.textBaseline = 'middle'
+    g.fillText(${JSON.stringify(bannerText)}, 36, 92)
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
+    const data = new DataTransfer()
+    data.items.add(new File([blob], 'capture.png', { type: 'image/png' }))
+    const field = document.getElementById('composer-input')
+    field.focus()
+    field.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    return true
+  })()`)
+  await until(win, `(() => {
+    const imgs = [...document.querySelectorAll('.draft-pic img')]
+    return imgs.length > ${beforeCount} && imgs.every((img) => img.complete && img.naturalWidth > 0)
+  })()`, 'the pasted banner image ready in composer')
+}
+
+/** Waits for a task run to settle (`done`) and for its `<task-output>` report turn in `#thread` to finish. */
+async function waitForTaskAndReport(ctx: LiveContext, taskId: string, agentMessagesBefore: number, timeoutMs = TASK_DONE_MS) {
+  const deadline = Date.now() + timeoutMs
+  let status: string | null = null
+  while (Date.now() < deadline) {
+    status = await cardStatus(ctx, taskId)
+    if (status && status !== 'running' && status !== 'waiting') break
+    await approveTaskWaits(ctx)
+    await wait(POLL_MS * 2)
+  }
+  await until(
+    ctx.win,
+    `document.querySelectorAll('#thread .msg-agent').length > ${agentMessagesBefore} || document.getElementById('send-btn').dataset.busy === 'true'`,
+    'the background task report arriving in thread',
+    30_000,
+  ).catch(() => {})
+  await settle(ctx.win)
+  return status
+}
+
+async function untilRemembered(win: SmokeWindow, words: string, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const found = await memoryFilesWith(win, words)
+    if (found.length) return found
+    await wait(1_500)
+  }
+  return []
+}
+
+const routeImagePeek: LiveScenario = {
+  id: 'route-image-peek',
+  title: '粘贴截图对照单文件：先提交 reply 再用速查读本地错误码映射表直接回答，不开后台任务',
+  feature: '后台任务',
+  core: true,
+  async run(ctx) {
+    const { win, expect, tag } = ctx
+    const targetCode = `VX-${clearDigits(4)}`
+    let wrongA = `VX-${clearDigits(4)}`, wrongB = `VX-${clearDigits(4)}`
+    while (wrongA === targetCode) wrongA = `VX-${clearDigits(4)}`
+    while (wrongB === targetCode || wrongB === wrongA) wrongB = `VX-${clearDigits(4)}`
+    const targetNode = `GW-SH-${clearDigits(3)}`
+    const wrongNodeA = `GW-BJ-${clearDigits(3)}`
+    const wrongNodeB = `GW-GZ-${clearDigits(3)}`
+    writeWorkspace(ctx, `errors-${tag}.json`, JSON.stringify({
+      [wrongA]: { fault: '上游令牌过期', gateway: wrongNodeA },
+      [targetCode]: { fault: '对账签名校验失败', gateway: targetNode },
+      [wrongB]: { fault: '导出磁盘空间不足', gateway: wrongNodeB },
+    }, null, 2))
+    await fresh(win)
+    const since = Date.now(), before = await cardCount(ctx)
+    await pasteBannerImage(win, `ERR: ${targetCode}`)
+    const out = await ask(win, `看下这张截图里的报错码，对照工作区的 errors-${tag}.json，只告诉我这个报错码对应的故障名称和网关节点，不用列其他无关条目，也不用改任何东西。`, { permission: 'allow' })
+    const numbers = summary(ctx, since)
+    const peeks = numbers.tools.filter((t) => t === 'read' || t === 'grep')
+    expect(actionsOf(numbers.routed).some((a) => a.kind === 'reply'), 'image + single-file check should route as reply', brief(numbers))
+    expect(!actionsOf(numbers.routed).some((a) => a.kind === 'start'), 'image + single-file check should start no background task', brief(numbers))
+    expect(await cardCount(ctx) === before, 'no new task card should show', brief(numbers))
+    expect(numbers.tools[0] === 'commit_route', 'commit_route should be called first before peeking', brief(numbers))
+    expect(peeks.length >= 1 && peeks.length <= 2, '1 to 2 peek calls after commit_route', brief(numbers))
+    expect(numbers.forbidden.length === 0, 'no forbidden tool calls', brief(numbers))
+    expect(out.answer.includes(targetCode) && out.answer.includes('对账签名校验失败') && out.answer.includes(targetNode), 'the answer should combine the visual code from the screenshot with the mapped fault and gateway from JSON', clip(out.answer, 300))
+    keep(ctx, 'numbers', { turnMs: out.ms, targetCode, targetNode, ...brief(numbers) })
+    await ctx.shot('route-image-peek')
+  },
+}
+
+const routeImageHandoff: LiveScenario = {
+  id: 'route-image-handoff',
+  title: '粘贴截图转交后台任务并带新图追问：原图随 start 与 message 自动进任务，读出图中编号落盘并在任务页展示',
+  feature: '后台任务',
+  core: true,
+  async run(ctx) {
+    const { win, expect } = ctx
+    writeNotes(ctx)
+    const stampCode = `RV-${clearDigits(4)}`
+    const patchCode = `FX-${clearDigits(4)}`
+    const outRel = `${dirOf(ctx)}/release-check.md`
+    await fresh(win)
+    const sinceStart = Date.now(), before = await cardCount(ctx)
+    await pasteBannerImage(win, `STAMP: ${stampCode}`)
+    await ask(
+      win,
+      `把这张审批截图和整理工作交给后台任务处理：结合截图里的审批编号，将 ${dirOf(ctx)} 文件夹里的几份纪要整理成发布核对单写到 ${outRel}，文件开头写上截图里的审批编号。`,
+      { permission: 'allow' },
+    )
+    const agentMsgsAfterStart: number = await run(win, `document.querySelectorAll('#thread .msg-agent').length`)
+    const card = await newCard(ctx, before, 10_000)
+    const startNumbers = summary(ctx, sinceStart)
+    expect(card !== null, 'image handoff should create a background task card', brief(startNumbers))
+    expect(actionsOf(startNumbers.routed).some((a) => a.kind === 'start' && a.status === 'done'), 'the request should route as start', brief(startNumbers))
+    expect(startNumbers.forbidden.length === 0, 'no forbidden tool calls on start', brief(startNumbers))
+    if (!card) return
+
+    const db = new DatabaseSync(path.join(ctx.userData, 'app.db'), { readOnly: true })
+    try {
+      const row = db.prepare('SELECT images FROM routing_requests WHERE id = ?').get(startNumbers.routed[0]?.requestId ?? '') as { images?: string | null } | undefined
+      const parsed = row?.images ? JSON.parse(row.images) as unknown[] : []
+      expect(parsed.length === 1, 'routing_requests should record the pasted image ref', parsed)
+    } finally { db.close() }
+
+    const firstWritten = await fileFromTask(ctx, outRel, (text) => text.includes(stampCode) && /李想|华晟/.test(text))
+    expect(Boolean(firstWritten?.includes(stampCode)), 'background task should read the pixel-only stampCode from the forwarded screenshot and write it to disk', clip(firstWritten ?? '(no release-check.md)', 400))
+    await waitForTaskAndReport(ctx, card.id, agentMsgsAfterStart)
+
+    // Step 2: paste a second screenshot and route a follow-up `message` to the completed task.
+    const sinceFollow = Date.now()
+    await pasteBannerImage(win, `PATCH: ${patchCode}`)
+    await ask(
+      win,
+      `给刚才做发布核对单的那个任务再补一张补丁核验图：把这张新图里的补丁编号追加写到 ${outRel} 末尾。`,
+      { permission: 'allow' },
+    )
+    const agentMsgsAfterFollow: number = await run(win, `document.querySelectorAll('#thread .msg-agent').length`)
+    const followNumbers = summary(ctx, sinceFollow)
+    const followActions = actionsOf(followNumbers.routed)
+    expect(followActions.some((a) => a.kind === 'message' && a.taskId === card.id), 'the second image should be forwarded via message to the existing task', { card: card.id, ...brief(followNumbers) })
+    expect(!followActions.some((a) => a.kind === 'start'), 'no second task should be started', brief(followNumbers))
+
+    const secondWritten = await fileFromTask(ctx, outRel, (text) => text.includes(stampCode) && text.includes(patchCode))
+    expect(Boolean(secondWritten?.includes(stampCode) && secondWritten?.includes(patchCode)), 'resumed task should append the second screenshot patchCode while keeping stampCode', clip(secondWritten ?? '(no release-check.md)', 400))
+    await waitForTaskAndReport(ctx, card.id, agentMsgsAfterFollow)
+
+    await run(win, `${CARDS}.find((c) => c.dataset.task === ${JSON.stringify(card.id)})?.click()`)
+    await until(win, `document.querySelector('#tasks-page .tp-main')?.dataset.task === ${JSON.stringify(card.id)}`, 'the task detail page open')
+    const picsShown = await until(win, `(() => {
+      const imgs = [...document.querySelectorAll('#tasks-page .tp-thread img.msg-pic')]
+      return imgs.length >= 2 && imgs.every((img) => img.complete && img.naturalWidth > 0) ? imgs.length : null
+    })()`, 'both forwarded screenshots rendered in the task thread', 15_000).catch(() => 0)
+    expect(picsShown >= 2, 'task detail view should render both forwarded images', { picsShown })
+    keep(ctx, 'numbers', { stampCode, patchCode, picsShown, start: brief(startNumbers), follow: brief(followNumbers) })
+    await ctx.shot('route-image-handoff')
+    await escape(win)
+  },
+}
+
+const routeDropOutside: LiveScenario = {
+  id: 'route-drop-outside',
+  title: '拖入工作区外的小文本文件快问：宿主安全内联，零跨目录审批卡、零后台任务直接答出内容',
+  feature: '文件',
+  core: true,
+  async run(ctx) {
+    const { win, expect, tag } = ctx
+    const noticeCode = `EXT-${clearDigits(4)}`
+    const outsideFile = path.join(ctx.outDir, `外部场地通知-${tag}.txt`)
+    fs.writeFileSync(outsideFile, `【临时变更通知】周五评审改在 7 楼云海报告厅举行，进场凭证号 ${noticeCode}。\n`, 'utf8')
+    await fresh(win)
+    const since = Date.now(), before = await cardCount(ctx)
+    await run(win, `(async () => {
+      const current = await window.agent.getDraft()
+      await window.agent.appendDraftFiles(current.key, [${JSON.stringify(outsideFile)}])
+      return true
+    })()`)
+    await until(win, `[...document.querySelectorAll('#composer [title]')].some((el) => el.getAttribute('title') === ${JSON.stringify(outsideFile)})`, 'the dropped outside file chip in composer')
+    // Deny any cross-directory permission card: host-side <attached-file> inlining must answer without needing DSH read.
+    const out = await ask(win, '这份拖进来的通知写在哪间报告厅举行、进场凭证号是多少？直接告诉我。', { permission: 'deny' })
+    const numbers = summary(ctx, since)
+    const peeks = numbers.tools.filter((t) => t === 'read' || t === 'grep')
+    expect(out.cards.length === 0, 'authorized dropped small text file outside workspace should trigger no permission card', out.cards)
+    expect(actionsOf(numbers.routed).some((a) => a.kind === 'reply'), 'dropped small text file question should route as reply', brief(numbers))
+    expect(!actionsOf(numbers.routed).some((a) => a.kind === 'start'), 'dropped small text file question should start no background task', brief(numbers))
+    expect(await cardCount(ctx) === before, 'no new task card should show', brief(numbers))
+    expect(peeks.length === 0, 'inlined <attached-file> should answer with zero file tool calls', brief(numbers))
+    expect(numbers.forbidden.length === 0, 'no forbidden tool calls', brief(numbers))
+    expect(out.answer.includes('云海') && out.answer.includes(noticeCode), 'the answer should contain the venue and noticeCode from the outside file', clip(out.answer, 300))
+    keep(ctx, 'numbers', { turnMs: out.ms, cards: out.cards.length, ...brief(numbers) })
+    await ctx.shot('route-drop-outside')
+  },
+}
+
+const routeAmbiguousFile: LiveScenario = {
+  id: 'route-ambiguous-file',
+  title: '目录多候选文件指代不明：路由前 glob 看文件名后当轮 clarify 反问，不盲开任务，选定后再交后台完成',
+  feature: '助手反问',
+  core: true,
+  async run(ctx) {
+    const { win, expect, tag } = ctx
+    const dir = `exports-${tag}`
+    const codeQ3 = `HD-${clearDigits(4)}`
+    const codeQ4 = `HB-${clearDigits(4)}`
+    writeWorkspace(ctx, `${dir}/2026-Q3-华东销售表.csv`, `单号,区域,金额\n${codeQ3},华东,41200\n`)
+    writeWorkspace(ctx, `${dir}/2026-Q4-华北销售表.csv`, `单号,区域,金额\n${codeQ4},华北,58900\n`)
+    await fresh(win)
+    const sinceAsk = Date.now(), before = await cardCount(ctx)
+    const first = await ask(win, `把工作区 ${dir} 目录里那份销售表整理成简短摘要写到 ${dir}/summary.md。`)
+    const askNumbers = summary(ctx, sinceAsk)
+    expect(askNumbers.tools[0] === 'glob', 'main agent should call glob once before routing to inspect candidate filenames', brief(askNumbers))
+    expect(!askNumbers.tools.includes('read'), 'pre-route disambiguation should only list filenames without reading file bodies', brief(askNumbers))
+    expect(actionsOf(askNumbers.routed).some((a) => a.kind === 'clarify'), 'ambiguous candidate files should route as clarify', brief(askNumbers))
+    expect(!actionsOf(askNumbers.routed).some((a) => a.kind === 'start'), 'should not blindly start a background task when candidates are ambiguous', brief(askNumbers))
+    expect(await cardCount(ctx) === before, 'no task card should appear before clarification', brief(askNumbers))
+    expect((/Q3|华东/.test(first.answer)) && (/Q4|华北/.test(first.answer)), 'clarification should name both candidate files', clip(first.answer, 300))
+
+    const sincePick = Date.now()
+    await ask(win, '用 Q4 华北那份。', { permission: 'allow' })
+    const card = await newCard(ctx, before, 10_000)
+    const pickNumbers = summary(ctx, sincePick)
+    expect(card !== null && actionsOf(pickNumbers.routed).some((a) => a.kind === 'start'), 'once clarified, it should hand over to a background task', brief(pickNumbers))
+    const summaryText = await fileFromTask(ctx, `${dir}/summary.md`, (text) => text.includes(codeQ4) || text.includes('58900'))
+    expect(Boolean(summaryText && (summaryText.includes(codeQ4) || summaryText.includes('58900')) && !summaryText.includes(codeQ3)), 'summary.md should use the chosen Q4 file and exclude Q3', clip(summaryText ?? '(no summary.md)', 300))
+    keep(ctx, 'numbers', { clarifyMs: first.ms, ask: brief(askNumbers), pick: brief(pickNumbers) })
+    await ctx.shot('route-ambiguous-file')
+  },
+}
+
+const routeImplicitMemory: LiveScenario = {
+  id: 'route-implicit-memory',
+  title: '无「按老规矩」触发词的记忆隐性术语：新话题自然提问直接命中团队术语对应的文件，不误读干扰项',
+  feature: '记忆',
+  async run(ctx) {
+    const { win, expect, tag } = ctx
+    const rightCode = `GW-${clearDigits(4)}`
+    let wrongCode = `NG-${clearDigits(4)}`
+    while (wrongCode === rightCode) wrongCode = `NG-${clearDigits(4)}`
+    const rightFile = `dsh-gateway-${tag}.json`
+    const wrongFile = `nginx-${tag}.json`
+    writeWorkspace(ctx, rightFile, JSON.stringify({ role: 'gateway', routeCode: rightCode }, null, 2))
+    writeWorkspace(ctx, wrongFile, JSON.stringify({ role: 'proxy', routeCode: wrongCode }, null, 2))
+    try {
+      await fresh(win)
+      await ask(win, `记住我们团队的内部术语约定：平时说「网关配置」特指工作区里的 ${rightFile}，不是 ${wrongFile}。`)
+      expect((await untilRemembered(win, rightFile)).length > 0, 'the team term mapping should be stored in memory')
+
+      await fresh(win)
+      const since = Date.now(), before = await cardCount(ctx)
+      // Deliberately omit any cue words like "按老规矩" or "按之前记住的".
+      const out = await ask(win, '看一眼工作区里的网关配置，里面的 routeCode 是什么？直接告诉我。', { permission: 'allow' })
+      const numbers = summary(ctx, since)
+      expect(actionsOf(numbers.routed).some((a) => a.kind === 'reply'), 'single-file lookup with remembered term should route as reply', brief(numbers))
+      expect(await cardCount(ctx) === before, 'no background task should be started', brief(numbers))
+      expect(out.answer.includes(rightCode) && !out.answer.includes(wrongCode), 'should read the remembered gateway file rather than the nginx distractor', clip(out.answer, 300))
+      keep(ctx, 'numbers', { turnMs: out.ms, ...brief(numbers) })
+      await ctx.shot('route-implicit-memory')
+    } finally {
+      await wait(MEMORY_SETTLE_MS)
+      for (const word of [rightFile, wrongFile, '网关配置']) await forgetMemories(win, word)
+    }
+  },
+}
+
+const routeImplicitChat: LiveScenario = {
+  id: 'route-implicit-chat',
+  title: '无触发词的跨话题内部代号：旧话题刚聊过未入记忆的代号，新话题主动查对话记录定位文件速查直答',
+  feature: '历史对话',
+  async run(ctx) {
+    const { win, expect, tag } = ctx
+    const alias = `苍穹源-${tag}`
+    const rightCode = `TK-${clearDigits(4)}`
+    let wrongCode = `TK-${clearDigits(4)}`
+    while (wrongCode === rightCode) wrongCode = `TK-${clearDigits(4)}`
+    const wrongFile = `cfg-alpha-${tag}.json`
+    const rightFile = `cfg-beta-${tag}.json`
+    writeWorkspace(ctx, wrongFile, JSON.stringify({ tokenId: wrongCode }, null, 2))
+    writeWorkspace(ctx, rightFile, JSON.stringify({ tokenId: rightCode }, null, 2))
+    try {
+      await fresh(win)
+      await ask(win, `同步个项目背景：代号「${alias}」对应的配置文件是工作区里的 ${rightFile}（${wrongFile} 是另一条无关线路）。不用记入长期记忆，直接回复「收到」即可。`)
+
+      await fresh(win)
+      const since = Date.now(), before = await cardCount(ctx)
+      const out = await ask(win, `看一眼工作区里「${alias}」对应的配置文件，只告诉我它的 tokenId 是多少，不要读也不要提及其他无关文件。`, { permission: 'allow' })
+      const numbers = summary(ctx, since)
+      const recovered = numbers.tools.filter((t) => t === 'search_conversations' || t === 'read_conversation' || t === 'memory_recall')
+      expect(recovered.length >= 1, 'main agent should search conversation/memory to resolve the opaque internal alias', brief(numbers))
+      expect(actionsOf(numbers.routed).some((a) => a.kind === 'reply'), 'after resolving the single config file, it should route as reply', brief(numbers))
+      expect(await cardCount(ctx) === before, 'no background task should be started for a single-value lookup', brief(numbers))
+      expect(out.answer.includes(rightCode) && !out.answer.includes(wrongCode), 'should answer with cfg-beta tokenId rather than cfg-alpha', clip(out.answer, 300))
+      keep(ctx, 'numbers', { turnMs: out.ms, recovered, ...brief(numbers) })
+      await ctx.shot('route-implicit-chat')
+    } finally {
+      await wait(MEMORY_SETTLE_MS)
+      for (const word of [alias, rightFile]) await forgetMemories(win, word)
+    }
+  },
+}
+
+const routePeekArtifact: LiveScenario = {
+  id: 'route-peek-artifact',
+  title: '追问后台任务刚落盘产物的附录细节：主会话直接速查产物回答，不发 message 唤醒已结束任务',
+  feature: '后台任务',
+  core: true,
+  async run(ctx) {
+    const { win, expect, tag } = ctx
+    const dir = `audit-${tag}`
+    const appendixCode = `ARC-${clearDigits(4)}`
+    writeWorkspace(
+      ctx,
+      `${dir}/raw.md`,
+      `# 11 月发布巡检原始记录\n\n- 本月共完成 12 次灰度发布，整体成功率 100%。\n- 核心服务平均响应 42 ms。\n\n## 附录：归档元数据\n- 归档校验码：${appendixCode}\n- 归档人：周楠\n`,
+    )
+    await fresh(win)
+    const before = await cardCount(ctx)
+    await ask(
+      win,
+      `把 ${dir}/raw.md 整理成正式归档文件写到 ${dir}/audit-final.md（必须原样保留附录里的全部归档元数据）；写完后你的最终汇报只写一句话「已生成归档文件」，不要在汇报文字里列出附录校验码。`,
+      { permission: 'allow' },
+    )
+    const agentMsgsAfterStart: number = await run(win, `document.querySelectorAll('#thread .msg-agent').length`)
+    const card = await newCard(ctx, before, 10_000)
+    expect(card !== null, 'first turn should start a background task to generate audit-final.md')
+    if (!card) return
+    const generated = await fileFromTask(ctx, `${dir}/audit-final.md`, (text) => text.includes(appendixCode))
+    expect(Boolean(generated?.includes(appendixCode)), 'audit-final.md should be written with the appendix code', clip(generated ?? '(no audit-final.md)', 300))
+    await waitForTaskAndReport(ctx, card.id, agentMsgsAfterStart)
+
+    const cardsAfterTask = await cardCount(ctx)
+    const sinceFollow = Date.now()
+    const follow = await ask(win, `看一眼刚生成的 ${dir}/audit-final.md，附录里的归档校验码写的是什么？直接告诉我。`, { permission: 'allow' })
+    const followNumbers = summary(ctx, sinceFollow)
+    const followActions = actionsOf(followNumbers.routed)
+    const peeks = followNumbers.tools.filter((t) => t === 'read' || t === 'grep')
+    expect(followActions.some((a) => a.kind === 'reply'), 'follow-up on a single detail in the written file should route as reply', brief(followNumbers))
+    expect(!followActions.some((a) => a.kind === 'message'), 'should not wake up the ended background task via message', brief(followNumbers))
+    expect(!followActions.some((a) => a.kind === 'start'), 'should not start a new background task', brief(followNumbers))
+    expect(await cardCount(ctx) === cardsAfterTask, 'task card count should stay unchanged', brief(followNumbers))
+    expect(followNumbers.tools[0] === 'commit_route' && peeks.length >= 1 && peeks.length <= 2, 'should commit_route first then peek audit-final.md', brief(followNumbers))
+    expect(follow.answer.includes(appendixCode), 'should answer with the exact appendixCode read from audit-final.md', clip(follow.answer, 300))
+    keep(ctx, 'numbers', { followTurnMs: follow.ms, ...brief(followNumbers) })
+    await ctx.shot('route-peek-artifact')
+  },
+}
+
+export const ROUTING_SCENARIOS: readonly LiveScenario[] = [
+  routeReply,
+  routePeek,
+  routeImagePeek,
+  routeImageHandoff,
+  routeDropOutside,
+  routeAmbiguousFile,
+  routeImplicitMemory,
+  routeImplicitChat,
+  routePeekArtifact,
+  routeHandoff,
+  routeUpdate,
+  routeInterject,
+  routeInterjectCorrect,
+  routeHistory,
+  routeStop,
+  routeSchedule,
+  routeMemory,
+  routeMcp,
+].map(isolated)

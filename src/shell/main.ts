@@ -625,6 +625,7 @@ app.whenReady().then(async () => {
     preview: () => deskPreview,
     onTypingChange: typing => { composerTyping = typing; mirror({ composerTyping }) },
     keepImage: async bytes => (await backendConnection()).rpc('images:keep', [bytes]) as Promise<KeptImage>,
+    allowDroppedFiles: async paths => (await backendConnection()).control('allow-dropped-files', paths),
     switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } })
   ownDraft = islandDrafts.ownDraft
   installAutomationDriver(automationMode, {

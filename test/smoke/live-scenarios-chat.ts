@@ -42,6 +42,19 @@ const chat: LiveScenario = {
 /** Four regions; the model has to add them up exactly. */
 const SALES = ['区域,销售额（元）', '华东,1234.50', '华南,2345.25', '华北,3456.75', '西南,987.50', ''].join('\n')
 const SALES_TOTAL = '8024'
+const THREAD_CARDS = `[...document.querySelectorAll('#thread .task-card')]`
+const ALL_AGENT_TEXT = `[...document.querySelectorAll('#thread .msg-agent .msg-text')].map((el) => el.textContent).join('\\n')`
+
+/** Ensures any background task started by this scenario finishes and delivers its report before the next scenario begins. */
+async function drainScenarioTasks(win: Parameters<typeof ask>[0], cardsBefore: number, timeoutMs = 90_000) {
+  const count: number = await run(win, `${THREAD_CARDS}.length`)
+  if (count <= cardsBefore) return
+  const initialMessages: number = await run(win, `document.querySelectorAll('#thread .msg-agent').length`)
+  await until(win, `${THREAD_CARDS}.slice(${cardsBefore}).every((c) => c.dataset.status !== 'running' && c.dataset.status !== 'waiting')`, 'started task finishing', timeoutMs).catch(() => {})
+  // Wait for the background report turn (`GATHER_MS` + model summary) to arrive and settle so it never lands in the next scenario.
+  await until(win, `document.querySelectorAll('#thread .msg-agent').length > ${initialMessages}`, 'task report arriving', 30_000).catch(() => {})
+  await settle(win)
+}
 
 const filesCsv: LiveScenario = {
   id: 'files-csv',
@@ -51,8 +64,11 @@ const filesCsv: LiveScenario = {
     const { win, expect, tag } = ctx
     writeWorkspace(ctx, `sales-${tag}.csv`, SALES)
     await fresh(win)
+    const cardsBefore: number = await run(win, `${THREAD_CARDS}.length`)
     const out = await ask(win, `工作区里的 sales-${tag}.csv 记录了各区域的销售额。把它们加起来，告诉我精确的合计金额。`, { permission: 'allow' })
-    expect(digitsOf(out.answer).includes(SALES_TOTAL), `the total should be ${SALES_TOTAL}`, clip(out.answer, 300))
+    await drainScenarioTasks(win, cardsBefore)
+    const shown: string = await run(win, ALL_AGENT_TEXT)
+    expect(digitsOf(shown || out.answer).includes(SALES_TOTAL), `the total should be ${SALES_TOTAL}`, clip(shown || out.answer, 300))
     await ctx.shot('files-csv')
   },
 }
@@ -65,11 +81,19 @@ const filesWrite: LiveScenario = {
   async run(ctx) {
     const { win, expect, tag, code } = ctx
     await fresh(win)
+    const cardsBefore: number = await run(win, `${THREAD_CARDS}.length`)
     const name = `notes-${tag}.md`
     const out = await ask(win, `在工作区新建一个文件 ${name}，内容只有一行：本周完成对账 ${code}`, { permission: 'allow' })
     const file = path.join(ctx.workspace, name)
-    const content = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
-    expect(content?.includes(code), 'the file should be written with the line asked for', { content, answer: clip(out.answer) })
+    const deadline = Date.now() + 90_000
+    let content: string | null = null
+    while (Date.now() < deadline) {
+      content = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
+      if (content?.includes(code)) break
+      await wait(1_000)
+    }
+    await drainScenarioTasks(win, cardsBefore)
+    expect(Boolean(content?.includes(code)), 'the file should be written with the line asked for', { content, answer: clip(out.answer) })
     await ctx.shot('files-write')
   },
 }
