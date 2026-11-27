@@ -30,7 +30,7 @@ test('the source smoke tests cover independent memory, schedules and real task r
   for (const title of [
     'MCP import menu stays inside its sidebar and cancelling an edit restores the saved server',
     'desktop portrait releases without undoing the drag or opening the panel',
-    'closing the reopened main window restores a usable desktop island while web fonts are pending',
+    'closing the reopened main window restores a usable desktop island with bundled local fonts',
     'desktop island preserves draft and focus while showing requests and compact states',
     'setup and source management @setup',
     'walkthrough and persisted relaunch @walkthrough @relaunch',

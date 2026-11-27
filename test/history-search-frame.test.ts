@@ -24,9 +24,7 @@ for (const outcome of ['loaded', 'loaded-composing', 'error', 'wrong-document', 
       setSelectionRange(start: number | null, end: number | null) { selection = [start, end] },
     })
     owner.activeElement = input
-    const fonts = { dataset: { fontHref: 'https://fonts.googleapis.com/css2' }, href: '' }
     const child = {
-      querySelector() { assert.equal(adopted, input); return fonts },
       documentElement: { dataset: { historySearchFrame: outcome === 'wrong-document' ? undefined : 'true' } },
       body: { append(node: unknown) { adopted = node } },
     }
@@ -69,7 +67,6 @@ for (const outcome of ['loaded', 'loaded-composing', 'error', 'wrong-document', 
         assert.deepEqual(selection, [1, 4])
         assert.equal(focused, 1)
         assert.equal(removed, false)
-        assert.equal(fonts.href, fonts.dataset.fontHref)
         input.dispatchEvent(new Event('focus'))
         assert.equal(dataset.focused, 'true')
         input.dispatchEvent(new Event('blur'))
@@ -77,7 +74,6 @@ for (const outcome of ['loaded', 'loaded-composing', 'error', 'wrong-document', 
       } else {
         assert.equal(result, null)
         assert.equal(adopted, undefined)
-        assert.equal(fonts.href, '')
         assert.equal(restored, false, 'An unmoved fallback must not be reinserted and lose focus')
         assert.equal(removed, true)
         if (outcome === 'timeout') {

@@ -13,25 +13,21 @@ const extraDocuments = new Set<Document>()
 let observeDocument: ((doc: Document) => void) | null = null
 const languageDocuments = () => [document, ...extraDocuments]
 
+async function preloadBundledFonts(doc: Document): Promise<void> {
+  if (!doc.fonts || typeof doc.fonts[Symbol.iterator] !== 'function') return
+  await Promise.allSettled([...doc.fonts].map(face => face.load()))
+}
+
 /** The isolated search field still shares language, drafts, focus and IME semantics with its parent. */
 export function registerLanguageDocument(doc: Document): void {
   if (extraDocuments.has(doc)) return
   extraDocuments.add(doc)
   observeDocument?.(doc)
+  void preloadBundledFonts(doc)
   applyDocument(doc, state)
 }
 
-function enableWebFonts(doc: Document): void {
-  if (typeof doc.querySelectorAll !== 'function') return
-  for (const link of doc.querySelectorAll<HTMLLinkElement>('link[data-web-fonts]')) {
-    if (link.media === 'all') continue
-    if (link.sheet) link.media = 'all'
-    else link.addEventListener('load', () => { link.media = 'all' }, { once: true })
-  }
-}
-
 function applyDocument(doc: Document, next: LanguageState): void {
-  enableWebFonts(doc)
   doc.documentElement.lang = next.locale
   for (const el of doc.querySelectorAll<HTMLElement>('[data-i18n]')) {
     el.textContent = translate(el.dataset.i18n ?? '')
@@ -95,7 +91,7 @@ export async function initializeLanguage(api: LanguageApi, redraw: () => void): 
   languageDocuments().forEach(observeDocument)
   api.onLanguage((next) => { received = true; if (composing.size) pending = next; else update(next) })
   try {
-    const initial = await api.getLanguage()
+    const [initial] = await Promise.all([api.getLanguage(), preloadBundledFonts(document)])
     if (!received) apply(initial)
   } finally {
     delete document.documentElement.dataset.languageLoading

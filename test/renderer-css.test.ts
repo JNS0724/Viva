@@ -117,3 +117,22 @@ test('light theme overrides every theme-dependent token defined on :root', () =>
   assert.equal(syntheticRequired.has('--layout-alias'), false)
   assert.equal(syntheticRequired.has('--palette-alias'), true)
 })
+
+test('every bundled @font-face asset and OFL license exists locally, and HTML CSPs forbid external font hosts', () => {
+  const fontsCss = fs.readFileSync(path.join(RENDERER, 'fonts.css'), 'utf8')
+  const urls = [...fontsCss.matchAll(/url\('(\.\/fonts\/[^']+\.woff2)'\)/g)].map(match => match[1]!)
+  assert.ok(urls.length >= 100, `expected bundled variable font slices in fonts.css, found ${urls.length}`)
+  for (const rel of urls) {
+    const file = path.resolve(RENDERER, rel)
+    assert.ok(fs.existsSync(file) && fs.statSync(file).size > 0, `missing or empty bundled font: ${rel}`)
+  }
+  const ofl = path.join(RENDERER, 'fonts', 'OFL.txt')
+  assert.ok(fs.existsSync(ofl) && fs.readFileSync(ofl, 'utf8').includes('SIL OPEN FONT LICENSE'), 'missing OFL.txt license bundle')
+
+  for (const page of ['index.html', 'desk.html', 'history-search-frame.html']) {
+    const html = fs.readFileSync(path.join(RENDERER, page), 'utf8')
+    assert.ok(html.includes('href="./fonts.css"'), `${page} must load ./fonts.css`)
+    assert.ok(html.includes("style-src 'self';") && html.includes("font-src 'self'"), `${page} CSP must restrict style-src and font-src to 'self'`)
+    assert.ok(!/fonts\.googleapis\.com|fonts\.gstatic\.com/.test(html), `${page} must not reference external Google Fonts hosts`)
+  }
+})

@@ -59,7 +59,7 @@ Viva 现有界面的视觉和交互规则，从 `src/renderer/styles.css`、`isl
 | `--font-mono` | JetBrains Mono → SF Mono / Cascadia Mono / Consolas → Noto Sans SC / 苹方 / 微软雅黑 → 通用等宽 | 路径、快捷键、密钥、代码、时间、模型名，中文使用明确的无衬线回退 |
 | `--font-dot` | Doto | 点阵大字，只用在设置页的密钥状态 |
 
-网页字体通过 Google Fonts 以 `display=optional` 加载，加载不到就用系统字体，不闪烁。CSP 只放行 fonts.googleapis.com 和 fonts.gstatic.com，新增字体也只能从这里来。
+四套开源可变字体（SIL OFL 1.1，许可证见 `src/renderer/fonts/OFL.txt`）全部随应用打包在 `src/renderer/fonts/` 下，由 `fonts.css` 通过本地 `@font-face`（`font-display: block`）直接加载，不发起外部网络请求，在各平台保持一致且不闪烁。CSP 的 `style-src` 与 `font-src` 均收紧为 `'self'`，新增字体也统一打包在本地。
 
 字号：
 
