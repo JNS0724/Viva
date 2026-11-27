@@ -16,7 +16,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
-import { parseMemoryDocument } from '../src/memory/core/memory-document.ts'
+import { formatMemoryDocument, parseMemoryDocument } from '../src/memory/core/memory-document.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
@@ -71,7 +71,7 @@ function noteContextGeneration(key: string) {
   const identity: unknown = JSON.parse(key)
   assert.ok(Array.isArray(identity) && typeof identity[1] === 'string')
   const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
-  try { return Number(db.prepare('SELECT generation FROM owner_context_generations WHERE session=?').get(identity[1])?.generation ?? 0) }
+  try { return Number((db.prepare("SELECT value FROM memory_meta WHERE key='revision'").get() as { value?: string } | undefined)?.value ?? 0) }
   finally { db.close() }
 }
 async function nativeMessages(session: string) {
@@ -93,7 +93,7 @@ async function prepareStandaloneForget() {
     await owner.recover()
     const store = openMemoryStore(path.join(dataRoot, 'memory.db'))
     try {
-      const row = store.db.prepare('SELECT id FROM memory_sources WHERE text=? AND withdrawn=0').get(original)
+      const row = store.db.prepare("SELECT id FROM memory_sources WHERE text=? AND outcome<>'rejected'").get(original)
       const source = typeof row?.id === 'string' ? store.readSource(row.id) : undefined
       assert.ok(source?.session, 'Web must have admitted the original human source')
       const workspace = memorySourceWorkspace(source)
@@ -102,7 +102,7 @@ async function prepareStandaloneForget() {
         return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
       } })
       const created = documents.commit({ operationId: randomUUID(), workspace, path: 'digest/wiki/standalone-erasure-probe.md',
-        expectedRevision: null, action: 'CREATE', markdown: originalFact, sources: [{ id: source.id, token: memorySourceToken(source),
+        expectedRevision: null, action: 'CREATE', markdown: formatMemoryDocument({ metadata: { name: originalFact }, body: originalFact }), sources: [{ id: source.id, token: memorySourceToken(source),
           spans: [{ start: 0, end: originalFact.length }] }], reads: [] })
       assert.ok(created?.documentId)
       const identity = { kind: 'digest' as const, workspace, id: created.documentId }
@@ -168,7 +168,7 @@ const llm = await startFakeLlm({ decideFirst: (request: object) => {
   if (venueReply) return venueReply
   const input = request as { system?: unknown, tools?: Array<{ name?: string }>, messages?: Array<{ role?: string, content?: string | Array<{ type?: string, name?: string, text?: string }> }> }
   if (JSON.stringify(input.system).includes('整理最近完成的会话回合')) return {
-    text: JSON.stringify({ status: 'write', title: '周报约定', markdown: `# 周报约定\n\n${marker}`, filename: 'weekly-summary' }),
+    text: JSON.stringify({ status: 'write', title: '周报约定', state: marker, events: [marker] }),
   }
   const assistant = input.messages?.filter(message => message.role === 'assistant').at(-1)
   const tool = Array.isArray(assistant?.content) ? assistant.content.find(part => part.type === 'tool_use') : undefined

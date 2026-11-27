@@ -68,7 +68,14 @@ export function mergeDocumentSources(refs: readonly DocumentSourceRef[]): Docume
       if (last && span.start <= last.end) last.end = Math.max(last.end, span.end)
       else ranges.push({ ...span })
     }
-    merged.set(ref.id, { ...ref, ...(spans ? { spans: ranges } : { spans: undefined }) })
+    const dependencyOnly = previous ? Boolean(previous.dependencyOnly && ref.dependencyOnly) : Boolean(ref.dependencyOnly)
+    const next: DocumentSourceRef = {
+      id: ref.id,
+      token: ref.token,
+      ...(spans ? { spans: ranges } : {}),
+      ...(dependencyOnly ? { dependencyOnly: true } : {}),
+    }
+    merged.set(ref.id, next)
   }
   return [...merged.values()]
 }
@@ -141,7 +148,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     for (const ref of combined) {
       const value = reference(ref.id)
       if (!value) return null
-      sources.push(value)
+      if (!ref.dependencyOnly) sources.push(value)
     }
     const revision = note ? note.fileRevision : digest!.revision
     const usageVersion = note ? note.revision : digest!.usageVersion

@@ -37,7 +37,7 @@ test('daily notes are recalled after five rounds and a new digest retains its ci
         assert.equal(input.turns.length, 5)
         assert.equal(input.turns[0]?.user[0]?.text, firstText)
         assert.equal(input.turns[1]?.assistant, '记下当前进展')
-        return JSON.stringify({ status: 'write', title: '周报安排', markdown: '周五提交周报。草稿尚未完成。' })
+        return JSON.stringify({ status: 'write', title: '周报安排', state: '周五提交周报。草稿尚未完成。', events: ['周五提交周报。草稿尚未完成。'] })
       }
       assert.equal(job.stage, 'dream')
       if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
@@ -82,7 +82,7 @@ test('Dream refines the current report recipient while the original chat keeps i
     async compute(job, _signal, tools) {
       stages.push(job.stage)
       if (job.stage === 'note') {
-        return JSON.stringify({ status: 'write', title: 'Weekly report', markdown: canonical })
+        return JSON.stringify({ status: 'write', title: 'Weekly report', state: canonical, events: [canonical] })
       }
       if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
       if (job.system !== DREAM_CONSOLIDATE_SYSTEM) return JSON.stringify({ verdict: 'accept' })
@@ -118,8 +118,8 @@ test('daily recall searches past 64 newer notes and returns a match at the end w
   const { dir, defer } = scratch(t, 'viva-daily-full-recall-')
   let now = Date.parse('2026-11-01T08:00:00Z')
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
-  const beginning = '# Earlier progress\n' + ('Previous milestones and work already discussed.\n'.repeat(220))
-  const ending = '# Final decisions\n' + 'Supplemental material from the daily discussion.\n'.repeat(40) + 'NEBULARHARBOR'
+  const beginning = 'Earlier progress\n' + ('Previous milestones and work already discussed.\n'.repeat(220))
+  const ending = 'Final decisions: ' + 'Supplemental material from the daily discussion. '.repeat(40) + 'NEBULARHARBOR'
   const memory = createMemoryRuntime({
     store, now: () => now, dailyNotes: { noteInterval: 1 },
     route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
@@ -132,7 +132,11 @@ test('daily recall searches past 64 newer notes and returns a match at the end w
         assert(input.turns[0].assistant.endsWith('Full assistant text end'))
         assert(input.turns[0].assistant.length > 100_000)
       }
-      return JSON.stringify({ status: 'write', title: 'Daily note', markdown: first ? beginning + ending : 'Periodic meeting' })
+      return JSON.stringify(
+        first
+          ? { status: 'write', title: 'Daily note', state: beginning, events: [ending] }
+          : { status: 'write', title: 'Daily note', state: 'Periodic meeting', events: ['Periodic meeting'] },
+      )
     },
   })
   defer(() => memory.close())
@@ -180,7 +184,7 @@ test('document consolidation waits for the draft before checkpointing and retrie
     store, now: () => now, dailyNotes: { noteInterval: 1 },
     route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job, _signal, tools) {
-      if (job.stage === 'note') return JSON.stringify({ status: 'write', title: 'Report', markdown: fact })
+      if (job.stage === 'note') return JSON.stringify({ status: 'write', title: 'Report', state: fact, events: [fact] })
       assert.equal(job.stage, 'dream')
       if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
       assert.equal(job.system, DREAM_CONSOLIDATE_SYSTEM)
@@ -222,8 +226,8 @@ test('consolidation groups the two-day window by byte budget, bisects explicit c
       const input = JSON.parse(job.input)
       if (job.stage === 'note') {
         const title = input.turns[0].user[0].text
-        const markdown = '城'.repeat(title === 'large note' ? 61_000 : 4_000)
-        return JSON.stringify({ status: 'write', title, markdown })
+        const state = '城'.repeat(title === 'large note' ? 61_000 : 4_000)
+        return JSON.stringify({ status: 'write', title, state, events: [] })
       }
       assert.equal(job.stage, 'dream')
       if (job.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
@@ -272,7 +276,7 @@ test('a partial daily-note batch survives restart and can be written once', asyn
     async compute(job) {
       assert.equal(job.stage, 'note')
       modelCalls += 1
-      return JSON.stringify({ status: 'write', title: '原型验证', markdown: '用户在检查原型，今天还要补测试。' })
+      return JSON.stringify({ status: 'write', title: '原型验证', state: '用户在检查原型，今天还要补测试。', events: [] })
     },
   })
   const first = start()
@@ -310,7 +314,7 @@ test('a recovered completed turn uses message time in configured timezone, accep
       assert.equal(input.turns[0].user[0].author, 'user')
       assert.equal(input.turns[0].user[0].version, 1)
       assert.equal(input.turns[0].assistant, '')
-      return JSON.stringify({ status: 'write', title: '历史回合', markdown: '我的发布核对日是周五' })
+      return JSON.stringify({ status: 'write', title: '历史回合', state: '我的发布核对日是周五', events: [] })
     },
   })
   defer(() => memory.close())
@@ -362,7 +366,7 @@ for (const extraction of ['partial', 'empty'] as const) test(`daily files retain
     async compute(job, _signal, tools) {
       if (job.stage === 'note') {
         notesWritten++
-        return JSON.stringify({ status: 'write', title: '周报安排', markdown: text })
+        return JSON.stringify({ status: 'write', title: '周报安排', state: text, events: [text] })
       }
       assert.equal(job.stage, 'dream')
       return dreamModelStep(job, { empty: extraction === 'empty', summary: fact, evidenceId: sourceId }, tools)
@@ -378,14 +382,14 @@ for (const extraction of ['partial', 'empty'] as const) test(`daily files retain
   assert.equal(store.readSource(sourceId)?.outcome, 'note-ready')
   assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_documents').get()?.n, extraction === 'empty' ? 0 : 1)
   const read = () => JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '调试界面' }, origin)) as { notes: { markdown: string }[] }
-  assert.equal(read().notes[0]?.markdown, text)
+  assert.match(read().notes[0]?.markdown ?? '', new RegExp(text))
   const next = randomUUID()
   memory.accept('补上封面', origin, next)
   memory.recordNoteTurn!(origin.session, [next], '好的')
   await memory.wake()
   assert.equal(notesWritten, 2)
   assert.equal(store.db.prepare("SELECT count(*) AS n FROM memory_note_ranges WHERE status='pending'").get()?.n, 0)
-  assert.equal(read().notes[0]?.markdown, text)
+  assert.match(read().notes[0]?.markdown ?? '', new RegExp(text))
 })
 
 
@@ -416,11 +420,11 @@ test('recovery finishes a receipted note generation before processing the remain
     route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(request) {
       assert.equal(request.stage, 'note')
-      const input = JSON.parse(request.input) as { existing: { markdown: string }, turns: unknown[] }
-      assert.equal(input.existing.markdown, '前五回合已整理')
+      const input = JSON.parse(request.input) as { existing: { state: string }, turns: unknown[] }
+      assert.equal(input.existing.state, '前五回合已整理')
       assert.equal(input.turns.length, 2)
       computed.push(request.generation)
-      return JSON.stringify({ status: 'write', title: '全部记录', markdown: '七个回合均已整理' })
+      return JSON.stringify({ status: 'write', title: '全部记录', state: '七个回合均已整理', events: ['七个回合均已整理'] })
     },
   })
   defer(() => memory.close())

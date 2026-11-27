@@ -18,8 +18,10 @@ export type MemorySourceKind =
   | 'main-human'
   | 'project-user'
   | 'question-answer'
+  | 'question-selection'
   | 'task-human-steer'
   | 'task-question-answer'
+  | 'task-question-selection'
   | 'task-brief'
   | 'task-assistant'
   | 'manual'
@@ -35,7 +37,7 @@ export interface MemorySource {
   scope: MemoryScope
   context: MemoryScope | null
   project?: MemoryScope | null
-  author: 'user' | 'manual' | 'answer' | 'agent' | 'assistant'
+  author: 'user' | 'manual' | 'answer' | 'selection' | 'agent' | 'assistant'
   sourceKind?: MemorySourceKind | null
   profileEligible?: boolean
   text: string | null

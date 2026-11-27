@@ -44,8 +44,9 @@ function fixture(t: TestContext, beforeStart?: (resources: ReturnType<typeof ope
     compute(job) {
       calls.push(job)
       if (job.stage !== 'note') return null
-      const input = JSON.parse(job.input) as { existing?: {markdown:string}, turns: Array<{ user: Array<{ text: string }> }> }
-      return Promise.resolve(JSON.stringify({ status: 'write', title: '个人资料', markdown: [input.existing?.markdown ?? '', ...input.turns.flatMap(turn => turn.user.map(source => source.text))].filter(Boolean).join('\n') }))
+      const input = JSON.parse(job.input) as { existing?: { state: string }, turns: Array<{ user: Array<{ text: string }> }> }
+      const turnTexts = input.turns.flatMap(turn => turn.user.map(source => source.text))
+      return Promise.resolve(JSON.stringify({ status: 'write', title: '个人资料', state: [input.existing?.state ?? '', ...turnTexts].filter(Boolean).join('\n'), events: turnTexts }))
     },
   })
   defer(() => memory.close())

@@ -195,13 +195,15 @@ export function parseMemoryMarkdown(markdown: string, { maxBytes = DAILY_MEMORY_
   }
   collect(tokens, body)
 
+  const documentName = typeof document.metadata.name === 'string' ? document.metadata.name.trim() : ''
   let pending: { start: number, end: number, headingPath: string[] } | null = null
   function flush() {
     if (!pending) return
     const { start, end, headingPath } = pending
     const text = markdown.slice(start, end)
+    const searchHeadings = [...new Set([documentName, ...headingPath].map(item => item.trim()).filter(Boolean))]
     if (text.length) chunks.push({ text, startOffset: start, endOffset: end, startLine: lineAt(start),
-      endLine: lineAt(Math.max(start, end - 1)), headingPath, searchText: [...headingPath, text].join('\n') })
+      endLine: lineAt(Math.max(start, end - 1)), headingPath, searchText: [...searchHeadings, text].join('\n') })
     pending = null
   }
   function add(start: number, end: number) {

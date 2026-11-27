@@ -31,7 +31,7 @@ export function fileMemorySmokeAnswer(request: object) {
   if (!JSON.stringify(system ?? '').includes('整理最近完成的会话回合')) return null
   const supplied = JSON.stringify(messages?.at(-1)?.content ?? '')
   const record = [[REPORT_TITLE, REPORT_MEMORY], [DELETE_TITLE, DELETE_MEMORY], [WITHDRAWN_TITLE, WITHDRAWN]].find(([, body]) => supplied.includes(body!))
-  const note = record ? { status: 'write', title: record[0], markdown: `# ${record[0]}\n\n${record[1]}` } : { status: 'skip' }
+  const note = record ? { status: 'write', title: record[0], state: record[1], events: [record[1]] } : { status: 'skip' }
   return { text: JSON.stringify(note) }
 }
 

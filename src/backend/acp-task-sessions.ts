@@ -4,7 +4,13 @@ import type { SteerResult } from '../shared/agent-info.ts'
 import type { DispatchOrigin } from '../shared/request-routing/provenance.ts'
 import { emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
 
-export type TaskDispatchMeta = { origin: DispatchOrigin, conversationId?: string, sourceId?: string }
+export type TaskDispatchMeta = {
+  origin: DispatchOrigin
+  conversationId?: string
+  sourceId?: string
+  threadId?: string
+  hostDay?: string
+}
 
 type Choice = { id: string } & ({ type: 'select', currentValue: string } | { type: 'boolean', currentValue: boolean })
 interface Attachment { attached: boolean, unattended: boolean, config: readonly Choice[] | null }
@@ -138,7 +144,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     const attachment = sessions.get(taskId)
     if (!attachment?.attached) { emit({ type: 'task_end', taskId, stopReason: 'error', message: goneMessage() }); return }
     const effectiveMeta: TaskDispatchMeta | undefined = attachment.unattended
-      ? { ...meta, origin: 'unattended' }
+      ? { origin: 'unattended' }
       : meta
     try { text = await preparePrompt(taskId, text, effectiveMeta) } catch (error) { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(error) }); return }
     if (!current(taskId, attachment)) return
@@ -161,7 +167,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
       const attachment = sessions.get(id)
       if (!attachment?.attached) return { ok: false, reason: 'missing', delivery: 'not-sent' }
       const effectiveMeta: TaskDispatchMeta | undefined = attachment.unattended
-        ? { ...meta, origin: 'unattended' }
+        ? { origin: 'unattended' }
         : meta
       const result = await steer(id, text, effectiveMeta)
       if (!current(id, attachment)) {

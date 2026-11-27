@@ -133,7 +133,7 @@ test('dream model waits, repeated retry and persisted recovery never become a de
   const open = () => openMemoryOwner({ root, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
     route: () => ({ provider: 'fixture', model: 'fixture' }),
     compute: job => {
-      if (job.stage === 'note') return Promise.resolve(JSON.stringify({ status: 'write', title: 'Weekly report', markdown: 'The weekly report is due Friday.' }))
+      if (job.stage === 'note') return Promise.resolve(JSON.stringify({ status: 'write', title: 'Weekly report', state: 'The weekly report is due Friday.', events: ['The weekly report is due Friday.'] }))
       if (job.stage !== 'dream') return null
       dreamCount++
       const pending = new Promise<string>((_resolve, reject) => { finish = () => reject(new MemoryComputeError('timeout')) })

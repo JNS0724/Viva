@@ -93,7 +93,7 @@ export type QuestionAnswerMeta = {
 }
 export type QuestionAnswerResolution =
   | string
-  | { sourceIds: Readonly<Record<string, string>>, conversationId?: string }
+  | { sourceIds?: Readonly<Record<string, string>>, conversationId?: string, recordReceipt?: boolean }
   | void
 
 /**
@@ -210,11 +210,12 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
         }
       }
       const sourceId = typeof sources === 'string' ? sources : undefined
-      const sourceIds = sources && typeof sources === 'object' && Object.keys(sources.sourceIds).length > 0 ? sources.sourceIds : undefined
+      const sourceIds = sources && typeof sources === 'object' && sources.sourceIds && Object.keys(sources.sourceIds).length > 0 ? sources.sourceIds : undefined
       const conversationId = sources && typeof sources === 'object' ? sources.conversationId : undefined
+      const recordReceipt = Boolean(sources && typeof sources === 'object' && (sources.recordReceipt || sourceIds))
       if (!await validQuestion(entry) || pending.get(questionId) !== entry) return false
       pending.delete(questionId)
-      const provenance = options?.recordMemory !== false && sourceIds && conversationId
+      const provenance = options?.recordMemory !== false && recordReceipt && conversationId
         ? { origin: 'human' as const, conversationId, answeredAt, ...(answerProfileGen !== undefined ? { answerProfileGen } : {}) }
         : undefined
       send({ type: 'answer', id: questionId, answers: checked, ...(provenance ? { provenance } : {}) })

@@ -89,7 +89,7 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, overlay = null as string | null, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
+  taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext, topicOfConversation,
   launch = null as object | null, routing, onQuestionAnswer, admitTaskWaitResume, onSessionCreated, projectMatches, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed,
   allowGeneralQuestion,
 }: {
@@ -111,6 +111,7 @@ export function createAcpBridge({
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
   conversationContext?: (sessionId: string) => ConversationContext | null,
+  topicOfConversation?: (conversationId: string, sessionId: string | null) => string | null,
   allowGeneralQuestion?: (session: string, turn: string | undefined, questions: readonly import('./question-channel.ts').Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') =>
     import('./question-channel.ts').QuestionAdmission | Promise<import('./question-channel.ts').QuestionAdmission>,
   readyMemory?: () => void,
@@ -381,6 +382,8 @@ export function createAcpBridge({
           sessionKind: 'task',
           ...(meta?.conversationId ? { conversationId: meta.conversationId } : {}),
           ...(meta?.sourceId ? { sourceId: meta.sourceId } : {}),
+          ...(meta?.threadId ? { threadId: meta.threadId } : {}),
+          ...(meta?.hostDay ? { hostDay: meta.hostDay } : {}),
           humanSpans: wrapped.spans,
         })
       }
@@ -389,6 +392,8 @@ export function createAcpBridge({
         sourceKind: 'task-brief',
         sessionKind: 'task',
         ...(meta?.conversationId ? { conversationId: meta.conversationId } : {}),
+        ...(meta?.threadId ? { threadId: meta.threadId } : {}),
+        ...(meta?.hostDay ? { hostDay: meta.hostDay } : {}),
         humanSpans: wrapped.spans,
       })
     },
@@ -401,6 +406,8 @@ export function createAcpBridge({
             kind: 'viva-task-human-steer',
             ...(meta?.sourceId ? { sourceId: meta.sourceId } : {}),
             ...(meta?.conversationId ? { conversationId: meta.conversationId } : {}),
+            ...(meta?.threadId ? { threadId: meta.threadId } : {}),
+            ...(meta?.hostDay ? { hostDay: meta.hostDay } : {}),
             humanSpans: wrapped.payloadSpans,
           },
         })
@@ -409,6 +416,8 @@ export function createAcpBridge({
         source: {
           kind: 'viva-task-router-message',
           ...(meta?.conversationId ? { conversationId: meta.conversationId } : {}),
+          ...(meta?.threadId ? { threadId: meta.threadId } : {}),
+          ...(meta?.hostDay ? { hostDay: meta.hostDay } : {}),
         },
       })
     },
@@ -523,8 +532,11 @@ export function createAcpBridge({
    * @param images pictures pasted with it, base64
    * @param request whether these are the user's words, a request of their own; a task's result coming back is not
    */
-  async function prompt(text: string, images: Array<{ id?: string, data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart, sourceId, sourceText, held }: {
-    request?: boolean, userTurn?: boolean, onStart?: () => void, sourceId?: string, sourceText?: string, held?: () => boolean,
+  const threadFor = (conversationId: string | null | undefined, sid: string | null, explicit?: string) =>
+    explicit ?? (conversationId ? (topicOfConversation?.(conversationId, sid) ?? conversationId) : undefined)
+
+  async function prompt(text: string, images: Array<{ id?: string, data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart, sourceId, sourceText, threadId, held }: {
+    request?: boolean, userTurn?: boolean, onStart?: () => void, sourceId?: string, sourceText?: string, threadId?: string, held?: () => boolean,
   } = {}) {
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
     if (recoveryRequired) throw new Error(t('conversation.stop.unconfirmed'))
@@ -537,6 +549,7 @@ export function createAcpBridge({
     if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
     if (held && !held()) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
+    const effectiveThreadId = threadFor(context?.conversationId, asked, threadId)
     const effectiveSourceText = sourceText !== undefined ? sourceText : text
     const imageRefs = checkImages(images.flatMap(item => typeof item.id === 'string' ? [{ id: item.id }] : [])) ?? []
     const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, effectiveSourceText, imageRefs) : null
@@ -547,6 +560,7 @@ export function createAcpBridge({
         sessionKind: 'main',
         ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
         ...(sourceId ? { sourceId } : {}),
+        ...(effectiveThreadId ? { threadId: effectiveThreadId } : {}),
         humanSpans: routed.spans,
       })
       : (asked
@@ -555,6 +569,7 @@ export function createAcpBridge({
           sourceKind: 'viva-report-batch',
           sessionKind: 'main',
           ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
+          ...(effectiveThreadId ? { threadId: effectiveThreadId } : {}),
         }, '').text
         : text)
     if (held && !held()) throw new ForegroundRequestRetired()
@@ -727,7 +742,7 @@ export function createAcpBridge({
    * own; one that reached no turn fails, since the window asks the words anew.
    */
   async function steer(text: string, sourceId?: string, held: () => boolean = () => true,
-    retiredReason: () => 'idle' | 'unavailable' = () => 'unavailable', onDispatch?: () => void) {
+    retiredReason: () => 'idle' | 'unavailable' = () => 'unavailable', onDispatch?: () => void, threadId?: string) {
     const retired = () => ({ ok: false as const, reason: retiredReason(), delivery: 'not-sent' as const })
     if (!held()) return retired()
     if (!sessionId || recoveryRequired) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
@@ -735,6 +750,7 @@ export function createAcpBridge({
     if (!held()) return retired()
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
     const context = contextFor(asked)
+    const effectiveThreadId = threadFor(context?.conversationId, asked, threadId)
     const request = asRequest(text, asked, 'interjection', sourceId)
     const wrapped = interjection(request.text)
     const prefixLength = wrapped.length - request.text.length
@@ -750,6 +766,7 @@ export function createAcpBridge({
         kind: 'viva-main-human-steer',
         ...(sourceId ? { sourceId } : {}),
         ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
+        ...(effectiveThreadId ? { threadId: effectiveThreadId } : {}),
         humanSpans: spans,
       },
     })

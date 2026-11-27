@@ -107,7 +107,7 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
     'Use `/memory-remember <text>` to save an entry and `/memory-forget <id>` to forget an entry by its saved or recalled ID.',
     'DSH Web 0.2.2-rc.2 shows command receipts once a conversation has a normal turn. The receipt reports when removal of the selected file and its index is still pending.',
     '',
-    'The plugin opens a v13 memory database. If the existing database is incompatible, memory is unavailable and the existing files stay in place.',
+    'The plugin opens a v15 memory database. If the existing database is incompatible, memory is unavailable and the existing files stay in place.',
     '',
     'Local embedding assets are optional external resources supplied by modelRoot/runtimeRoot configuration; this package never downloads models on startup.',
     'Dedicated Web management pages are a separate later phase.', '',

@@ -586,7 +586,7 @@ test('real plugin -> worker RPC enforces 429 Retry-After cooldown across Note, D
         ? JSON.stringify({ operations: [] })
         : isDreamProfile
           ? JSON.stringify({ action: 'NOOP' })
-          : JSON.stringify({ status: 'write', title: 'Daily Note', markdown: 'Weekly report submitted on Friday.' })
+          : JSON.stringify({ status: 'write', title: 'Daily Note', state: 'Weekly report submitted on Friday.', events: ['Weekly report submitted on Friday.'] })
       yield { type: 'block-start', index: 0, blockType: 'text' }
       yield { type: 'text-delta', index: 0, text: replyText }
       yield { type: 'block-end', index: 0, block: { type: 'text', text: replyText } }
@@ -918,7 +918,7 @@ test('Dream edited in-flight preserves Retry-After cooldown on newer generation 
       }
       const text = isDreamConsolidate ? JSON.stringify({ operations: [] })
         : isDreamProfile ? JSON.stringify({ action: 'NOOP' })
-        : JSON.stringify({ status: 'write', title: 'Daily Note', markdown: 'Weekly report on Friday.' })
+        : JSON.stringify({ status: 'write', title: 'Daily Note', state: 'Weekly report on Friday.', events: ['Weekly report on Friday.'] })
       yield { type: 'block-start', index: 0, blockType: 'text' }
       yield { type: 'text-delta', index: 0, text }
       yield { type: 'block-end', index: 0, block: { type: 'text', text } }

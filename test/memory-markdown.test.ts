@@ -131,3 +131,12 @@ test('duplicate Markdown reference definitions preserve source partition and fol
   assert.equal(result.chunks.map(chunk => chunk.text).join(''), markdown)
   assert.deepEqual(result.links, [{ path: 'digest/wiki/yes.md', line: 5 }])
 })
+
+test('chunk searchText prepends frontmatter document name without duplicating matching headings', () => {
+  const daily = parseMemoryMarkdown('---\nname: 周报提交约定\n---\n## 当前状态\n\n周报每周五下班前交给张三\n')
+  assert.equal(daily.chunks.length, 1)
+  assert.equal(daily.chunks[0]!.searchText, `周报提交约定\n当前状态\n${daily.chunks[0]!.text}`)
+
+  const deduplicated = parseMemoryMarkdown('---\nname: 项目\n---\n# 项目\n\n## 子项\n正文\n')
+  assert.equal(deduplicated.chunks.at(-1)!.searchText, `项目\n子项\n${deduplicated.chunks.at(-1)!.text}`)
+})

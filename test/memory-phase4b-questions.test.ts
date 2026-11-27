@@ -281,11 +281,14 @@ test('Phase 4B §5.5-§5.7: native & PTC folding, policy rewrite digest guard, h
   ] as unknown as SessionEvent[]
 
   const folded = foldQuestionAnswersForTurn(turnEvents, sessionId, tz)
-  assert.equal(folded.length, 2, 'only valid native + PTC occurrences should fold')
+  assert.equal(folded.length, 3, 'valid native custom, native pure-selection, and PTC occurrences should fold')
   assert.equal(folded[0]!.callSeq, 1)
   assert.deepEqual(folded[0]!.items.map(i => [i.questionId, i.text]), [['q1', 'Neovim']], 'OTP sibling must be excluded while safe sibling survives')
-  assert.equal(folded[1]!.callSeq, 13)
-  assert.deepEqual(folded[1]!.items.map(i => [i.questionId, i.text]), [['p1', 'ap-southeast-1']])
+  assert.equal(folded[1]!.callSeq, 11)
+  assert.deepEqual(folded[1]!.items, [], 'pure selection must never populate custom items')
+  assert.deepEqual(folded[1]!.selectionItems?.map(i => [i.questionId, i.text]), [['o', 'Yes']], 'pure selection folds into selectionItems')
+  assert.equal(folded[2]!.callSeq, 13)
+  assert.deepEqual(folded[2]!.items.map(i => [i.questionId, i.text]), [['p1', 'ap-southeast-1']])
 
   // 2. Policy rewrite scope: changing eligible custom text -> digest mismatch rejected; changing selected only -> admitted!
   const root = path.join(dir, 'mem-policy')
@@ -296,7 +299,7 @@ test('Phase 4B §5.5-§5.7: native & PTC folding, policy rewrite digest guard, h
     route: () => ({ provider: 'mock', model: 'mock' }),
     readSessionRange: async () => ({ status: 'ok', assistant: '' }),
     compute: job => job.stage === 'note'
-      ? Promise.resolve(JSON.stringify({ status: 'write', title: 'QA', markdown: 'QA note' }))
+      ? Promise.resolve(JSON.stringify({ status: 'write', title: 'QA', state: 'QA note', events: ['QA note'] }))
       : null,
   })
   defer(() => owner.close())
@@ -556,7 +559,7 @@ test('Phase 4B §5.5-§5.7: dual-generation profile deletion watermark (all 5 ro
     compute: job => {
       if (job.stage === 'note') {
         noteInputs.push(JSON.parse(job.input))
-        return Promise.resolve(JSON.stringify({ status: 'write', title: '记录', markdown: '测试笔记' }))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '记录', state: '测试笔记', events: ['测试笔记'] }))
       }
       if (job.stage === 'dream') {
         if (job.system === DREAM_PROFILE_SYSTEM) {

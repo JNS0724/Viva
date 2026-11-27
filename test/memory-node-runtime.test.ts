@@ -97,7 +97,7 @@ test('closing a runtime retires a late note calculation before it can read close
   const running = runtime.wake()
   await beginning
   runtime.close()
-  finish('{"status":"write","title":"Garden","markdown":"I keep a garden."}')
+  finish('{"status":"write","title":"Garden","state":"I keep a garden.","events":["I keep a garden."]}')
   await running
 })
 

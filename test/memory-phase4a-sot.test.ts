@@ -204,10 +204,12 @@ test('Phase 4A §5.7.1b: gap-free CAS cursor guard, same-day multi-batch note up
     compute: async job => {
       assert.equal(job.stage, 'note')
       const input = JSON.parse(job.input) as { turns: Array<{ user: Array<{ text: string }> }> }
+      const turnTexts = input.turns.flatMap(turn => turn.user.map(u => u.text))
       return JSON.stringify({
         status: 'write',
         title: '同日多批笔记',
-        markdown: input.turns.flatMap(turn => turn.user.map(u => u.text)).join('\n'),
+        state: turnTexts.join('\n'),
+        events: turnTexts,
       })
     },
   })
@@ -487,10 +489,12 @@ test('Phase 4A §5.7.1d-e: fork inheritedEventCount cut, missing vs transient re
     compute: job => {
       if (job.stage === 'note') {
         const input = JSON.parse(job.input) as { turns: Array<{ user: Array<{ text: string }> }> }
+        const turnTexts = input.turns.flatMap(turn => turn.user.map(u => u.text))
         return Promise.resolve(JSON.stringify({
           status: 'write',
           title: '健康日记',
-          markdown: input.turns.flatMap(turn => turn.user.map(u => u.text)).join('\n'),
+          state: turnTexts.join('\n'),
+          events: turnTexts,
         }))
       }
       if (job.stage === 'dream') {
@@ -662,11 +666,13 @@ test('Phase 4A §5.7.2a-i: provenance matrix, lossless humanSpans with literal \
     route: () => ({ provider: 'mock', model: 'mock' }),
     compute: job => {
       if (job.stage === 'note') {
-        const input = JSON.parse(job.input) as { existing?: { markdown: string }, turns: Array<{ user: Array<{ text: string }> }> }
+        const input = JSON.parse(job.input) as { existing?: { state: string }, turns: Array<{ user: Array<{ text: string }> }> }
+        const turnTexts = input.turns.flatMap(t => t.user.map(u => u.text))
         return Promise.resolve(JSON.stringify({
           status: 'write',
           title: '任务与对话记录',
-          markdown: [input.existing?.markdown, ...input.turns.flatMap(t => t.user.map(u => u.text))].filter(Boolean).join('\n'),
+          state: [input.existing?.state, ...turnTexts].filter(Boolean).join('\n'),
+          events: turnTexts,
         }))
       }
       return null
@@ -870,10 +876,12 @@ test('Phase 4A §5.7.2k: valid & revoked direct question metadata on memory_sour
       if (job.stage === 'note') {
         const input = JSON.parse(job.input) as typeof noteInputs[number]
         noteInputs.push(input)
+        const turnTexts = input.turns.flatMap(t => t.user.map(u => u.text))
         return Promise.resolve(JSON.stringify({
           status: 'write',
           title: '问答记录',
-          markdown: input.turns.flatMap(t => t.user.map(u => u.text)).join('\n'),
+          state: turnTexts.join('\n'),
+          events: turnTexts,
         }))
       }
       if (job.stage === 'dream') {
@@ -1020,7 +1028,7 @@ test('Phase 4A Codex R1 P1-1..P1-4: task custom answer settlement, human-only de
     route: () => ({ provider: 'mock', model: 'mock' }),
     readSessionRange: async () => ({ status: 'ok', assistant: '华东部署结论' }),
     compute: job => job.stage === 'note'
-      ? Promise.resolve(JSON.stringify({ status: 'write', title: '任务问答', markdown: '任务问答记录' }))
+      ? Promise.resolve(JSON.stringify({ status: 'write', title: '任务问答', state: '任务问答记录', events: ['任务问答记录'] }))
       : null,
   })
   defer(() => owner1.close())
@@ -1053,7 +1061,7 @@ test('Phase 4A Codex R1 P1-1..P1-4: task custom answer settlement, human-only de
     { context: string, source_kind: string, profile_eligible: number }
   assert.deepEqual(JSON.parse(ansRow.context), { kind: 'user' })
   assert.equal(ansRow.source_kind, 'task-question-answer')
-  assert.equal(ansRow.profile_eligible, 1)
+  assert.equal(ansRow.profile_eligible, 0)
   assert.equal(db1.prepare('SELECT next_seq FROM owner_intake_cursors WHERE session=?').get(taskSid)?.next_seq, 5)
 
   // P1-2: Human-only completed turn (assistantText: '', assistantDigest: null) whose DSH session was deleted
@@ -1070,7 +1078,7 @@ test('Phase 4A Codex R1 P1-1..P1-4: task custom answer settlement, human-only de
     compute: job => {
       if (job.stage === 'note') {
         noteComputeCalls++
-        return Promise.resolve(JSON.stringify({ status: 'write', title: '不应该写出', markdown: '不应写出' }))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '不应该写出', state: '不应写出', events: ['不应写出'] }))
       }
       return null
     },
@@ -1355,7 +1363,7 @@ test('Phase 4A Codex R1 P2-1..P2-6: standalone verbatim text, open-turn UUID ver
     route: () => ({ provider: 'mock', model: 'mock' }),
     readSessionRange: async () => ({ status: 'ok', assistant: '已收到回答' }),
     compute: job => job.stage === 'note'
-      ? Promise.resolve(JSON.stringify({ status: 'write', title: '连续对话', markdown: '连续对话记录' }))
+      ? Promise.resolve(JSON.stringify({ status: 'write', title: '连续对话', state: '连续对话记录', events: ['连续对话记录'] }))
       : null,
   })
   defer(() => owner5.close())
@@ -1387,7 +1395,7 @@ test('Phase 4A Codex R2 P1-1 & P2-1..P2-5: 3-turn revocation soundness, backlog 
   // R2 P1-1: 3-turn revocation soundness — retiring Turn 1 preserves Turn 2's full assistant_sources_json
   // so revoking Turn 1 STILL withholds Turn 2's location from Turn 3's previousAssistant!
   const root1 = path.join(dir, 'mem-r2-p11')
-  const noteInputs1: Array<{ previousAssistant: string | null, turns: Array<{ user: Array<{ text: string }>, assistant: string }> }> = []
+  const noteInputs1: Array<{ turns: Array<{ previousAssistant: string | null, user: Array<{ text: string }>, assistant: string }> }> = []
   const assistantBySeq = new Map<string, string>()
   const owner1 = openMemoryOwner({
     root: root1,
@@ -1448,7 +1456,7 @@ test('Phase 4A Codex R2 P1-1 & P2-1..P2-5: 3-turn revocation soundness, backlog 
   })
   await owner1.runtime.wake()
   assert.equal(noteInputs1.length, 3)
-  assert.equal(noteInputs1[2]!.previousAssistant, null, 'revoking Turn 1 must invalidate Turn 2 previousAssistant even after Turn 1 range retirement')
+  assert.equal(noteInputs1[2]!.turns[0]!.previousAssistant, null, 'revoking Turn 1 must invalidate Turn 2 previousAssistant even after Turn 1 range retirement')
 
   // R2 P2-3: Backlog with no model route (30 pending turns, noteInterval=5) bounds stored assistant refs to O(1)!
   const rootBacklog = path.join(dir, 'mem-r2-backlog')
@@ -1578,7 +1586,7 @@ test('Phase 4A Codex R2 P1-1 & P2-1..P2-5: 3-turn revocation soundness, backlog 
     compute: job => {
       if (job.stage === 'note') {
         standaloneNoteInputs.push(JSON.parse(job.input))
-        return Promise.resolve(JSON.stringify({ status: 'write', title: '独立笔记', markdown: '独立记录' }))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '独立笔记', state: '独立记录', events: ['独立记录'] }))
       }
       return null
     },
@@ -1608,7 +1616,7 @@ test('Phase 4A Codex R2 P1-1 & P2-1..P2-5: 3-turn revocation soundness, backlog 
   assert.equal(standaloneNoteInputs[0]!.turns[0]!.assistant, '合法的独立助手回复', 'standalone range read must preserve assistant reply even when user pasted a literal Viva header')
 
   // Hosted 2-step task: settlement + readPersistedSessionRange BOTH select ONLY corrected final answer, feeding Note model & previousAssistant!
-  const hostedNoteInputs: Array<{ previousAssistant: string | null, turns: Array<{ user: Array<{ text: string }>, assistant: string }> }> = []
+  const hostedNoteInputs: Array<{ turns: Array<{ previousAssistant: string | null, user: Array<{ text: string }>, assistant: string }> }> = []
   const rootHosted = path.join(dir, 'mem-r2-hosted')
   const ownerHosted = openMemoryOwner({
     root: rootHosted,
@@ -1620,7 +1628,7 @@ test('Phase 4A Codex R2 P1-1 & P2-1..P2-5: 3-turn revocation soundness, backlog 
     compute: job => {
       if (job.stage === 'note') {
         hostedNoteInputs.push(JSON.parse(job.input))
-        return Promise.resolve(JSON.stringify({ status: 'write', title: '任务日记', markdown: '任务记录' }))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '任务日记', state: '任务记录', events: ['任务记录'] }))
       }
       return null
     },
@@ -1657,7 +1665,7 @@ test('Phase 4A Codex R2 P1-1 & P2-1..P2-5: 3-turn revocation soundness, backlog 
   await hostedIngest.synchronize(sTask2)
   await ownerHosted.runtime.wake()
   assert.equal(hostedNoteInputs.length, 2)
-  assert.equal(hostedNoteInputs[1]!.previousAssistant, '更正后的最终结论', '2-step task final conclusion must serve as previousAssistant on next turn')
+  assert.equal(hostedNoteInputs[1]!.turns[0]!.previousAssistant, '更正后的最终结论', '2-step task final conclusion must serve as previousAssistant on next turn')
   const dbHosted = new DatabaseSync(path.join(rootHosted, 'memory.db'), { readOnly: true })
   defer(() => dbHosted.close())
   const ipcSrcRow = dbHosted.prepare('SELECT id, text, source_kind FROM memory_sources WHERE id=?').get(ipcResult.sourceId!) as
@@ -1998,7 +2006,7 @@ test('Phase 4A Codex R3 P1-1..P1-2 & P2-3..P2-6: same-turn question dep revocati
     compute: job => {
       if (job.stage === 'note') {
         noteInputs1.push(JSON.parse(job.input))
-        return Promise.resolve(JSON.stringify({ status: 'write', title: '同轮问答', markdown: '同轮问答记录' }))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '同轮问答', state: '同轮问答记录', events: ['同轮问答记录'] }))
       }
       if (job.stage === 'dream') {
         if (job.system === DREAM_PROFILE_SYSTEM) {
@@ -2212,7 +2220,7 @@ test('Phase 4A Codex R3 P1-1..P1-2 & P2-3..P2-6: same-turn question dep revocati
     compute: job => {
       if (job.stage === 'note') {
         goalNoteInputs.push(JSON.parse(job.input))
-        return Promise.resolve(JSON.stringify({ status: 'write', title: '目标轮次', markdown: '目标记录' }))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '目标轮次', state: '目标记录', events: ['目标记录'] }))
       }
       return null
     },
@@ -2343,7 +2351,7 @@ test('Phase 4A Codex R4 P1-1..P1-2 & P2-3..P2-4: multi-answer mid-read revocatio
     compute: job => {
       if (job.stage === 'note') {
         noteInputs1.push(JSON.parse(job.input))
-        return Promise.resolve(JSON.stringify({ status: 'write', title: '双回答', markdown: '双回答记录' }))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '双回答', state: '双回答记录', events: ['双回答记录'] }))
       }
       return null
     },
@@ -2393,7 +2401,7 @@ test('Phase 4A Codex R4 P1-1..P1-2 & P2-3..P2-4: multi-answer mid-read revocatio
     compute: job => {
       if (job.stage === 'note') {
         noteInputs2.push(JSON.parse(job.input))
-        return Promise.resolve(JSON.stringify({ status: 'write', title: '延迟笔记', markdown: '延迟记录' }))
+        return Promise.resolve(JSON.stringify({ status: 'write', title: '延迟笔记', state: '延迟记录', events: ['延迟记录'] }))
       }
       return null
     },
@@ -2503,7 +2511,7 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
     route: () => ({ provider: 'mock', model: 'mock' }),
     readSessionRange: async () => ({ status: 'ok', assistant: '' }),
     compute: job => job.stage === 'note'
-      ? (noteInputs1.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '拒绝状态', markdown: '记录' })))
+      ? (noteInputs1.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '拒绝状态', state: '记录', events: ['记录'] })))
       : null,
   })
   defer(() => owner1.close())
@@ -2542,7 +2550,7 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
     route: () => ({ provider: 'mock', model: 'mock' }),
     readSessionRange: async () => ({ status: 'ok', assistant: '' }),
     compute: job => job.stage === 'note'
-      ? (noteInputs2.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '后插话独立', markdown: '记录' })))
+      ? (noteInputs2.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '后插话独立', state: '记录', events: ['记录'] })))
       : null,
   })
   defer(() => owner2.close())
@@ -2739,7 +2747,7 @@ test('Phase 4A Codex R5 P1-1 & P2-2..P2-5: outcome-only rejected exclusion, post
     route: () => ({ provider: 'mock', model: 'mock' }),
     readSessionRange: async () => ({ status: 'ok', assistant: '' }),
     compute: job => job.stage === 'note'
-      ? (noteInputsBatch.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '同批双卡', markdown: '记录' })))
+      ? (noteInputsBatch.push(JSON.parse(job.input)), Promise.resolve(JSON.stringify({ status: 'write', title: '同批双卡', state: '记录', events: ['记录'] })))
       : null,
   })
   defer(() => ownerBatch.close())

@@ -7,10 +7,13 @@ import type { QuestionReceiptInput, TurnQuestionAnswerCandidate, TurnSourceCandi
 import { looksSecret } from '../../../src/memory/core/memory-sensitive.ts'
 import {
   canonicalEligibleAnswersDigest,
+  canonicalEligibleSelectionsDigest,
   eligibleQuestionAnswers,
+  eligibleQuestionSelections,
   questionAnswerSourceId,
   questionCallIdHash,
   questionOccurrenceRequestId,
+  questionSelectionSourceId,
   type RawQuestionAnswer,
   type RawQuestionCard,
   type RawQuestionOption,
@@ -19,6 +22,8 @@ import { requestsIn } from '../../../src/shared/request-routing/header.ts'
 import { leadingTaskRequestId, stripLeadingTaskHeader, withoutTaskHeaders } from '../../../src/shared/request-routing/task-header.ts'
 import {
   extractHumanSpans,
+  isValidHostDay,
+  isValidOptionalId,
   parseProvenanceHeader,
   readLiftedProvenance,
   validateHumanSpans,
@@ -28,10 +33,20 @@ import {
 import type { createRemoteMemoryOwner } from './remote-owner.ts'
 import type {} from './source.ts'
 
-type Owner = Pick<
-  ReturnType<typeof createRemoteMemoryOwner>,
-  'epoch' | 'inEpoch' | 'intakeCursor' | 'advanceIntakeCursor' | 'beginTurn' | 'stageOpenTurnSources' | 'settleTurn'
-> & Partial<Pick<
+type IntakeCursorView = Omit<
+  Awaited<ReturnType<ReturnType<typeof createRemoteMemoryOwner>['intakeCursor']>>,
+  'thread'
+> & { thread?: string | null }
+
+type Owner = Omit<
+  Pick<
+    ReturnType<typeof createRemoteMemoryOwner>,
+    'epoch' | 'inEpoch' | 'intakeCursor' | 'advanceIntakeCursor' | 'beginTurn' | 'stageOpenTurnSources' | 'settleTurn'
+  >,
+  'intakeCursor'
+> & {
+  intakeCursor(session: string): Promise<IntakeCursorView>
+} & Partial<Pick<
   ReturnType<typeof createRemoteMemoryOwner>,
   'recordQuestionReceipt' | 'retireSessionQuestionReceipts' | 'pruneExpiredQuestionReceipts'
 >>
@@ -79,6 +94,8 @@ export type ExtractedHumanMessage = {
   text: string
   sourceId: string
   conversationId?: string
+  threadId?: string
+  hostDay?: string
   sourceKind: 'main-human' | 'task-human-steer'
   sessionKind: 'main' | 'task'
   profileEligible: boolean
@@ -136,7 +153,7 @@ export function extractHumanMessages(
       continue
     }
     if (kind === 'viva-main-human-steer') {
-      const src = message.source as { sourceId?: string, conversationId?: string, humanSpans?: Array<{ start: number, end: number }> }
+      const src = message.source as { sourceId?: string, conversationId?: string, threadId?: string, humanSpans?: Array<{ start: number, end: number }> }
       const spans = src.humanSpans ? validateHumanSpans(src.humanSpans, raw.length) : null
       if (!spans) continue
       const text = extractHumanSpans(raw, spans)
@@ -146,6 +163,7 @@ export function extractHumanMessages(
         text,
         sourceId: normalizeSourceId(src.sourceId, sessionId, String(message.id)),
         ...(src.conversationId ? { conversationId: src.conversationId } : {}),
+        ...(isValidOptionalId(src.threadId) ? { threadId: src.threadId } : {}),
         sourceKind: 'main-human',
         sessionKind: 'main',
         profileEligible: true,
@@ -154,7 +172,7 @@ export function extractHumanMessages(
       continue
     }
     if (kind === 'viva-task-human-steer') {
-      const src = message.source as { sourceId?: string, conversationId?: string, humanSpans?: Array<{ start: number, end: number }> }
+      const src = message.source as { sourceId?: string, conversationId?: string, threadId?: string, hostDay?: string, humanSpans?: Array<{ start: number, end: number }> }
       const stripped = stripLeadingTaskHeader(raw)
       const payload = stripped ? stripped.payload : raw
       const spans = src.humanSpans ? validateHumanSpans(src.humanSpans, payload.length) : null
@@ -166,6 +184,8 @@ export function extractHumanMessages(
         text,
         sourceId: normalizeSourceId(src.sourceId, sessionId, String(message.id)),
         ...(src.conversationId ? { conversationId: src.conversationId } : {}),
+        ...(isValidOptionalId(src.threadId) ? { threadId: src.threadId } : {}),
+        ...(isValidHostDay(src.hostDay) ? { hostDay: src.hostDay } : {}),
         sourceKind: 'task-human-steer',
         sessionKind: 'task',
         profileEligible: true,
@@ -189,6 +209,8 @@ export function extractHumanMessages(
       text,
       sourceId: normalizeSourceId(provenance.sourceId, sessionId, String(message.id)),
       ...(provenance.conversationId ? { conversationId: provenance.conversationId } : {}),
+      ...(provenance.threadId ? { threadId: provenance.threadId } : {}),
+      ...(isTask && provenance.hostDay ? { hostDay: provenance.hostDay } : {}),
       sourceKind: isTask ? 'task-human-steer' : 'main-human',
       sessionKind: isTask ? 'task' : 'main',
       profileEligible: true,
@@ -495,8 +517,9 @@ export function foldQuestionAnswersForTurn(
     if (settledKeys.has(key)) return
     const answers = parseLegacyQuestionAnswers(content)
     if (!answers) return
-    const eligible = eligibleQuestionAnswers(start.cards, answers)
-    if (eligible.length === 0) return
+    const eligibleCustom = eligibleQuestionAnswers(start.cards, answers)
+    const eligibleSelections = eligibleQuestionSelections(start.cards, answers)
+    if (eligibleCustom.length === 0 && eligibleSelections.length === 0) return
     settledKeys.add(key)
     const requestId = questionOccurrenceRequestId(start.callSeq, callIdHash)
     candidates.push({
@@ -504,13 +527,21 @@ export function foldQuestionAnswersForTurn(
       callIdHash,
       requestId,
       questionAt: start.questionAt,
-      answerBatchDigest: canonicalEligibleAnswersDigest(eligible),
+      answerBatchDigest: canonicalEligibleAnswersDigest(eligibleCustom),
+      selectionBatchDigest: eligibleSelections.length > 0 ? canonicalEligibleSelectionsDigest(eligibleSelections) : null,
       timezone: tz,
-      items: eligible.map(item => ({
+      items: eligibleCustom.map(item => ({
         sourceId: questionAnswerSourceId(sessionId, start.callSeq, start.callId, item.id),
         questionId: item.id,
         question: item.question,
         text: item.custom,
+      })),
+      selectionItems: eligibleSelections.map(item => ({
+        sourceId: questionSelectionSourceId(sessionId, start.callSeq, start.callId, item.id),
+        questionId: item.id,
+        question: item.question,
+        selected: item.selected,
+        text: item.selected.join('、'),
       })),
     })
   }
@@ -599,6 +630,8 @@ export function foldQuestionAnswersForTurn(
 type TurnClassification = {
   sessionKind: SessionKind
   conversation?: string
+  thread?: string
+  hostDay?: string
   hasReport: boolean
   sources: TurnSourceCandidate[]
   assistantParts: string[]
@@ -619,6 +652,7 @@ function classifyUserMessageForTurn(
     acc.hasReport = true
     const resolved = resolveHostedProvenance(message, raw)
     if (resolved?.provenance.conversationId) acc.conversation = resolved.provenance.conversationId
+    if (!acc.thread && resolved?.provenance.threadId) acc.thread = resolved.provenance.threadId
     return
   }
   if (host && kind === 'viva-unattended') {
@@ -631,6 +665,8 @@ function classifyUserMessageForTurn(
     const provenance = resolved?.provenance
     const payload = resolved?.payload ?? raw
     if (provenance?.conversationId) acc.conversation = provenance.conversationId
+    if (!acc.thread && provenance?.threadId) acc.thread = provenance.threadId
+    if (!acc.hostDay && provenance?.hostDay) acc.hostDay = provenance.hostDay
     const briefText = provenance?.humanSpans
       ? extractHumanSpans(payload, provenance.humanSpans)
       : withoutTaskHeaders(payload)
@@ -650,9 +686,11 @@ function classifyUserMessageForTurn(
     return
   }
   if (host && kind === 'viva-task-router-message') {
-    const src = message.source as { conversationId?: string }
+    const src = message.source as { conversationId?: string, threadId?: string, hostDay?: string }
     acc.sessionKind = 'task'
     if (src.conversationId) acc.conversation = src.conversationId
+    if (!acc.thread && isValidOptionalId(src.threadId)) acc.thread = src.threadId
+    if (!acc.hostDay && isValidHostDay(src.hostDay)) acc.hostDay = src.hostDay
     const body = withoutTaskHeaders(raw)
     if (body.trim()) {
       acc.sources.push({
@@ -674,6 +712,8 @@ function classifyUserMessageForTurn(
     const item = human[0]!
     if (item.sessionKind === 'task') acc.sessionKind = 'task'
     if (item.conversationId) acc.conversation = item.conversationId
+    if (!acc.thread && item.threadId) acc.thread = item.threadId
+    if (!acc.hostDay && item.hostDay) acc.hostDay = item.hostDay
     acc.sources.push({
       sourceId: item.sourceId,
       author: 'user',
@@ -699,11 +739,21 @@ function classifyUserMessageForTurn(
     if (provenance.sourceKind === 'viva-report-batch' || provenance.sourceKind === 'viva-report') {
       acc.hasReport = true
       if (provenance.conversationId) acc.conversation = provenance.conversationId
+      if (!acc.thread && provenance.threadId) acc.thread = provenance.threadId
+      return
+    }
+    if (provenance.origin === 'human') {
+      if (provenance.sessionKind === 'task' || provenance.sourceKind === 'task-human-steer') acc.sessionKind = 'task'
+      if (provenance.conversationId) acc.conversation = provenance.conversationId
+      if (!acc.thread && provenance.threadId) acc.thread = provenance.threadId
+      if (!acc.hostDay && provenance.hostDay) acc.hostDay = provenance.hostDay
       return
     }
     if (provenance.origin === 'router' && provenance.sourceKind === 'task-brief') {
       acc.sessionKind = 'task'
       if (provenance.conversationId) acc.conversation = provenance.conversationId
+      if (!acc.thread && provenance.threadId) acc.thread = provenance.threadId
+      if (!acc.hostDay && provenance.hostDay) acc.hostDay = provenance.hostDay
       const briefText = provenance.humanSpans
         ? extractHumanSpans(payload, provenance.humanSpans)
         : withoutTaskHeaders(payload)
@@ -881,6 +931,7 @@ export function createSessionIngestion(
     cursorNextSeq: number | null
     sessionKind: SessionKind
     conversation: string | null
+    thread?: string | null
     events: readonly SessionEvent[]
     sliceFromSeq: number
     sliceEndSeq: number
@@ -902,6 +953,7 @@ export function createSessionIngestion(
     let currentSeq = sliceFromSeq
     let sessionKind: SessionKind = input.sessionKind
     let conversation: string | null = input.conversation
+    let thread: string | null = input.thread ?? null
     const tz = timezone()
 
     // Skip events strictly before memory.db `created_at` when initializing a brand-new cursor.
@@ -934,7 +986,7 @@ export function createSessionIngestion(
       if (skipToSeq !== null && skipToSeq > sliceFromSeq) {
         if (shouldAbort?.()) return { aborted: true }
         const res = await owner.advanceIntakeCursor({
-          sessionId, expectedNextSeq: null, nextSeq: skipToSeq, inheritedSeq, sessionKind, conversation, cwd,
+          sessionId, expectedNextSeq: null, nextSeq: skipToSeq, inheritedSeq, sessionKind, conversation, thread, cwd,
         })
         if (res.status === 'cas_mismatch') return { casRetry: true }
         expectedNextSeq = res.nextSeq
@@ -997,11 +1049,14 @@ export function createSessionIngestion(
           })
         }
         if (shouldAbort?.()) return { aborted: true }
+        const effectiveTurnThread = host ? (acc.thread ?? thread) : null
         const res = await owner.settleTurn({
           sessionId,
           cwd,
           sessionKind: acc.sessionKind,
           conversation: acc.conversation ?? conversation,
+          ...(effectiveTurnThread ? { thread: effectiveTurnThread } : {}),
+          ...(host && acc.sessionKind === 'task' && acc.hostDay ? { hostDay: acc.hostDay } : {}),
           inheritedSeq,
           expectedNextSeq,
           fromSeq: inTurn ? turnStartSeq : currentSeq,
@@ -1017,6 +1072,7 @@ export function createSessionIngestion(
         })
         if (res.status === 'cas_mismatch') return { casRetry: true }
         if (res.status === 'scope_unavailable') throw new Error('Memory intake project scope temporarily unavailable')
+        if (effectiveTurnThread) thread = effectiveTurnThread
         expectedNextSeq = res.nextSeq
         currentSeq = res.nextSeq
         inTurn = false
@@ -1122,6 +1178,7 @@ export function createSessionIngestion(
           cursorNextSeq: cursor.nextSeq,
           sessionKind: cursor.sessionKind,
           conversation: cursor.conversation,
+          thread: cursor.thread,
           events: slice.events,
           sliceFromSeq: fromSeq,
           sliceEndSeq: end,
@@ -1278,6 +1335,7 @@ export function createSessionIngestion(
           cursorNextSeq: cursor.nextSeq,
           sessionKind: cursor.sessionKind,
           conversation: cursor.conversation,
+          thread: cursor.thread,
           events: read.events,
           sliceFromSeq: read.fromSeq,
           sliceEndSeq: read.endSeq,

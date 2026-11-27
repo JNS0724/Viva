@@ -296,7 +296,7 @@ test('completed daily capture resumes after restart without duplicate notes or c
     readSessionRange: async () => ({ status: 'ok', assistant: '收到' }),
     compute: job => {
       stages.push(job.stage)
-      if (job.stage === 'note') return Promise.resolve(JSON.stringify({ status: 'write', title: '周报邮箱', markdown: '周报发送到指定邮箱。' }))
+      if (job.stage === 'note') return Promise.resolve(JSON.stringify({ status: 'write', title: '周报邮箱', state: '周报发送到指定邮箱。', events: ['周报发送到指定邮箱。'] }))
       return null
     },
   })

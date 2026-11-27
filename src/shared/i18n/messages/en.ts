@@ -1366,6 +1366,7 @@ export const en = {
   "main.task-ipc.full": "At most {max} background tasks can run at once; start this one after another ends",
   "main.task-ipc.live.full": "At most {max} active or waiting background tasks can stay open at once; handle or close one first",
   "main.task-ipc.resume.default.prompt": "Continue the work that was interrupted.",
+  "main.task-ipc.busy.in.other.topic": "This task is currently running a turn for another topic; start a new task or wait for this turn to finish before following up.",
   "main.work-dir.network.paths.server.share.are.not.supported": "Network paths (\\\\server\\share) are not supported. Map a local drive or copy the folder to this computer.",
   "main.work-dir.choose.a.full.folder.path": "Choose a full folder path",
   "main.work-dir.this.is.not.a.folder.or.it": "This is not a folder, or it no longer exists",

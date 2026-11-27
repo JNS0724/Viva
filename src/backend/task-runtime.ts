@@ -11,7 +11,9 @@ import { createTaskRegistry, endedStatus, MAX_TERMINAL_MESSAGE_CHARS, type Pendi
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
 import type { ImageRef } from '../shared/images.ts'
 import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary } from '../shared/ipc-results.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../memory/contracts/memory-daily-defaults.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
+import { formatHostDay as todayAt } from '../shared/request-routing/provenance.ts'
 
 /**
  * TaskRuntime (docs/system-design.md §11.2): the one writer of the background tasks. The agent starts a task
@@ -139,6 +141,7 @@ export interface TaskRuntimeDeps {
   /** Capture the completed run's owner-authenticated inputs before creating a report. */
   /** Check whether an interrupted task may be resumed directly from the window (task:resume). */
   now?: () => number
+  timezone?: () => string
   newRunId?: () => string
 }
 
@@ -155,7 +158,8 @@ export type TaskPush = { type: 'task_snapshot', taskId: string, snapshot: Window
 type PendingEnd = { runId: string, event: Record<string, unknown>, timer?: unknown }
 
 export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {},
-  waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, effects = null, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
+  waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, effects = null,
+  now = Date.now, timezone = () => DAILY_MEMORY_DEFAULTS.timezone, newRunId = randomUUID }: TaskRuntimeDeps) {
   const later = timers.later ?? setTimeout
   const cancel = timers.cancel ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
   /** taskId → the end of its run still to be kept, and its next try. */
@@ -272,6 +276,36 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     role: 'user', text, receipt: null, ...(images?.length ? { images: [...images] } : {}),
   })
 
+  function topicForConversation(conv: Pick<Conversation, 'id' | 'topicId' | 'parentId'>): string {
+    return db.topicOf(conv.id)
+      ?? conv.topicId
+      ?? (conv.parentId ? db.topicOf(conv.parentId) : null)
+      ?? conv.id
+  }
+
+  function topicForTask(hostId: string | null | undefined, fallbackSegmentId: string): string {
+    if (typeof hostId === 'string' && hostId) {
+      const saved = db.topicOf(hostId)
+      if (saved) return saved
+      try {
+        const selected = current()
+        if (selected.id === hostId) return topicForConversation(selected)
+      } catch {
+        // Ignore if no selected conversation is open yet.
+      }
+      return hostId
+    }
+    return fallbackSegmentId
+  }
+
+  type TaskDispatch = {
+    origin: 'human' | 'router'
+    threadOwner?: 'caller' | 'task'
+    callerConversationId?: string
+    callerTopicId?: string
+    sourceId?: string
+  }
+
   const taskById = (taskId: unknown) => {
     const task = tasks.get(taskId as string)
     if (!task) throw new Error('no such task')
@@ -384,7 +418,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       return { ok: false, problem: t('main.requests.start.elsewhere') }
     }
     const runId = newRunId()
-    const { initial, task } = keepOrClose(taskId, () => change('task.started', { taskId, runId }, () => {
+    const { initial, task, startedAt } = keepOrClose(taskId, () => change('task.started', { taskId, runId }, () => {
+      const startedAt = now()
       const initial = briefMessage(text, images?.refs)
       // A conversation whose only turns started background tasks may have no messages kept yet. Keep its identity too,
       // otherwise the task points at an absent parent and its history row cannot return after a restart.
@@ -392,16 +427,21 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [initial])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(name?.trim() || text), words: text }
-      store.add({ ...begun, runId, runStart: 0, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent' })
+      store.add({ ...begun, runId, runStart: 0, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt, by: 'agent' })
       opens(taskId, { words: text, ...(images?.refs.length ? { images: [...images.refs] } : {}), task: begun, hostSession: main.sessionId ?? null })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
-      return { initial, task: begun }
+      return { initial, task: begun, startedAt }
     }))
     counted()
-    tasks.set(task.id, { ...task, runStart: 0, keep: 0, next: main.id })
+    tasks.set(task.id, { ...task, runStart: 0, keep: 0, next: main.id, startedAt })
     attached = new Set([...attached, task.id])
     taskWords.track(task.id, [initial])
-    agent.promptTask(task.id, text, { origin: 'router', conversationId: task.segmentId }, images?.payloads)
+    agent.promptTask(task.id, text, {
+      origin: 'router',
+      conversationId: task.segmentId,
+      threadId: topicForTask(main.id, task.segmentId),
+      hostDay: todayAt(startedAt, timezone()),
+    }, images?.payloads)
     return { ok: true as const, task }
   }
 
@@ -519,7 +559,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     taskId: string,
     text: unknown,
     stillSelected?: () => boolean,
-    dispatch: { origin: 'human' | 'router', sourceId?: string } = { origin: 'router' },
+    dispatch: TaskDispatch = { origin: 'router', threadOwner: 'task' },
     images?: TaskImages,
   ) {
     if (!isText(text)) throw new Error('invalid task request')
@@ -542,7 +582,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     kept: StoredTask,
     counted: () => void,
     stillSelected?: () => boolean,
-    dispatch: { origin: 'human' | 'router', sourceId?: string } = { origin: 'router' },
+    dispatch: TaskDispatch = { origin: 'router', threadOwner: 'task' },
     images?: TaskImages,
   ) {
     const reattached = !attached.has(taskId)
@@ -561,7 +601,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const savedBefore = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? savedBefore
     const runStart = before.length
-    const running = { ...going, runId, runStart }
+    const rebindHost = dispatch.threadOwner === 'caller' && dispatch.callerConversationId ? dispatch.callerConversationId : undefined
+    const running = { ...going, runId, runStart, ...(rebindHost ? { next: rebindHost } : {}) }
+    const dispatchedAt = now()
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
@@ -572,9 +614,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     })
     counted()
     tasks.set(taskId, running)
+    const threadId = dispatch.threadOwner === 'caller' && (dispatch.callerTopicId || dispatch.callerConversationId)
+      ? (dispatch.callerTopicId ?? topicForTask(dispatch.callerConversationId, kept.segmentId))
+      : topicForTask(running.next, kept.segmentId)
     agent.promptTask(taskId, text, {
       origin: dispatch.origin,
       conversationId: kept.segmentId,
+      threadId,
+      hostDay: todayAt(dispatchedAt, timezone()),
       ...(sourceId ? { sourceId } : {}),
     }, images?.payloads)
     return { ok: true, ...(sourceId ? { sourceId } : {}) }
@@ -588,7 +635,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     taskId: string,
     words: string,
     stillSelected?: () => boolean,
-    dispatch: { origin: 'human' | 'router', sourceId?: string } = { origin: 'router' },
+    dispatch: TaskDispatch = { origin: 'router', threadOwner: 'task' },
     images?: TaskImages,
   ) {
     const kept = store.list().find((entry) => entry.id === taskId)
@@ -608,7 +655,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     kept: StoredTask,
     counted: () => void,
     stillSelected?: () => boolean,
-    dispatch: { origin: 'human' | 'router', sourceId?: string } = { origin: 'router' },
+    dispatch: TaskDispatch = { origin: 'router', threadOwner: 'task' },
     images?: TaskImages,
   ) {
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
@@ -624,7 +671,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const said = [...before, brief]
     const runStart = before.length
     const { resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, terminalMessage: _terminalMessage, ...keptWithoutTruncated } = kept
-    const running = { ...keptWithoutTruncated, runId, runStart }
+    const rebindHost = dispatch.threadOwner === 'caller' && dispatch.callerConversationId ? dispatch.callerConversationId : undefined
+    const running = { ...keptWithoutTruncated, runId, runStart, ...(rebindHost ? { next: rebindHost } : {}) }
+    const dispatchedAt = now()
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
@@ -638,9 +687,15 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     tasks.set(taskId, running)
     attached = new Set([...attached, taskId])
     taskWords.track(taskId, said)
+    if (sourceId) taskWords.flush()
+    const threadId = dispatch.threadOwner === 'caller' && (dispatch.callerTopicId || dispatch.callerConversationId)
+      ? (dispatch.callerTopicId ?? topicForTask(dispatch.callerConversationId, kept.segmentId))
+      : topicForTask(running.next, kept.segmentId)
     agent.promptTask(taskId, words, {
       origin: dispatch.origin,
       conversationId: kept.segmentId,
+      threadId,
+      hostDay: todayAt(dispatchedAt, timezone()),
       ...(sourceId ? { sourceId } : {}),
     }, images?.payloads)
     return { ok: true, task: restoredSummary(kept), messages: said, ...(sourceId ? { sourceId } : {}) }
@@ -692,7 +747,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   async function deliverTaskMessage(
     taskId: string,
     text: string,
-    dispatch: { origin: 'human' | 'router', sourceId?: string },
+    dispatch: TaskDispatch,
     stillSelected?: () => boolean,
     images?: TaskImages,
   ) {
@@ -709,6 +764,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       return { taskId, delivered: 'taken up again', ...('sourceId' in taken && taken.sourceId ? { sourceId: taken.sourceId } : {}) }
     }
     if (stillSelected && !stillSelected()) throw new Error(t('main.requests.start.elsewhere'))
+    const activeEntry = tasks.get(taskId) ?? kept
+    const activeThreadId = topicForTask(activeEntry.next, kept.segmentId)
+    if (dispatch.threadOwner === 'caller') {
+      const callerThreadId = dispatch.callerTopicId ?? topicForTask(dispatch.callerConversationId, kept.segmentId)
+      if (callerThreadId !== activeThreadId) {
+        throw new Error(t('main.task-ipc.busy.in.other.topic'))
+      }
+    }
     if (images?.payloads.length) throw new Error(t('main.task-ipc.running.no.images'))
     const sourceId = dispatch.origin === 'human' ? (dispatch.sourceId ?? randomUUID()) : undefined
     const steerKey = sourceId ?? randomUUID()
@@ -716,6 +779,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const steered = await agent.steerTask(taskId, text, {
       origin: dispatch.origin,
       conversationId: kept.segmentId,
+      threadId: activeThreadId,
+      hostDay: todayAt(now(), timezone()),
       ...(sourceId ? { sourceId } : {}),
     })
     if (!steered?.ok) {
@@ -729,13 +794,19 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   }
 
   async function agentMessage(taskId: string, text: string, stillSelected?: () => boolean, images?: TaskImages) {
-    return deliverTaskMessage(taskId, text, { origin: 'router' }, stillSelected, images)
+    const caller = current()
+    return deliverTaskMessage(taskId, text, {
+      origin: 'router',
+      threadOwner: 'caller',
+      callerConversationId: caller.id,
+      callerTopicId: topicForConversation(caller),
+    }, stillSelected, images)
   }
 
   async function windowMessage(taskId: unknown, text: unknown, sourceId?: string) {
     if (typeof taskId !== 'string' || !taskId) throw new Error(taskProblems().gone)
     if (!isText(text)) throw new Error('invalid task request')
-    return deliverTaskMessage(taskId, text, { origin: 'human', sourceId: sourceId ?? randomUUID() })
+    return deliverTaskMessage(taskId, text, { origin: 'human', threadOwner: 'task', sourceId: sourceId ?? randomUUID() })
   }
 
   /**

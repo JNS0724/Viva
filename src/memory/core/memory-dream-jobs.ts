@@ -16,7 +16,7 @@ import type { MemoryFileIndex } from './ports/file-index.ts'
 import { memorySearchTokens } from './search-tokens.ts'
 import { DREAM, nextDreamAt } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
-import { todayAt } from './memory-calendar.ts'
+import { localDay, todayAt } from './memory-calendar.ts'
 import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
 import { rawMarkdownWikilinkTargets } from './memory-markdown.ts'
 import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources } from './memory-document-read-policy.ts'
@@ -301,6 +301,8 @@ function retryHintFor(reason: string): string {
       return 'Profile body must contain non-empty auto-summary lines, or return {"action":"NOOP"}.'
     case 'dream-profile-action-mismatch':
       return 'Use the exact action requested by actionMode ("CREATE" or "REFINE"), or return {"action":"NOOP"}.'
+    case 'dream-author-not-allowed':
+      return 'digest/personal/* and digest/procedure/* operations may only cite canonical user, answer, or user-authored manual sourceIds (never agent, assistant, or selection sources); use digest/wiki/* for task/reference material or omit non-user sourceIds.'
     default:
       return 'The prior JSON had an invalid shape, target path, budget, or source reference. Correct it using only the supplied inputs.'
   }
@@ -343,7 +345,7 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 /** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
   calculate, transaction, mutate = async write => write(), readPhysicalFile, readFileAtCommit, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
-  store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
+  store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'> & Partial<Pick<MemoryStore, 'manualFileParents'>>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate?: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
@@ -370,6 +372,19 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   const { timezone, dreamTime, scanDays, dreamUnits, dreamBatchBytes } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(scanDays) || scanDays < 1 || !Number.isSafeInteger(dreamUnits) || dreamUnits < 1) throw new Error('invalid-dream-settings')
   const userWorkspace = userWorkspaceId(identity.hash)
+  const PERSONAL_OR_PROCEDURE_RE = /^digest\/(?:personal|procedure)\//iu
+  const isAllowedPersonalOrProcedureSource = (id: string, visited = new Set<string>()): boolean => {
+    if (visited.has(id)) return true
+    visited.add(id)
+    const item = source(id)
+    if (!item) return false
+    if (item.author === 'user' || (item.author === 'answer' && item.sourceKind !== 'task-question-answer')) return true
+    if (item.author === 'manual') {
+      const parents = store.manualFileParents?.(id) ?? []
+      return parents.every(parent => isAllowedPersonalOrProcedureSource(parent.id, visited))
+    }
+    return false
+  }
   const readMetaNumber = (key: string): number | null => {
     const raw = store.meta(key)
     if (!raw) return null
@@ -641,6 +656,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     })
     const today = todayAt(now(), timezone)
     const from = new Date(Date.parse(today) - (scanDays - 1) * DAY_MS).toISOString().slice(0, 10)
+    const fromMidnightMs = localDay(from, timezone) ?? Date.parse(`${from}T00:00:00.000Z`)
+    const prevFrom = new Date(Date.parse(today) - scanDays * DAY_MS).toISOString().slice(0, 10)
+    const prevFromMidnightMs = localDay(prevFrom, timezone) ?? (fromMidnightMs - DAY_MS)
     let scanRetry = false
     let cooldownDelayMs: number | undefined
     let deferDelayMs: number | undefined
@@ -1035,6 +1053,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (workspace !== userWorkspace || op.path !== RESIDENT_PROFILE_PATH) return false
           if (!profileSourcesAllowedByWatermark(op.sources, op.questionSourceIds)) return false
           if (!op.sources.every(ref => { const item = source(ref.id); return Boolean(item && isPureUserSource(item)) })) return false
+        } else if (PERSONAL_OR_PROCEDURE_RE.test(op.path)) {
+          if (!op.sources.length || !op.sources.every(ref => isAllowedPersonalOrProcedureSource(ref.id))) return false
         }
         return refsCurrent(op.sources)
           && (!requireEligible || op.sources.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) }))
@@ -1256,7 +1276,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     const deferredByKey = new Map(activeDeferred.map(item => [item.file.key, item.file]))
     const available: Note[] = []
     const initialViews = new Map<string, MemoryDocumentView>()
-    for (const file of notes.changedFiles(from, today)) {
+    for (const file of notes.changedFiles(from, today, fromMidnightMs, prevFrom, prevFromMidnightMs)) {
       if (!effects.holds(job)) return 'done'
       const deferred = deferredByKey.get(file.key)
       if (deferred) {
@@ -1313,10 +1333,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const existingCatalog = existingDigestCount > 0 ? await scope.catalog(30) : { items: [], truncated: false }
 
         const batchSourceMap = new Map<string, DocumentSourceRef>()
-        for (const ref of mergeDocumentSources(fileRefs.flatMap(file => file.sources))) batchSourceMap.set(ref.id, ref)
+        for (const ref of mergeDocumentSources(fileRefs.flatMap(file => file.sources.filter(item => !item.dependencyOnly)))) {
+          batchSourceMap.set(ref.id, ref)
+        }
         const questionContexts = new Map<string, DocumentSourceRef[]>()
         const canonicalSources: Array<{
-          sourceId: string, author: MemorySource['author'], text: string,
+          sourceId: string, author: MemorySource['author'], sourceKind: MemorySource['sourceKind'], text: string,
           question: string | null, questionUnavailable: boolean, at: number, timezone: string,
         }> = []
         for (const ref of batchSourceMap.values()) {
@@ -1331,15 +1353,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (questionAllowed) questionContexts.set(ref.id, context.refs)
           canonicalSources.push({
             sourceId: original.id, author: original.author,
+            sourceKind: original.sourceKind ?? null,
             text: original.text,
             question: questionAllowed ? original.question! : null,
-            questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed,
+            questionUnavailable: (original.author === 'answer' || original.author === 'selection' || Boolean(original.question)) && !questionAllowed,
             at: original.at, timezone: original.timezone,
           })
         }
 
         const readSources = new Map(mergeDocumentSources([
-          ...batchSourceMap.values(),
+          ...fileRefs.flatMap(file => file.sources),
           ...[...questionContexts.values()].flat(),
         ]).map(ref => [ref.id, ref]))
         const toolAttempts: ReturnType<typeof createMemoryDreamTools<MemoryDocumentView>>[] = []
@@ -1422,7 +1445,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 path: note.path,
                 title: typeof name === 'string' ? name : '',
                 markdown: chars.slice(0, defaults.dreamFileChars).join('') + (chars.length > defaults.dreamFileChars ? '\n\n[truncated]' : ''),
-                sourceIds: fileRefs[index]!.sources.map(ref => ref.id),
+                sourceIds: fileRefs[index]!.sources.filter(ref => !ref.dependencyOnly).map(ref => ref.id),
               }
             }),
             canonicalSources,
@@ -1513,7 +1536,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               const plannedByPath = new Map<string, { evidence: DocumentSourceRef[], reads: Array<{ id: string, revision: string, usageVersion: number }> }>()
               for (const operation of retainedOperations) {
                 const opFiles = operation.dailyPaths.map(path => noteByPath.get(path)!)
-                const opFileSourceMap = new Map(mergeDocumentSources(opFiles.flatMap(file => file.sources)).map(ref => [ref.id, ref]))
+                const opFileSourceMap = new Map(mergeDocumentSources(opFiles.flatMap(file => file.sources.filter(item => !item.dependencyOnly))).map(ref => [ref.id, ref]))
                 const opRefs = operation.sourceIds.map(id => {
                   const ref = opFileSourceMap.get(id)
                   if (!ref) throw new Error('dream-source-outside-daily')
@@ -1553,15 +1576,25 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   if (!observedDigest && !planned && !beforeLinkPaths.has(targetPath)) throw new Error('dream-ungrounded-link')
                 }
                 const boundDigests = unique([...(before ? [before] : []), ...referencedDigests])
+                const opDependencyRefs = opFiles
+                  .flatMap(file => file.sources.filter(ref => ref.dependencyOnly))
+                  .map(ref => ({ ...ref, dependencyOnly: true as const }))
                 const evidence = mergeDocumentSources([
                   ...boundDigests.flatMap(doc => doc.sourceTokens),
                   ...referencedPlanned.flatMap(item => item.evidence),
                   ...opRefs,
-                  ...opRefs.flatMap(ref => questionContexts.get(ref.id) ?? []),
+                  ...opRefs.flatMap(ref => (questionContexts.get(ref.id) ?? []).map(dep =>
+                    opFileSourceMap.has(dep.id) ? dep : { ...dep, dependencyOnly: true as const },
+                  )),
+                  ...opDependencyRefs,
                 ])
                 if (!evidence.length || !refsCurrent(evidence)
                   || !materialAllowed(markdown, evidence)) {
                   throw new Error('dream-material-rejected')
+                }
+                if (PERSONAL_OR_PROCEDURE_RE.test(operation.path)
+                  && !evidence.every(ref => isAllowedPersonalOrProcedureSource(ref.id))) {
+                  throw new Error('dream-author-not-allowed')
                 }
                 const opReadsMap = new Map<string, { id: string, revision: string, usageVersion: number }>()
                 // Bind all documents read during this consolidate attempt so any modification during the profile pass
@@ -1671,7 +1704,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             const deletedSeq = profileDeletedSourceSeq()
             const delGen = profileDeletionGen()
             const profileSourceMap = new Map<string, DocumentSourceRef>()
-            for (const ref of mergeDocumentSources(checkpointRefs.flatMap(file => file.sources))) {
+            for (const ref of mergeDocumentSources(checkpointRefs.flatMap(file => file.sources.filter(item => !item.dependencyOnly)))) {
               const original = source(ref.id)
               if (!original?.text) continue
               if (!isPureUserSource(original)) continue
@@ -1800,8 +1833,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                       profileResolved = true
                     } else {
                       const selectedSet = new Set(profilePlan.sourceIds)
-                      const opFiles = checkpointRefs.filter(file => file.sources.some(ref => selectedSet.has(ref.id)))
+                      const opFiles = checkpointRefs.filter(file => file.sources.some(ref => !ref.dependencyOnly && selectedSet.has(ref.id)))
                       if (!opFiles.length) throw new Error('dream-source-outside-daily')
+                      const opContributedIds = new Set(opFiles.flatMap(file => file.sources.filter(ref => !ref.dependencyOnly).map(ref => ref.id)))
                       const opRefs = profilePlan.sourceIds.map(id => {
                         const ref = profileSourceMap.get(id)
                         if (!ref) throw new Error('unknown-dream-source')
@@ -1816,7 +1850,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                       const evidence = mergeDocumentSources([
                         ...(existingProfileView ? existingProfileView.sourceTokens : []),
                         ...opRefs,
-                        ...opRefs.flatMap(ref => profileQuestionContexts.get(ref.id) ?? []),
+                        ...opRefs.flatMap(ref => (profileQuestionContexts.get(ref.id) ?? []).map(dep =>
+                          opContributedIds.has(dep.id) ? dep : { ...dep, dependencyOnly: true as const },
+                        )),
                       ])
                       if (!evidence.length || !refsCurrent(evidence) || !materialAllowed(markdown, evidence)) {
                         throw new Error('dream-material-rejected')

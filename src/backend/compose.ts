@@ -24,7 +24,11 @@ import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { createVivaMemoryClient } from './memory-client.ts'
 import { MemoryOwnerUnavailable } from './remote-memory-channel.ts'
-import { eligibleQuestionAnswers, questionAnswerSourceId } from '../memory/node/question-answer-memory.ts'
+import {
+  eligibleQuestionAnswers,
+  eligibleQuestionSelections,
+  questionAnswerSourceId,
+} from '../memory/node/question-answer-memory.ts'
 import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod } from '../memory/contracts/host.ts'
 import type { TaskDispatchMeta } from './acp-task-sessions.ts'
 import { resolveMemoryProject } from '../memory/node/project-scope.ts'
@@ -221,7 +225,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   const pendingHumanPrompts = new Map<string, { fingerprint: string, turnId: string, context(): ConversationContext, sources: readonly string[], started(): boolean, promise: Promise<IpcResults['agent:prompt']> }>()
   let closed = false
   const knownUnsentPrompts = new Set<string>()
-  let humanAdmission: { turnId: string, started: boolean, completed: Promise<void>[], delivered(): void, current(): boolean, recovered(): void } | null = null
+  let humanAdmission: { turnId: string, started: boolean, completed: Promise<void>[], delivered(): void, current(): boolean, recovered(): void, topicId?: () => string } | null = null
   function retireForegroundRequests() {
     try {
       if (!closed) knownUnsentPrompts.clear()
@@ -524,13 +528,15 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (!conversation) return
         const bridge = lifetime.isCurrent() ? dsh.current : null
         if (!entry.memoryEligible || !entry.callId || entry.callSeq === undefined || !bridge?.memory.ready()) return
-        const eligible = eligibleQuestionAnswers(meta?.rawCards ?? entry.question.questions, answers)
-        if (eligible.length === 0) return
+        const cards = meta?.rawCards ?? entry.question.questions
+        const eligibleCustom = eligibleQuestionAnswers(cards, answers)
+        const eligibleSelections = eligibleQuestionSelections(cards, answers)
+        if (eligibleCustom.length === 0 && eligibleSelections.length === 0) return
         const sourceIds = Object.create(null) as Record<string, string>
-        for (const item of eligible) {
+        for (const item of eligibleCustom) {
           sourceIds[item.id] = questionAnswerSourceId(entry.sessionId, entry.callSeq, entry.callId, item.id)
         }
-        return { conversationId: conversation, sourceIds }
+        return { conversationId: conversation, sourceIds, recordReceipt: true }
       },
       historySearch: async (query, range, session) =>
         historyRecall(historyDb, historyForProject(projectScopeKey(workspaceOfSession(session)), isMainSession(session))).search(query, range),
@@ -547,6 +553,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       conversationContext: sessionId => {
         const context = sessions.context()
         return context.sessionId === sessionId ? context : { conversationId: null, sessionId }
+      },
+      topicOfConversation: (conversationId, sessionId) => {
+        const saved = historyDb.topicOf(conversationId)
+        if (saved) return saved
+        const current = sessions.current()
+        if (sessionId && current.sessionId === sessionId && current.id === conversationId) return sessions.topicId()
+        return conversationId
       },
       emit: (event) => {
         if (!lifetime.isCurrent()) return
@@ -724,6 +737,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const agent = dsh.current
       if (!agent) return false
       const context = sessions.context()
+      const reportTopicId = sessions.topicId()
       if (!context.sessionId) return false
       if (dsh.current !== agent || !sameContext(context, sessions.context()) || sessions.isChanging()
         || agent.isSwitching() || turn.active || !held()) return false
@@ -732,7 +746,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       turn = { active: true, by: 'task', stopping: false, startedAt: Date.now(), id: randomUUID() }
       emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'task', context })
       if (reports.some(item => isForeignReport(item.taskId))) foregroundHistory?.keepReplyInForeground(context.sessionId)
-      void agent.prompt(note, [], { request: false, held: () => claim.current() && held() }).catch((err: Error) => {
+      void agent.prompt(note, [], { request: false, threadId: reportTopicId, held: () => claim.current() && held() }).catch((err: Error) => {
         if (!claim.current() || dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
         emitToRenderer({ type: 'error', message: err.message, context })
@@ -926,13 +940,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           : { ok: true, delivery: 'sent' as const }
       }
       if (historyDb.promptPending([deliveryId])) throw new Error(t('main.memory.change.pending'))
-      const agent = requireBridge(), origin = sessions.context(), generation = foregroundRequests.lease(), admitted = humanAdmission, originalTurn = turn
+      const agent = requireBridge(), origin = sessions.context(), originTopicId = sessions.topicId(), generation = foregroundRequests.lease(), admitted = humanAdmission, originalTurn = turn
       historyDb.reservePromptDelivery([deliveryId])
       foregroundHistory?.userSteer({ text: words, sourceId: deliveryId })
       const selected = () => generation() && dsh.current === agent
         && !sessions.isChanging() && !agent.isSwitching() && sameContext(origin, sessions.context())
       const held = () => selected() && turn === originalTurn && turn.active && (!admitted || admitted.current())
-      return deliverHumanSteer(words, deliveryId, agent, held, selected)
+      return deliverHumanSteer(words, deliveryId, agent, held, selected, undefined, originTopicId)
     })
     ipcMain.handle('agent:cancel', async (_event, target) => {
       const agent = dsh.current
@@ -1016,14 +1030,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
 
   async function deliverHumanSteer(words: string, deliveryId: string, agent: Bridge,
-    held: () => boolean, selected: () => boolean, onDispatch?: () => void): Promise<IpcResults['agent:steer']> {
+    held: () => boolean, selected: () => boolean, onDispatch?: () => void, threadId?: string): Promise<IpcResults['agent:steer']> {
     // A normally finished turn asks the renderer to resend as a new question;
     // cancellation or a replacement selection must never do so.
     const retiredReason = (): 'idle' | 'unavailable' => selected() ? 'idle' : 'unavailable'
     let dispatched = false
     try {
       const result = !held() ? { ok: false, reason: retiredReason(), delivery: 'not-sent' as const }
-        : await agent.steer(words, deliveryId, held, retiredReason, () => { dispatched = true; onDispatch?.() })
+        : await agent.steer(words, deliveryId, held, retiredReason, () => { dispatched = true; onDispatch?.() }, threadId)
       if (!closed && (result.ok || result.reason === 'idle' || result.delivery === 'not-sent')) historyDb.settlePromptDelivery([deliveryId], result.ok)
       return { ...result, delivery: closed ? result.delivery ?? (result.ok ? 'sent' as const : 'pending' as const) : historyDb.promptDelivery(deliveryId) }
     }
@@ -1038,6 +1052,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string, turnId: string = randomUUID(), imageRefs: readonly ImageRef[] = []): Promise<IpcResults['agent:prompt']> {
     const agent = requireBridge()
     let origin = sessions.context()
+    let originTopicId = sessions.topicId()
     const retained = foregroundRequests.deferred()
     const key = JSON.stringify(operation)
     const fingerprint = createHash('sha256').update(JSON.stringify({ origin, question, pictures, feedItemId })).digest('hex')
@@ -1102,10 +1117,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (dsh.current !== agent || origin.conversationId !== recovered.conversationId
           || agent.currentSession() !== recovered.sessionId || sessions.isChanging()) throw new ForegroundRequestRetired()
         origin = recovered
+        originTopicId = sessions.topicId()
         if (userMessage && origin.conversationId && origin.sessionId) {
           historyDb.rebindMessageSession(origin.conversationId, operation, origin.sessionId)
         }
-      } }
+      }, topicId: () => originTopicId }
       humanAdmission = own
       try {
         await signal({ kind: 'chat.said', text: question, images: pictures, operation, feedItemId })
@@ -1122,7 +1138,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
       finally { if (humanAdmission === own) humanAdmission = null }
     }, interjectable ? async held => {
-      const result = await deliverHumanSteer(question, operation, agent, held, selected, () => { nativeStarted = true })
+      const result = await deliverHumanSteer(question, operation, agent, held, selected, () => { nativeStarted = true }, originTopicId)
       if (result.ok) return { result: undefined }
       if (result.delivery === 'not-sent') nativeStarted = false
       if (result.reason === 'idle' && result.delivery === 'not-sent' && selected()) {
@@ -1189,15 +1205,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
       throw error
     }
+    const snapshottedTopicId = admission?.topicId?.() ?? sessions.topicId()
     if (!feedItemId) {
       let started = false
       await agent.prompt(words, pictures, { userTurn: true, onStart: () => { started = true; admission?.delivered() },
-        sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText, held }).catch(failed)
+        sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText, threadId: snapshottedTopicId, held }).catch(failed)
       if (!started) throw new ForegroundRequestRetired()
       return
     }
     return await new Promise<void>((resolve, reject) => {
-      const complete = agent.prompt(words, pictures, { userTurn: true, onStart: () => { admission?.delivered(); resolve() }, sourceId: undefined, sourceText, held }).then(() => {
+      const complete = agent.prompt(words, pictures, { userTurn: true, onStart: () => { admission?.delivered(); resolve() }, sourceId: undefined, sourceText, threadId: snapshottedTopicId, held }).then(() => {
         reject(new Error(t('main.memory.context.stale')))
       }, error => { if (!admission || admission.current()) finishForegroundTurn(); reject(error) })
       admission?.completed.push(complete)

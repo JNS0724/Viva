@@ -5,7 +5,7 @@ import { observeDiagnosticAsync } from '../../diagnostics/operation.ts'
 import { removeAbandonedMemoryTemps } from './memory-file-store.ts'
 import { resolveMemoryProject, type MemoryProjectResolution } from './project-scope.ts'
 import path from 'node:path'
-import { randomUUID, createHmac } from 'node:crypto'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { lockMemoryRoot } from './owner-lock.ts'
 import { openMemoryStore, memoryHash } from './memory-store.ts'
 import { createMemoryRuntime } from './runtime.ts'
@@ -22,7 +22,17 @@ import { memoryFileCreateRequest, memoryFileForgetRequest } from '../contracts/f
 import { parseMemoryDomainErrorDetails, type MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryScope } from '../contracts/memory-contract.ts'
 import type { MemorySessionKind as SessionKind, MemorySource, MemorySourceKind } from '../contracts/records.ts'
-import { canonicalEligibleAnswersDigest, hasUnsupportedSqliteChars } from './question-answer-memory.ts'
+import {
+  canonicalEligibleAnswersDigest,
+  canonicalEligibleSelectionsDigest,
+  hasUnsupportedSqliteChars,
+} from './question-answer-memory.ts'
+
+function deterministicOccurrenceUuid(session: string, sourceId: string, extra?: string): string {
+  const parts = extra !== undefined ? ['occurrence', session, extra, sourceId] : ['occurrence', session, sourceId]
+  const digest = createHash('sha256').update(JSON.stringify(parts)).digest('hex')
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
+}
 
 export type TurnSourceCandidate = {
   sourceId: string
@@ -46,6 +56,7 @@ export type QuestionReceiptInput = {
   questionProfileGen: number | null
   answerProfileGen: number | null
   answerBatchDigest: string
+  selectionBatchDigest?: string | null
 }
 
 export type TurnQuestionAnswerItem = {
@@ -55,14 +66,24 @@ export type TurnQuestionAnswerItem = {
   text: string
 }
 
+export type TurnQuestionSelectionItem = {
+  sourceId: string
+  questionId: string
+  question: string
+  selected: readonly string[]
+  text: string
+}
+
 export type TurnQuestionAnswerCandidate = {
   callSeq: number
   callIdHash: string
   requestId: string
   questionAt: number
   answerBatchDigest: string
+  selectionBatchDigest?: string | null
   timezone: string
   items: readonly TurnQuestionAnswerItem[]
+  selectionItems?: readonly TurnQuestionSelectionItem[]
 }
 
 export type AdvanceIntakeCursorInput = {
@@ -72,6 +93,7 @@ export type AdvanceIntakeCursorInput = {
   inheritedSeq?: number
   sessionKind?: SessionKind
   conversation?: string | null
+  thread?: string | null
   cwd?: string | null
 }
 
@@ -98,6 +120,8 @@ export type SettleTurnInput = {
   cwd?: string | null
   sessionKind: SessionKind
   conversation?: string | null
+  thread?: string | null
+  hostDay?: string | null
   inheritedSeq: number
   expectedNextSeq: number | null
   fromSeq: number
@@ -125,7 +149,7 @@ type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'readSession
   onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void
 }
 type SessionRow = { conversation: string, context: string | null, project: string | null }
-type CursorRow = { session: string, next_seq: number, inherited_seq: number, session_kind: string, conversation: string | null, created_at: number, updated_at: number }
+type CursorRow = { session: string, next_seq: number, inherited_seq: number, session_kind: string, conversation: string | null, thread: string | null, created_at: number, updated_at: number }
 type QuestionReceiptRow = {
   session: string
   turn: number
@@ -136,6 +160,7 @@ type QuestionReceiptRow = {
   question_profile_gen: number | null
   answer_profile_gen: number | null
   answer_batch_digest: string
+  selection_batch_digest: string | null
   created_at: number
 }
 type Operation = { id: string, fingerprint: string, state: MemoryOperationOutcome['state'], payload: string | null }
@@ -178,6 +203,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       question_profile_gen INTEGER,
       answer_profile_gen INTEGER,
       answer_batch_digest TEXT NOT NULL,
+      selection_batch_digest TEXT,
       created_at INTEGER NOT NULL,
       PRIMARY KEY(session, call_seq, call_id_hash)
     );
@@ -188,6 +214,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       inherited_seq INTEGER NOT NULL DEFAULT 0,
       session_kind TEXT NOT NULL DEFAULT 'main',
       conversation TEXT,
+      thread TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -209,6 +236,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     route: options.route,
     readSessionRange: options.readSessionRange
       ? (input, signal) => {
+          if (input.sessionKind) return options.readSessionRange!(input, signal)
           const row = db.prepare('SELECT session_kind FROM owner_intake_cursors WHERE session=?').get(input.sessionId) as { session_kind?: string } | undefined
           const cursorKind = row?.session_kind === 'main' || row?.session_kind === 'task' || row?.session_kind === 'unattended'
             ? row.session_kind as SessionKind : undefined
@@ -224,7 +252,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now(),
     }),
-    canCommit: source => state === 'ready' && (!source.session || !db.prepare('SELECT 1 FROM owner_active_turns WHERE session=?').get(source.session)),
+    canCommit: source => state === 'ready' && (!source.session || !db.prepare('SELECT 1 FROM owner_open_turn_sources WHERE session=? AND source_id=? LIMIT 1').get(source.session, source.id)),
   })
 
   function sessionContext(session: string) {
@@ -283,12 +311,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       inheritedSeq: row ? Number(row.inherited_seq) : 0,
       sessionKind: (row?.session_kind ?? 'main') as SessionKind,
       conversation: row?.conversation ?? null,
+      thread: row?.thread ?? null,
     }
   }
 
   function advanceIntakeCursor(input: AdvanceIntakeCursorInput): CursorResult {
     requireReady()
-    const { sessionId: session, expectedNextSeq, nextSeq, inheritedSeq = 0, sessionKind = 'main', conversation = null, cwd } = input
+    const { sessionId: session, expectedNextSeq, nextSeq, inheritedSeq = 0, sessionKind = 'main', conversation = null, thread = null, cwd } = input
     if (!Number.isSafeInteger(nextSeq) || nextSeq < 0) throw new Error('Invalid intake cursor offset')
     return store.tx(() => {
       const existing = db.prepare('SELECT * FROM owner_intake_cursors WHERE session=?').get(session) as CursorRow | undefined
@@ -306,15 +335,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const finalKind = existing && sessionKind === 'main' && existing.session_kind !== 'main'
         ? existing.session_kind : sessionKind
       const finalConv = conversation ?? existing?.conversation ?? null
-      db.prepare(`INSERT INTO owner_intake_cursors(session, next_seq, inherited_seq, session_kind, conversation, created_at, updated_at)
-        VALUES(?,?,?,?,?,?,?)
+      const finalThread = options.hostNamespace ? (thread ?? existing?.thread ?? null) : null
+      db.prepare(`INSERT INTO owner_intake_cursors(session, next_seq, inherited_seq, session_kind, conversation, thread, created_at, updated_at)
+        VALUES(?,?,?,?,?,?,?,?)
         ON CONFLICT(session) DO UPDATE SET
           next_seq=excluded.next_seq,
           inherited_seq=MAX(owner_intake_cursors.inherited_seq, excluded.inherited_seq),
           session_kind=excluded.session_kind,
           conversation=COALESCE(excluded.conversation, owner_intake_cursors.conversation),
+          thread=COALESCE(excluded.thread, owner_intake_cursors.thread),
           updated_at=excluded.updated_at`).run(
-        session, nextSeq, inheritedSeq, finalKind, finalConv, existing?.created_at ?? ts, ts,
+        session, nextSeq, inheritedSeq, finalKind, finalConv, finalThread, existing?.created_at ?? ts, ts,
       )
       if (finalKind !== 'unattended' && finalConv) {
         const resolved = resolveIntakeScope(cwd)
@@ -371,12 +402,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   function recordQuestionReceipt(input: QuestionReceiptInput) {
     requireReady()
     const { sessionId: session, turn, callSeq, callIdHash, conversationId, answeredAt, questionProfileGen, answerProfileGen, answerBatchDigest } = input
+    const selectionBatchDigest = input.selectionBatchDigest ?? null
     if (!session || !Number.isSafeInteger(turn) || turn <= 0
       || !Number.isSafeInteger(callSeq) || callSeq < 0
       || !/^[0-9a-f]{64}$/u.test(callIdHash)
       || !conversationId.trim()
       || !Number.isSafeInteger(answeredAt) || answeredAt <= 0
-      || !/^[0-9a-f]{64}$/u.test(answerBatchDigest)) {
+      || !/^[0-9a-f]{64}$/u.test(answerBatchDigest)
+      || (selectionBatchDigest !== null && !/^[0-9a-f]{64}$/u.test(selectionBatchDigest))) {
       throw new MemoryDomainError('invalid.text', 'Invalid question receipt')
     }
     store.tx(() => {
@@ -386,24 +419,29 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (existing) {
         if (existing.turn !== turn
           || existing.conversation_id !== conversationId
-          || existing.answer_batch_digest !== answerBatchDigest) {
+          || existing.answer_batch_digest !== answerBatchDigest
+          || (existing.selection_batch_digest ?? null) !== selectionBatchDigest) {
           throw new MemoryDomainError('operation.conflict', 'Question receipt conflicts with an earlier submission')
         }
         return
       }
       db.prepare(`INSERT INTO owner_question_receipts(
         session, turn, call_seq, call_id_hash, conversation_id, answered_at,
-        question_profile_gen, answer_profile_gen, answer_batch_digest, created_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+        question_profile_gen, answer_profile_gen, answer_batch_digest, selection_batch_digest, created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
         session, turn, callSeq, callIdHash, conversationId, answeredAt,
-        questionProfileGen, answerProfileGen, answerBatchDigest, now(),
+        questionProfileGen, answerProfileGen, answerBatchDigest, selectionBatchDigest, now(),
       )
     })
   }
 
   function retireSessionQuestionReceipts(session: string) {
     requireReady()
-    db.prepare('DELETE FROM owner_question_receipts WHERE session=?').run(session)
+    store.tx(() => {
+      db.prepare('DELETE FROM owner_question_receipts WHERE session=?').run(session)
+      db.prepare('DELETE FROM owner_open_turn_sources WHERE session=?').run(session)
+      db.prepare('DELETE FROM owner_active_turns WHERE session=?').run(session)
+    })
   }
 
   function pruneExpiredQuestionReceipts(maxAgeMs = 30 * 24 * 60 * 60 * 1000, excludeSessions: readonly string[] = []) {
@@ -424,7 +462,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     turn: number,
     effectiveKind: SessionKind,
     questionAnswers: readonly TurnQuestionAnswerCandidate[],
-    { deferAutomatic }: { deferAutomatic: boolean },
+    { deferAutomatic, includeSelections }: { deferAutomatic: boolean, includeSelections: boolean },
   ): { admittedIds: string[], eventSeqs: Record<string, number>, conversation?: string } {
     const admittedIds: string[] = []
     const eventSeqs: Record<string, number> = Object.create(null) as Record<string, number>
@@ -434,76 +472,195 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       'SELECT * FROM owner_question_receipts WHERE session=? AND turn=? AND call_seq=? AND call_id_hash=?',
     )
     const currentDelGen = runtime.profileDeletionGeneration()
-    const sourceKind: MemorySourceKind = effectiveKind === 'task' ? 'task-question-answer' : 'question-answer'
+    const customSourceKind: MemorySourceKind = effectiveKind === 'task' ? 'task-question-answer' : 'question-answer'
+    const selectionSourceKind: MemorySourceKind = effectiveKind === 'task' ? 'task-question-selection' : 'question-selection'
     for (const candidate of questionAnswers) {
-      if (!candidate.items.length) continue
+      const selectionItems = includeSelections ? (candidate.selectionItems ?? []) : []
+      if (!candidate.items.length && !selectionItems.length) continue
       const row = selectReceipt.get(session, turn, candidate.callSeq, candidate.callIdHash) as QuestionReceiptRow | undefined
-      if (!row || row.answer_batch_digest !== candidate.answerBatchDigest) continue
-      const computedDigest = canonicalEligibleAnswersDigest(candidate.items.map(item => ({
-        id: item.questionId,
-        question: item.question,
-        custom: item.text,
-      })))
-      if (computedDigest !== row.answer_batch_digest) continue
-      if (!receiptConversation && row.conversation_id) receiptConversation = row.conversation_id
-      const answerProfileEligible = currentDelGen === 0
-        || (row.answer_profile_gen !== null && row.answer_profile_gen === currentDelGen)
-      const origin = {
-        conversation: row.conversation_id,
-        session,
-        scope: { kind: 'user' as const },
-        context: { kind: 'user' as const },
-        author: 'answer' as const,
-        sourceKind,
-        profileEligible: answerProfileEligible,
-      }
-      for (const item of candidate.items) {
-        const text = item.text.trim()
-        if (!text || !item.questionId.trim() || !item.question.trim()) continue
-        if (hasUnsupportedSqliteChars(item.questionId) || hasUnsupportedSqliteChars(item.question) || hasUnsupportedSqliteChars(text)) continue
-        if (looksSecret(item.questionId) || looksSecret(item.question) || looksSecret(text)) continue
-        const answerMeta = {
+      if (!row) continue
+
+      // 1. Independently verify custom `answer_batch_digest` (§3.2.2 Gate 3).
+      if (candidate.items.length > 0 && row.answer_batch_digest === candidate.answerBatchDigest) {
+        const computedDigest = canonicalEligibleAnswersDigest(candidate.items.map(item => ({
+          id: item.questionId,
           question: item.question,
-          requestId: candidate.requestId,
-          questionId: item.questionId,
-          custom: true as const,
-          questionAt: candidate.questionAt,
-          ...(row.question_profile_gen !== null ? { questionProfileGen: row.question_profile_gen } : {}),
-        }
-        const expectedHash = memoryHash(text)
-        const existing = store.readSource(item.sourceId)
-        if (existing) {
-          if (existing.session !== session
-            || existing.conversation !== origin.conversation
-            || existing.author !== 'answer'
-            || (existing.hash !== null && existing.hash !== expectedHash)
-            || existing.requestId !== candidate.requestId
-            || existing.questionId !== item.questionId) {
-            continue
+          custom: item.text,
+        })))
+        if (computedDigest === row.answer_batch_digest) {
+          if (!receiptConversation && row.conversation_id) receiptConversation = row.conversation_id
+          const answerProfileEligible = effectiveKind === 'task'
+            ? false
+            : (currentDelGen === 0 || (row.answer_profile_gen !== null && row.answer_profile_gen === currentDelGen))
+          const origin = {
+            conversation: row.conversation_id,
+            session,
+            scope: { kind: 'user' as const },
+            context: { kind: 'user' as const },
+            author: 'answer' as const,
+            sourceKind: customSourceKind,
+            profileEligible: answerProfileEligible,
           }
-          if (!deferAutomatic && existing.outcome === 'received') {
-            runtime.accept(text, origin, item.sourceId, answerMeta, {
-              deferAutomatic: false, at: row.answered_at, timezone: candidate.timezone,
-            })
+          for (const item of candidate.items) {
+            const text = item.text.trim()
+            if (!text || !item.questionId.trim() || !item.question.trim()) continue
+            if (hasUnsupportedSqliteChars(item.questionId) || hasUnsupportedSqliteChars(item.question) || hasUnsupportedSqliteChars(text)) continue
+            if (looksSecret(item.questionId) || looksSecret(item.question) || looksSecret(text)) continue
+            const answerMeta = {
+              question: item.question,
+              requestId: candidate.requestId,
+              questionId: item.questionId,
+              custom: true as const,
+              questionAt: candidate.questionAt,
+              ...(row.question_profile_gen !== null ? { questionProfileGen: row.question_profile_gen } : {}),
+            }
+            const expectedHash = memoryHash(text)
+            const existing = store.readSource(item.sourceId)
+            if (existing) {
+              if (existing.session !== session
+                || existing.conversation !== origin.conversation
+                || existing.author !== 'answer'
+                || (existing.hash !== null && existing.hash !== expectedHash)
+                || existing.requestId !== candidate.requestId
+                || existing.questionId !== item.questionId) {
+                continue
+              }
+              if (!deferAutomatic && existing.outcome === 'received') {
+                runtime.accept(text, origin, item.sourceId, answerMeta, {
+                  deferAutomatic: false, at: row.answered_at, timezone: candidate.timezone,
+                })
+              }
+            } else {
+              runtime.accept(text, origin, item.sourceId, answerMeta, {
+                deferAutomatic, at: row.answered_at, timezone: candidate.timezone,
+              })
+            }
+            const saved = store.readSource(item.sourceId)
+            if (saved?.text
+              && saved.session === session
+              && saved.conversation === origin.conversation
+              && saved.author === 'answer'
+              && saved.hash === expectedHash
+              && saved.text === text) {
+              admittedIds.push(saved.id)
+              eventSeqs[saved.id] = candidate.callSeq
+            }
           }
-        } else {
-          runtime.accept(text, origin, item.sourceId, answerMeta, {
-            deferAutomatic, at: row.answered_at, timezone: candidate.timezone,
-          })
         }
-        const saved = store.readSource(item.sourceId)
-        if (saved?.text
-          && saved.session === session
-          && saved.conversation === origin.conversation
-          && saved.author === 'answer'
-          && saved.hash === expectedHash
-          && saved.text === text) {
-          admittedIds.push(saved.id)
-          eventSeqs[saved.id] = candidate.callSeq
+      }
+
+      // 2. Independently verify option `selection_batch_digest` (§3.2.2 Gate 3).
+      if (selectionItems.length > 0
+        && row.selection_batch_digest
+        && candidate.selectionBatchDigest
+        && row.selection_batch_digest === candidate.selectionBatchDigest) {
+        const computedSelDigest = canonicalEligibleSelectionsDigest(selectionItems.map(item => ({
+          id: item.questionId,
+          question: item.question,
+          selected: [...item.selected],
+        })))
+        if (computedSelDigest === row.selection_batch_digest) {
+          if (!receiptConversation && row.conversation_id) receiptConversation = row.conversation_id
+          const selOrigin = {
+            conversation: row.conversation_id,
+            session,
+            scope: { kind: 'user' as const },
+            context: { kind: 'user' as const },
+            author: 'selection' as const,
+            sourceKind: selectionSourceKind,
+            profileEligible: false,
+          }
+          for (const item of selectionItems) {
+            if (!item.selected.length || !item.questionId.trim() || !item.question.trim()) continue
+            if (item.selected.some(label => !label.trim() || hasUnsupportedSqliteChars(label) || looksSecret(label))) continue
+            const text = item.selected.join('、').trim()
+            if (!text || item.text.trim() !== text) continue
+            if (hasUnsupportedSqliteChars(item.questionId) || hasUnsupportedSqliteChars(item.question) || hasUnsupportedSqliteChars(text)) continue
+            if (looksSecret(item.questionId) || looksSecret(item.question) || looksSecret(text)) continue
+            const selMeta = {
+              question: item.question,
+              requestId: candidate.requestId,
+              questionId: item.questionId,
+              selection: true as const,
+              questionAt: candidate.questionAt,
+              ...(row.question_profile_gen !== null ? { questionProfileGen: row.question_profile_gen } : {}),
+            }
+            const expectedHash = memoryHash(text)
+            const existing = store.readSource(item.sourceId)
+            if (existing) {
+              if (existing.session !== session
+                || existing.conversation !== selOrigin.conversation
+                || existing.author !== 'selection'
+                || (existing.hash !== null && existing.hash !== expectedHash)
+                || existing.requestId !== candidate.requestId
+                || existing.questionId !== item.questionId) {
+                continue
+              }
+              if (!deferAutomatic && existing.outcome === 'received') {
+                runtime.accept(text, selOrigin, item.sourceId, selMeta, {
+                  deferAutomatic: false, at: row.answered_at, timezone: candidate.timezone,
+                })
+              }
+            } else {
+              runtime.accept(text, selOrigin, item.sourceId, selMeta, {
+                deferAutomatic, at: row.answered_at, timezone: candidate.timezone,
+              })
+            }
+            const saved = store.readSource(item.sourceId)
+            if (saved?.text
+              && saved.session === session
+              && saved.conversation === selOrigin.conversation
+              && saved.author === 'selection'
+              && saved.hash === expectedHash
+              && saved.text === text) {
+              admittedIds.push(saved.id)
+              eventSeqs[saved.id] = candidate.callSeq
+            }
+          }
         }
       }
     }
     return { admittedIds, eventSeqs, ...(receiptConversation ? { conversation: receiptConversation } : {}) }
+  }
+
+  /**
+   * Resolve safe per-occurrence `sourceId` for `stageOpenTurnSources` and `settleTurn` (§3.3.2):
+   * - Unedited rewind/fork resend reusing a prior segment/session's `sourceId` with identical
+   *   `author` and `text` derives `deterministicOccurrenceUuid(session, candidate.sourceId)` so
+   *   original `history.db` `sourceLink()` stays intact while the new session's turn settles cleanly.
+   * - Forged or conflicting UUID collisions across sessions/conversations are rejected (`null`).
+   */
+  function resolveTurnSourceId(
+    session: string,
+    origin: ReturnType<typeof resolveCandidateOrigin>,
+    candidate: TurnSourceCandidate,
+  ): string | null {
+    const isDenied = looksSecret(candidate.text)
+    const expectedHash = isDenied ? null : memoryHash(candidate.text)
+    const existing = store.readSource(candidate.sourceId)
+    if (!existing) return candidate.sourceId
+    if (existing.session === session && existing.conversation === origin.conversation) {
+      if (existing.author !== origin.author) return null
+      if (existing.hash === null) return isDenied ? candidate.sourceId : null
+      return !isDenied && existing.hash === expectedHash && existing.text === candidate.text
+        ? candidate.sourceId
+        : null
+    }
+    if (isDenied || existing.author !== origin.author || existing.hash === null || existing.hash !== expectedHash || existing.text !== candidate.text) {
+      return null
+    }
+    const derived = existing.session !== session
+      ? deterministicOccurrenceUuid(session, candidate.sourceId)
+      : deterministicOccurrenceUuid(session, candidate.sourceId, origin.conversation ?? '')
+    const derivedExisting = store.readSource(derived)
+    if (!derivedExisting) return derived
+    return derivedExisting.session === session
+      && derivedExisting.conversation === origin.conversation
+      && derivedExisting.author === origin.author
+      && derivedExisting.hash === expectedHash
+      && derivedExisting.text === candidate.text
+      ? derived
+      : null
   }
 
   function stageOpenTurnSources(input: StageOpenTurnInput): { staged: string[] } {
@@ -522,22 +679,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (candidate.author !== 'user' && candidate.author !== 'answer') continue
         if (!candidate.text.trim()) continue
         const origin = resolveCandidateOrigin(session, bound, candidate)
+        const targetSourceId = resolveTurnSourceId(session, origin, candidate)
+        if (!targetSourceId) continue
         const expectedHash = memoryHash(candidate.text)
-        const existing = store.readSource(candidate.sourceId)
-        if (existing) {
-          if (existing.session !== session
-            || existing.conversation !== origin.conversation
-            || existing.author !== origin.author
-            || existing.hash !== expectedHash
-            || existing.text !== candidate.text) {
-            continue
-          }
-        } else {
-          runtime.accept(candidate.text, origin, candidate.sourceId, undefined, {
+        const existing = store.readSource(targetSourceId)
+        if (!existing) {
+          runtime.accept(candidate.text, origin, targetSourceId, undefined, {
             deferAutomatic: true, at: candidate.at, timezone: candidate.timezone,
           })
         }
-        const saved = store.readSource(candidate.sourceId)
+        const saved = store.readSource(targetSourceId)
         if (saved?.text
           && saved.session === session
           && saved.conversation === origin.conversation
@@ -549,7 +700,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           staged.push(saved.id)
         }
       }
-      const admittedQuestions = admitQuestionAnswersInTx(session, turn, sessionKind, questionAnswers, { deferAutomatic: true })
+      const admittedQuestions = admitQuestionAnswersInTx(session, turn, sessionKind, questionAnswers, { deferAutomatic: true, includeSelections: false })
       if (admittedQuestions.conversation && !conversation) {
         bindSession(session, resolved, admittedQuestions.conversation)
       }
@@ -586,6 +737,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const effectiveKind: SessionKind = existingCursor && sessionKind === 'main' && existingCursor.session_kind !== 'main'
         ? existingCursor.session_kind as SessionKind : sessionKind
       let effectiveConv = conversation ?? existingCursor?.conversation ?? null
+      const effectiveThread = options.hostNamespace && effectiveKind !== 'unattended'
+        ? (input.thread ?? existingCursor?.thread ?? null)
+        : null
 
       // Terminal-reason gating (§5.2 item 2): ONLY 'completed' turns upsert canonical sources & note ranges.
       if (reasonKind === 'completed' && effectiveKind !== 'unattended') {
@@ -601,16 +755,18 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           for (const candidate of sources) {
             if (!candidate.text.trim()) continue
             const origin = resolveCandidateOrigin(session, bound, candidate)
-            const receipt = runtime.accept(candidate.text, origin, candidate.sourceId, undefined, {
+            const targetSourceId = resolveTurnSourceId(session, origin, candidate)
+            if (!targetSourceId) continue
+            const receipt = runtime.accept(candidate.text, origin, targetSourceId, undefined, {
               deferAutomatic: false, at: candidate.at, timezone: candidate.timezone,
             })
             const saved = store.readSource(receipt.sourceId)
-            if (saved?.text) {
+            if (saved?.text && saved.session === session) {
               admittedIds.push(saved.id)
               if (candidate.eventSeq !== undefined) sourceEventSeqs[saved.id] = candidate.eventSeq
             }
           }
-          const admittedQuestions = admitQuestionAnswersInTx(session, turn, effectiveKind, questionAnswers, { deferAutomatic: false })
+          const admittedQuestions = admitQuestionAnswersInTx(session, turn, effectiveKind, questionAnswers, { deferAutomatic: false, includeSelections: true })
           if (admittedQuestions.conversation && !effectiveConv) {
             effectiveConv = admittedQuestions.conversation
             bindSession(session, resolved, effectiveConv)
@@ -624,7 +780,15 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           const uniqueAdmitted = [...new Set(admittedIds)]
           if (uniqueAdmitted.length > 0) {
             runtime.recordNoteRangeInTx?.({
-              session, fromSeq, toSeq, turn, ids: uniqueAdmitted,
+              session,
+              groupKey: effectiveThread ?? session,
+              sessionKind: effectiveKind,
+              turnAt: input.at,
+              hostDay: effectiveKind === 'task' ? (input.hostDay ?? null) : null,
+              fromSeq,
+              toSeq,
+              turn,
+              ids: uniqueAdmitted,
               assistant: assistantText,
               sourceEventSeqs,
               flush: flushNotes === true || effectiveKind === 'task',
@@ -639,15 +803,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       db.prepare('DELETE FROM owner_question_receipts WHERE session=? AND (turn<=? OR call_seq<?)').run(session, turn, toSeq)
       db.prepare('DELETE FROM owner_active_turns WHERE session=? AND turn=?').run(session, String(turn))
       const ts = now()
-      db.prepare(`INSERT INTO owner_intake_cursors(session, next_seq, inherited_seq, session_kind, conversation, created_at, updated_at)
-        VALUES(?,?,?,?,?,?,?)
+      db.prepare(`INSERT INTO owner_intake_cursors(session, next_seq, inherited_seq, session_kind, conversation, thread, created_at, updated_at)
+        VALUES(?,?,?,?,?,?,?,?)
         ON CONFLICT(session) DO UPDATE SET
           next_seq=excluded.next_seq,
           inherited_seq=MAX(owner_intake_cursors.inherited_seq, excluded.inherited_seq),
           session_kind=excluded.session_kind,
           conversation=COALESCE(excluded.conversation, owner_intake_cursors.conversation),
+          thread=COALESCE(excluded.thread, owner_intake_cursors.thread),
           updated_at=excluded.updated_at`).run(
-        session, toSeq, inheritedSeq, effectiveKind, effectiveConv, existingCursor?.created_at ?? ts, ts,
+        session, toSeq, inheritedSeq, effectiveKind, effectiveConv, effectiveThread, existingCursor?.created_at ?? ts, ts,
       )
       return { status: 'ok' as const, nextSeq: toSeq }
     })

@@ -71,7 +71,15 @@ type Origin = {
   sourceKind?: MemorySourceKind | null
   profileEligible?: boolean
 }
-type AnswerSource = { question: string, requestId: string, questionId: string, custom?: true, questionAt?: number, questionProfileGen?: number }
+type AnswerSource = {
+  question: string
+  requestId: string
+  questionId: string
+  custom?: true
+  selection?: true
+  questionAt?: number
+  questionProfileGen?: number
+}
 type Receipt = { sourceId: string, outcome: string }
 type MemoryInterval = { from: number | null, to: number | null }
 type Route = { provider: string, model: string }
@@ -119,7 +127,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
 
   function createSource(text: string, origin: Origin, operation: string, author: MemorySource['author'], answer?: AnswerSource, captured?: { at: number, timezone: string }) {
     const id = operationId.parse(operation)
-    const denied = looksSecret(text) || (answer !== undefined && looksSecret(answer.question)) || (author === 'answer' && !answer?.custom)
+    const denied = looksSecret(text)
+      || (answer !== undefined && looksSecret(answer.question))
+      || (author === 'answer' && !answer?.custom)
+      || (author === 'selection' && !answer?.selection)
     const hash = denied ? null : memoryHash(text)
     const existing = store.readSource(id)
     if (existing) {
@@ -139,6 +150,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       ? origin.sourceKind
       : author === 'manual' ? 'manual'
       : author === 'answer' ? 'question-answer'
+      : author === 'selection' ? 'question-selection'
       : author === 'user' ? (project !== null ? 'project-user' : 'main-human')
       : author === 'agent' ? 'task-brief'
       : 'task-assistant'
@@ -162,7 +174,11 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function accept(text: string, origin: Origin, operation: string = randomUUID(), answer?: AnswerSource, intake?: { deferAutomatic?: boolean, at: number, timezone: string }): Receipt {
     const source = store.tx(() => {
       const known = store.readSource(operation)
-      const author = answer !== undefined ? 'answer' : (origin.author ?? 'user')
+      const author = origin.author === 'selection'
+        ? 'selection'
+        : answer !== undefined
+          ? 'answer'
+          : (origin.author ?? 'user')
       const current = createSource(text, origin, operation, author, answer, intake)
       if (!current.text || known && known.outcome !== 'received') return current
       const outcome = intake?.deferAutomatic ? 'received' : dailyNotes ? 'note-pending' : 'recorded'
@@ -593,9 +609,15 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       && (!source.project || Boolean(origin.project && sameScope(source.project, origin.project)))
       && (!source.context || contextAllows(source.context, origin.context ?? origin.scope) || contextAllows(source.context, origin.project))
   }
+  const hasCrossSessionContribution = (view: MemoryDocumentView, session: string) =>
+    view.sourceTokens.some(ref => {
+      if (ref.dependencyOnly) return false
+      const src = store.readSource(ref.id)
+      return Boolean(src?.session && src.session !== session)
+    })
   const automaticAllows = (view: MemoryDocumentView, origin: Origin, session: string) =>
     !isResidentProfileIdentity(view.workspace, view.path, userWorkspace)
-    && (view.kind !== 'daily' || view.session !== session)
+    && (view.kind !== 'daily' || view.session !== session || hasCrossSessionContribution(view, session))
     && fileAllowsOrigin(view, origin)
 
   function fileAllowsOrigin(view: MemoryDocumentView, origin: Origin, scope = origin.context ?? origin.scope) {

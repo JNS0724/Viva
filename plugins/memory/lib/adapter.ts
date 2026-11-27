@@ -233,7 +233,11 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   })
 
   ctx.on('session/created', observe)
-  ctx.on('agent/created', ({ agent }) => { observe(agent.session); return undefined })
+  ctx.on('agent/created', ({ agent }) => {
+    publishRoute()
+    observe(agent.session)
+    return undefined
+  })
   ctx.on('session/disposed', session => {
     const id = String(session.id)
     clearPendingForSession(id)

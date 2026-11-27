@@ -19,8 +19,9 @@ test('unverified daily edits never enter later note requests or become accepted,
       route:()=>({provider:'fake',model:'fake'}),changed:()=>{},compute(job){
         if(job.stage!=='note')return null
         calls.push(job)
-        const data=JSON.parse(job.input) as {existing?:{markdown:string},turns:Array<{user:Array<{text:string}>}>}
-        return Promise.resolve(JSON.stringify({status:'write',title:'Notes',markdown:[data.existing?.markdown??'',...data.turns.flatMap(turn=>turn.user.map(source=>source.text))].filter(Boolean).join('\n')}))
+        const data=JSON.parse(job.input) as {existing?:{state:string},turns:Array<{user:Array<{text:string}>}>}
+        const turnTexts=data.turns.flatMap(turn=>turn.user.map(source=>source.text))
+        return Promise.resolve(JSON.stringify({status:'write',title:'Notes',state:[data.existing?.state??'',...turnTexts].filter(Boolean).join('\n'),events:turnTexts}))
       }})
     return {store,runtime}
   }
