@@ -59,7 +59,7 @@ Mix alpha variants from the token, for example `color-mix(in srgb, var(--accent)
 | `--font-mono` | JetBrains Mono → SF Mono / Cascadia Mono / Consolas → Noto Sans SC / PingFang / Microsoft YaHei → generic monospace | Paths, shortcuts, keys, code, times and model names, with explicit sans-serif CJK fallback |
 | `--font-dot` | Doto | Large dot-matrix figures, used only for the key status in settings |
 
-Web fonts load from Google Fonts with `display=optional`: if a font can't load, the system font is used and nothing flashes. The CSP allows only fonts.googleapis.com and fonts.gstatic.com, so any new font has to come from there too.
+All four open-source variable fonts (SIL OFL 1.1; licenses in `src/renderer/fonts/OFL.txt`) are bundled locally under `src/renderer/fonts/` and loaded via local `@font-face` rules (`font-display: block`) in `fonts.css`, making no external network requests and rendering identically across platforms without flashing. The CSP restricts both `style-src` and `font-src` to `'self'`, so any new font is bundled locally too.
 
 Sizes:
 

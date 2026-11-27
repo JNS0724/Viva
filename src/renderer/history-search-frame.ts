@@ -42,9 +42,6 @@ export async function mountHistorySearchFrame(input: HTMLInputElement): Promise<
       input.focus()
       input.setSelectionRange(selection[0], selection[1])
     }
-    // Optional web fonts must not hold up the frame's load event or its AX isolation.
-    const fonts = child.querySelector<HTMLLinkElement>('link[data-font-href]')
-    if (fonts?.dataset.fontHref) fonts.href = fonts.dataset.fontHref
     return child
   } catch (error) {
     // A failed load normally leaves the original field in place. Reinserting it

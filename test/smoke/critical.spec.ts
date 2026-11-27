@@ -287,26 +287,20 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   } finally { await desk.force(false) }
 })
 
-test('closing the reopened main window restores a usable desktop island while web fonts are pending', async ({ scenario }, info) => {
+test('closing the reopened main window restores a usable desktop island with bundled local fonts', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'memory', bridge: 'real' })
   const { application, page } = await run.start('desktop-reopen')
   const main = await application.browserWindow(page)
   await expect.poll(() => main.evaluate(window => window.isVisible())).toBe(true)
   await application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(true))
   const audit = await auditNativeWindows(application)
-  const fontUrl = /https:\/\/fonts\.googleapis\.com\//
-  let releaseFonts!: () => void
-  const pendingFonts = new Promise<void>(resolve => { releaseFonts = resolve })
-  let fontRequested = false
+  let externalFontRequested = false
+  await application.context().route(/https?:\/\/fonts\.(?:googleapis|gstatic)\.com\//, async route => {
+    externalFontRequested = true
+    await route.abort()
+  })
   try {
     for (let cycle = 0; cycle < 2; cycle++) {
-      if (cycle === 1) {
-        await application.context().route(fontUrl, async route => {
-          fontRequested = true
-          await pendingFonts
-          await route.fulfill({ contentType: 'text/css', body: '' })
-        })
-      }
       await main.evaluate((window, cycle) => {
         window.close()
         // Replay a queued native show notification after the second close.
@@ -315,18 +309,20 @@ test('closing the reopened main window restores a usable desktop island while we
       await expect.poll(() => main.evaluate(window => window.isVisible()), { message: `main window hidden on close ${cycle + 1}` }).toBe(false)
       await expect.poll(() => application.windows().some(window => window.url().endsWith('/desk.html')), { message: `desktop island created on close ${cycle + 1}` }).toBe(true)
       const desktop = application.windows().find(window => window.url().endsWith('/desk.html'))!
-      if (cycle === 1) await expect.poll(() => fontRequested).toBe(true)
+      await expect.poll(() => desktop.evaluate(async () => {
+        await document.fonts.ready
+        return document.fonts.check('500 14px "Space Grotesk"') && document.fonts.check('400 14px "Noto Sans SC"')
+      })).toBe(true)
       const avatar = desktop.locator('.isl-anchor')
       await expect(avatar).toHaveAttribute('aria-expanded', 'false')
       await avatar.click()
       await expect(avatar).toHaveAttribute('aria-expanded', 'true')
-      if (cycle === 1) releaseFonts()
+      expect(externalFontRequested).toBe(false)
       await desktop.getByRole('button', { name: '打开 Viva', exact: true }).click()
       await expect.poll(() => main.evaluate(window => window.isVisible())).toBe(true)
       await expect.poll(() => desktop.isClosed()).toBe(true)
     }
   } finally {
-    releaseFonts()
     await info.attach('reopen-window-events', { body: JSON.stringify(await audit.evaluate(audit => audit.entries)), contentType: 'application/json' })
     await audit.evaluate(audit => audit.dispose())
     await audit.dispose()
