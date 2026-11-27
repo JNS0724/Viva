@@ -73,6 +73,9 @@ export function decide(ledger: Ledger, id: string, status: RequestStatus): Ledge
   return put(ledger, { ...entry, status, decidedAt: ledger.step })
 }
 
+/** Whether any request in this turn still waits for routing (the main agent's commit_route or the fast lane). */
+export const hasPendingRequest = (ledger: Ledger): boolean => entries(ledger).some(e => e.status === 'pending' || e.status === 'fast')
+
 /** Whether the turn has more to do: a request undecided, being decided by the fast lane, or still to speak. */
 export const hasOpenWork = (ledger: Ledger): boolean => entries(ledger).some(e => e.status === 'pending' || e.status === 'fast' || SPEAKING.has(e.status))
 

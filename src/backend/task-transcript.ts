@@ -1,4 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
+import { checkImages, type ImageRef } from '../shared/images.ts'
 import { answerText, type AnsweredQuestion, type QuestionAnswer } from '../shared/question-answer.ts'
 
 /**
@@ -11,6 +12,7 @@ import { answerText, type AnsweredQuestion, type QuestionAnswer } from '../share
 export interface TranscriptMessage {
   readonly role: 'user' | 'assistant' | 'note'
   readonly text: string
+  readonly images?: readonly ImageRef[]
   readonly sourceId?: string
   readonly open?: boolean
   readonly streamKey?: string
@@ -18,7 +20,7 @@ export interface TranscriptMessage {
 }
 export type Transcript = readonly TranscriptMessage[]
 /** A message as the history keeps it (history-db.ts save). */
-export interface SavedMessage { role: string, text: string, key?: string, sourceId?: string }
+export interface SavedMessage { role: string, text: string, images?: ImageRef[], key?: string, sourceId?: string }
 
 type Update = Readonly<Record<string, unknown>>
 type Blocks = NonNullable<TranscriptMessage['blocks']>
@@ -33,8 +35,8 @@ export function closed(transcript: Transcript): Transcript {
 }
 
 /** The user said something: words into the turn, or the next question. */
-export const said = (transcript: Transcript, words: string, key?: string, sourceId?: string): Transcript =>
-  [...closed(transcript), { role: 'user', text: words, ...(sourceId ? { sourceId } : {}), ...(key ? { streamKey: key } : {}) }]
+export const said = (transcript: Transcript, words: string, key?: string, sourceId?: string, images?: readonly ImageRef[]): Transcript =>
+  [...closed(transcript), { role: 'user', text: words, ...(images?.length ? { images: [...images] } : {}), ...(sourceId ? { sourceId } : {}), ...(key ? { streamKey: key } : {}) }]
 
 /** Retract a user message that was queued into a turn but explicitly rejected by dsh. */
 export const unsaid = (transcript: Transcript, key: string): Transcript => {
@@ -117,10 +119,15 @@ export function ended(transcript: Transcript, stopReason: unknown): Transcript {
 }
 
 /** As the history keeps it. */
-export const saved = (transcript: Transcript): SavedMessage[] => transcript.map(({ role, text, streamKey, sourceId }) => ({ role, text, ...(sourceId ? { sourceId } : {}), ...(streamKey ? { key: streamKey } : {}) }))
+export const saved = (transcript: Transcript): SavedMessage[] => transcript.map(({ role, text, images, streamKey, sourceId }) => ({
+  role, text, ...(images?.length ? { images: [...images] } : {}), ...(sourceId ? { sourceId } : {}), ...(streamKey ? { key: streamKey } : {}),
+}))
 
 /** A transcript from what the history kept, to go on from. */
-export const fromSaved = (messages: ReadonlyArray<{ role?: unknown, text?: unknown, key?: unknown, sourceId?: unknown }>): Transcript => messages.flatMap((message): TranscriptMessage[] => {
+export const fromSaved = (messages: ReadonlyArray<{ role?: unknown, text?: unknown, images?: unknown, key?: unknown, sourceId?: unknown }>): Transcript => messages.flatMap((message): TranscriptMessage[] => {
   const { role, text } = message
-  return (role === 'user' || role === 'assistant' || role === 'note') && typeof text === 'string' ? [{ role, text, ...(typeof message.sourceId === 'string' ? { sourceId: message.sourceId } : {}), ...(typeof message.key === 'string' ? { streamKey: message.key } : {}) }] : []
+  const images = message.images ? checkImages(message.images) : null
+  return (role === 'user' || role === 'assistant' || role === 'note') && typeof text === 'string'
+    ? [{ role, text, ...(images?.length ? { images } : {}), ...(typeof message.sourceId === 'string' ? { sourceId: message.sourceId } : {}), ...(typeof message.key === 'string' ? { streamKey: message.key } : {}) }]
+    : []
 })

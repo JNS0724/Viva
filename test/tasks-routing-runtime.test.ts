@@ -137,3 +137,36 @@ test('the app binds a main session and waits for the plugin; decisions go to the
   desk.close()
   await assert.rejects(pending)
 })
+
+test('request images persist on the request record without leaking into events and accompany start and message actions', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'request-images-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const app = openAppDb({ file: path.join(dir, 'app.db') })
+  t.after(() => app.close())
+  const core = createEventCore({ app, publish: () => {} })
+  const seen: Array<{ kind: string, images: unknown }> = []
+  const store = createRequestStore({ db: app.db })
+  const requests = createRequestRuntime({
+    store,
+    apply: core.apply,
+    tasks: {
+      start: async (_task, place) => { seen.push({ kind: 'start', images: place.images }); return { taskId: 't-img' } },
+      message: async (_taskId, _text, place) => { seen.push({ kind: 'message', images: place.images }); return {} },
+      stop: async () => ({}),
+    },
+  })
+  const imageId = `${'a'.repeat(64)}.png`
+  const id = requests.receive({ ...where, kind: 'prompt', images: [{ id: imageId }] })
+  assert.deepEqual(store.get(id)?.images, [{ id: imageId }])
+  assert.doesNotMatch(JSON.stringify(core.since(0)), new RegExp(imageId))
+  const plan = {
+    goals: [{ goal: '对照截图新建', disposition: 'delegate' }, { goal: '对照截图追问', disposition: 'update_task' }],
+    actions: [{ kind: 'start', brief: '排查截图报错' }, { kind: 'message', taskId: 't-prev', text: '补充截图' }],
+  }
+  const decided = await requests.decide({ requestId: id, sessionId: 's1', plan })
+  assert.equal(decided.accepted, true)
+  assert.deepEqual(seen, [
+    { kind: 'start', images: [{ id: imageId }] },
+    { kind: 'message', images: [{ id: imageId }] },
+  ])
+})

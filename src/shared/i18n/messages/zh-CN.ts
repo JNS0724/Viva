@@ -707,7 +707,7 @@ export const zhCN = {
   "island-input.image": "图片 {value1}",
   "island-input.remove.image": "去掉图片 {value1}",
   "island-input.drop.to.give.to.viva": "松手，交给 Viva",
-  "island-input.only.file.paths.are.shared.with.the": "{value1} · 只交给助手文件路径，不复制",
+  "island-input.only.file.paths.are.shared.with.the": "{value1} · 原地读取，小文本随问题附上内容，不另存副本",
   "island-input.files": "{count} 个文件",
   "island-input.enter.to.send.esc.to.close": "Enter 发送 · Esc 收起",
   "island-input.shift.enter.for.a.new.line.esc": "Shift+Enter 换行 · Esc 收起",
@@ -1508,4 +1508,5 @@ export const zhCN = {
   "diagnostics.clear.pending": "尚未确认清理完成，请在进程恢复响应后重试清空。",
   "diagnostics.debug": "开启调试日志（15 分钟）",
   "diagnostics.debug.stop": "停止调试日志",
+  "main.task-ipc.running.no.images": "该后台任务正在运行中，暂不支持中途插入图片；请等它当前轮结束再发，或新建后台任务处理这张图片。",
 } as const satisfies Record<MessageKey, string>

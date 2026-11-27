@@ -170,8 +170,13 @@ const desk: LiveScenario = {
       expect((await island.openInput()), 'the island should open its input')
       const page = { webContents: (await island.webContents()) }
       await until(page, DESK_INPUT, 'the island input open')
-      // As a drop hands them over: by their paths, checked by the app before they go.
-      const sent = await run(page, `window.desk.ask('总结这个文件的要点，并告诉我会议编号', [${JSON.stringify(file)}])`)
+      // As a drop hands them over: registered in the shared draft first, then asked with the current draft version.
+      const sent = await run(page, `(async () => {
+        const current = await window.desk.getDraft()
+        await window.desk.appendDraftFiles(current.key, [${JSON.stringify(file)}])
+        const updated = await window.desk.getDraft()
+        return window.desk.ask('总结这个文件的要点，并告诉我会议编号', [${JSON.stringify(file)}], [], { key: updated.key, version: updated.version })
+      })()`)
       expect(sent?.ok !== false, 'the island should take the question and the file', sent)
       await until(win, `(() => {
         const last = [...document.querySelectorAll('#thread .msg-user')].at(-1)

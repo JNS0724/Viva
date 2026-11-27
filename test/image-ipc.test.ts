@@ -5,18 +5,23 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { imagesForPrompt, registerImageIpc } from '../src/backend/image-ipc.ts'
 import { createImageStore, MOVED_FOLDER_NAME } from '../src/backend/image-store.ts'
+import type { Channel } from '../src/shared/ipc-contract.ts'
 
 /** 设置 › 贴过的图片 in the main process: moving the folder (dsh restarting on it), emptying it, and reading pictures for the model. */
 
 const PNG = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
 
-function setup({ picked = null, busy = false } = {}) {
+function setup({ picked = null as string | null, busy = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-image-ipc-'))
   let dir = path.join(root, 'images')
   const store = createImageStore({ dir: () => dir })
-  const handlers = new Map()
-  const events = []
-  registerImageIpc({ handle: (channel, fn) => handlers.set(channel, fn) }, {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  const events: Array<[string, string]> = []
+  registerImageIpc({
+    handle: (channel: Channel, fn: (...args: never[]) => unknown) => {
+      handlers.set(channel, fn as (...args: unknown[]) => unknown)
+    },
+  }, {
     store,
     setDir: (next) => { events.push(['setDir', next]); dir = next },
     chooseFolder: async () => (picked ? path.join(root, picked) : null),
@@ -24,7 +29,7 @@ function setup({ picked = null, busy = false } = {}) {
     isBusy: () => busy,
     restart: async () => { events.push(['restart', dir]) },
   })
-  const call = async (channel, ...args) => handlers.get(channel)({}, ...args)
+  const call = async (channel: string, ...args: unknown[]): Promise<any> => handlers.get(channel)!({}, ...args)
   return { root, store, call, events, dir: () => dir }
 }
 
@@ -37,7 +42,7 @@ test('改位置… moves the pictures to the folder picked, remembers it, and re
   assert.deepEqual(events, [['setDir', moved], ['restart', moved]], 'saved before dsh starts again, so it starts on the new folder')
   assert.equal(usage.dir, moved)
   assert.equal(usage.count, 1)
-  assert.ok(store.pathOf(id).startsWith(moved))
+  assert.ok(store.pathOf(id)!.startsWith(moved))
   assert.equal(fs.existsSync(path.join(root, 'images', 'pasted')), false, 'nothing left where they were')
 })
 
@@ -57,10 +62,10 @@ test('not while the agent works, and emptying leaves nothing', async () => {
   assert.deepEqual(await call('images:clear'), { dir: (await call('images:usage')).dir, bytes: 0, count: 0 })
 })
 
-test('what the model gets: the picture as base64 with its kind; one emptied away is said to be gone', async () => {
+test('what the model gets: the picture as base64 with its id and kind; one emptied away is said to be gone', async () => {
   const { call, store } = setup()
   const { id } = await call('images:keep', PNG.buffer.slice(0))
-  assert.deepEqual(imagesForPrompt(store, [{ id }]), [{ data: Buffer.from(PNG).toString('base64'), mimeType: 'image/png' }])
+  assert.deepEqual(imagesForPrompt(store, [{ id }]), [{ id, data: Buffer.from(PNG).toString('base64'), mimeType: 'image/png' }])
   await call('images:clear')
   assert.throws(() => imagesForPrompt(store, [{ id }]), /不在图片文件夹/)
   assert.throws(() => imagesForPrompt(store, [{ id: '../../etc/passwd' }]), /invalid images/)

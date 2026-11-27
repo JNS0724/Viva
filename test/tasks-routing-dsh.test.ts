@@ -28,6 +28,7 @@ test('the main session is narrowed before its first step, under its own persona;
   assert.ok(main.length >= 2, 'a routing step, then the answer')
   for (const tool of toolsOf(main[0]!)) assert.ok(MAIN_SCOPE.includes(tool), `${tool} is not the main agent's`)
   assert.equal(toolsOf(main[0]!).includes('bash'), false, 'narrowed already at the first step')
+  for (const tool of ['read', 'glob', 'grep', 'read_image']) assert.equal(toolsOf(main[0]!).includes(tool), true, tool)
   const system = JSON.stringify(main[0]!.system)
   assert.match(system, /必须调用一次 commit_route/, 'the main conversation\'s persona')
   assert.doesNotMatch(system, /ask_user_question/, 'in place of the profile\'s, not on top of it')
@@ -69,6 +70,7 @@ test('a task is not narrowed and never sees commit_route; it works under the pro
   const asked = (llm.requests as ModelRequest[]).find(request => JSON.stringify(request.messages).includes('午饭吃什么'))!
   assert.equal(toolsOf(asked).includes('commit_route'), false)
   assert.ok(toolsOf(asked).includes('bash') || toolsOf(asked).includes('pwsh'), 'its own tools')
+  for (const tool of ['read', 'glob', 'grep', 'read_image']) assert.ok(toolsOf(asked).includes(tool), tool)
   assert.match(JSON.stringify(asked.system), /ask_user_question/)
   assert.doesNotMatch(JSON.stringify(asked.system), /commit_route/)
 })
@@ -236,4 +238,46 @@ test('a request right after a task\'s result has that task named next to it; the
   assert.doesNotMatch(turnOf('接着刚才那个做'), /刚结束的后台任务/)
   const reportTurn = (llm.requests as ModelRequest[]).find(item => JSON.stringify(item.messages).includes('t-island'))!
   assert.doesNotMatch(JSON.stringify(reportTurn.messages), /<recent-tasks>/, 'a result coming back is no request')
+})
+
+test('read is refused before commit_route, allowed up to twice after an accepted reply, and refused on the third call', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  let step = 0
+  const { events, workspace, bridge } = await startHarness(t, {
+    decideFirst: (request: ModelRequest) => {
+      if (!toolsOf(request).includes('commit_route')) return null
+      step += 1
+      if (step === 1) {
+        return { tool: { name: 'read', input: { file_path: 'ver.txt' } } }
+      }
+      if (step === 2) {
+        const prev = JSON.stringify(lastResult(request))
+        assert.match(prev, /先调用 commit_route/, 'pre-route read is refused')
+        const raw = JSON.stringify(request.messages)
+        const id = raw.match(/【请求 ID：([A-Za-z0-9-]+)】/)?.[1] ?? ''
+        return {
+          tool: {
+            name: 'commit_route',
+            input: { requestId: id, goals: [{ goal: '查版本', disposition: 'answer' }], actions: [{ kind: 'reply', scope: '查版本' }] },
+          },
+        }
+      }
+      if (step === 3 || step === 4) {
+        return { tool: { name: 'read', input: { file_path: 'ver.txt' } } }
+      }
+      if (step === 5) {
+        assert.match(JSON.stringify(lastResult(request)), /v0\.4\.0/, 'second post-reply read succeeded')
+        return { tool: { name: 'read', input: { file_path: 'ver.txt' } } }
+      }
+      if (step === 6) {
+        assert.match(JSON.stringify(lastResult(request)), /额度已用完/, 'third post-reply read is refused')
+        return { text: '当前版本是 v0.4.0' }
+      }
+      return null
+    },
+  })
+  fs.writeFileSync(path.join(workspace, 'ver.txt'), 'version=v0.4.0\n')
+  const agent = bridge()
+  await agent.start()
+  await agent.prompt('查一下 ver.txt 版本')
+  assert.deepEqual(replies(events), ['当前版本是 v0.4.0'])
 })
