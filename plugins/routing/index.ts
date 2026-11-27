@@ -21,8 +21,8 @@ import { installAssistantStream } from './lib/assistant-stream.ts'
 import { COMMIT_DESCRIPTION, COMMIT_PARAMETERS, MAX_NOTICE_CHARS } from './lib/commit.ts'
 import { deferCode, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecision, type FastHandover } from './lib/fast-lane.ts'
 import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
-import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
-import { admit, grantsOf, layerOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
+import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, hasPendingRequest, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
+import { admit, grantPlan, INITIAL_TURN_GRANTS, layerOf, MAIN_SCOPE, ROUTE_TOOL, type TurnGrants } from './lib/policy.ts'
 import { createSourceGuard, installToolProvenance, verifyPluginReadOnlyTools, type VerifySourceToolsResult } from './lib/source-tools.ts'
 import { createHostChannel } from './lib/host.ts'
 import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
@@ -71,7 +71,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   const narrowed = new WeakSet<Agent>()
   const narrowedSources = new WeakSet<Agent>()
   const ledgers = new Map<string, Ledger>()
-  const grants = new Map<string, readonly Grant[]>()
+  const grants = new Map<string, TurnGrants>()
   const fastWork = new Map<string, Set<Promise<void>>>()
   const turnsEnded = new Map<string, number>()
   /** The requests of each main session's turn that have had their note of recent tasks (lib/recent-tasks.ts). */
@@ -207,8 +207,8 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   ctx.on('tools/pre-execute', async (exec, next) => {
     const id = String(exec.agent?.session.id ?? '')
     if (!mains.has(id)) return next()
-    const decision = admit(grants.get(id) ?? [], exec.name)
-    grants.set(id, decision.grants)
+    const decision = admit(grants.get(id) ?? INITIAL_TURN_GRANTS, exec.name, { hasPending: hasPendingRequest(ledgerOf(id)) })
+    grants.set(id, decision.state)
     return decision.allowed ? next() : { kind: 'deny', reason: decision.reason ?? '' }
   }, { prepend: true })
 
@@ -237,7 +237,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
       }
       if (!decided.accepted) throw new Error(decided.reason)
       const kinds = decided.receipts.map(receipt => receipt.kind)
-      grants.set(id, [...(grants.get(id) ?? []), ...grantsOf(plan)])
+      grants.set(id, grantPlan(grants.get(id) ?? INITIAL_TURN_GRANTS, plan))
       const failed = decided.receipts.some(receipt => !receipt.ok)
       const planned = statusOfPlan(kinds, failed)
       // A handover that ends the turn is said by its notice, shown as the turn's answer (without one, the agent says it

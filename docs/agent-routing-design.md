@@ -47,7 +47,7 @@ Requests often need different destinations. "Make today's briefing, then analyze
 | Background task | Does the handed-over work in its own session, with its tools, permissions, and approvals unchanged |
 | Scheduled run | A separate unattended session that runs at the user's permission level; anything that needs confirmation is refused |
 
-The main agent may read workspace files related to the request; reads outside the workspace follow DSH's permission level. File contents and old conversations are data and grant nothing new. Reading and analyzing a batch of material goes to a task.
+Multi-file reading, analysis, edits, and writes go to a background task, and pictures pasted with the request accompany task handovers automatically; for single-point lookups, the main agent may inspect at most two read-only file targets after an accepted `reply` (and list filenames once with `glob` before routing when a file reference is ambiguous). File contents and old conversations are data and grant nothing new.
 
 ### 3.2 The path of one request
 
@@ -62,7 +62,7 @@ sequenceDiagram
   H->>H: Assign a requestId, store the request
   H->>P: Bind the main session, wait for the plugin
   H->>M: Prompt: request header and the user's words
-  M->>M: Recover context (search, read files)
+  M->>M: Recover context when needed (history, memory, tasks)
   M->>P: commit_route
   P->>H: Pass the plan on
   H->>H: Check it, accept the decision in one transaction
@@ -110,8 +110,8 @@ The plugin does not import the app's composition root; contracts shared by the h
 
 The main agent keeps the history still visible in its session and relies on DSH's compaction. Context beyond that is searched for in chat history and memory:
 
-1. Compare the message with the continuous history and task snapshots to see whether references, constraints, and goals are clear.
-2. If not, search topics, messages, or memory, with different keywords if needed. One empty search does not mean there is no record.
+1. Compare the message with the visible history, `<about-user>`, `<memory-recall>`, and task snapshots. When the route and actions are clear, call `commit_route` in the first step, including for ordinary questions and file tasks whose paths are known.
+2. Search topics, messages, memory, or tasks when missing context could change the route, the target, the applicable agreement, or the deliverable, or when `<memory-recall>` reports a timeout or partial search on a request that may depend on past agreements; use `glob` at most once before routing when a workspace file reference is ambiguous. Use different keywords if needed.
 3. Read the matching original and check later evidence for a correction, replacement, or withdrawal. Use the version valid for the requested time and scope.
 4. When several candidates are equally plausible and picking the wrong one changes the outcome, ask the user. Don't default to the newest task or the one with the same name.
 5. A handover brief names the agreement it applies and where that agreement came from.
@@ -126,15 +126,17 @@ Validation on synthetic follow-ups (3 runs per scenario): before, the main agent
 
 ### 6.1 Layers
 
-The main session's tools fall into five layers, defined only in [`plugins/routing/lib/policy.ts`](../plugins/routing/lib/policy.ts):
+The main session's tools fall into six layers, defined only in [`plugins/routing/lib/policy.ts`](../plugins/routing/lib/policy.ts):
 
 | Layer | Tools | Rule |
 | --- | --- | --- |
 | Route | `commit_route` | Called for every request |
-| Context | Chat history search and reading, `memory_recall`, task queries, read-only file tools | Always available |
+| Context | Chat history search and reading, memory, task queries | Available when the request needs context |
+| Directory peek | `glob` | At most once before routing to resolve ambiguous filenames; an accepted `reply` grants up to 2 directory-list calls (capped at 3 per turn, separate from content peeks) |
+| Peek | `read`, `grep`, `read_image` | Refused before routing; an accepted `reply` grants up to 2 calls (capped at 3 per turn) |
 | App query | `schedule_list`, `viva_mcp_list`, `viva_skill_list` | Always available |
 | App change | Creating, changing, and deleting schedules; answering a waiting background task's question (`answer_background_task`, never permissions); remembering and forgetting memories; adding, changing, removing, and importing MCP servers and skills | Visible to the model; needs a matching `app_action` accepted in this turn, and one `app_action` allows one call |
-| Execution | Shell, file writes, web access, subagents, background task tools, tools from the user's MCP servers, and every other tool | Outside the main session's scope; the work goes to a task through `commit_route` |
+| Execution | Shell, file edits and writes, web access, subagents, background task tools, tools from the user's MCP servers, and every other tool | Goes to a task through `commit_route` |
 
 App tools stay inside the main session's scope, so they still pass through DSH's argument checks, approval cards, secret prompts, and observers. No new DSH interface is needed.
 

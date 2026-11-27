@@ -53,14 +53,14 @@ export function registerImageIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { store, 
 /**
  * The pictures of a question, read for the model: base64, with their kind.
  */
-export function imagesForPrompt(store: Pick<ReturnType<typeof createImageStore>, 'pathOf'>, images: unknown): Array<{ data: string, mimeType: string }> {
+export function imagesForPrompt(store: Pick<ReturnType<typeof createImageStore>, 'pathOf'>, images: unknown): Array<{ id: string, data: string, mimeType: string }> {
   const checked = checkImages(images)
   if (!checked) throw new Error('invalid images')
   return checked.map(({ id }) => {
     const file = store.pathOf(id)
     const mimeType = mimeOfId(id)
     if (!file || !mimeType) throw new Error(GONE)
-    return { data: fs.readFileSync(file).toString('base64'), mimeType }
+    return { id, data: fs.readFileSync(file).toString('base64'), mimeType }
   })
 }
 

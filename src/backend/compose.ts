@@ -55,6 +55,7 @@ import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb, type Conversation } from './history-db.ts'
 import { createForegroundHistory, type ForegroundHistory } from './foreground-history.ts'
 import { checkImages, type ImageRef } from '../shared/images.ts'
+import { createDroppedFileRegistry, inlineAttachedFiles } from './attached-files.ts'
 import { imagesForPrompt, registerImageIpc } from './image-ipc.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { createImageStore } from './image-store.ts'
@@ -1191,10 +1192,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     turn = { active: true, by: 'user', stopping: false, startedAt: Date.now(), id: admission?.turnId ?? randomUUID() }
     emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'user', context: sessions.context() })
     const carried = sessions.takeCarried()
+    const sourceText = feedItemId ? (feedCurrent?.supplement ?? '') : question
+    const inlined = !replay && sourceText ? inlineAttachedFiles(sourceText, file => droppedFiles.has(file)) : ''
     const held = feedCurrent || admission ? () => (feedCurrent?.() ?? true) && (admission?.current() ?? true) : undefined
-    const words = carried ? `${carried}
-
-${question}` : question
+    const words = [carried, inlined, question].filter(Boolean).join('\n\n')
     const failed = (error: unknown) => {
       if (admission && !admission.current()) throw error
       finishForegroundTurn()
@@ -1208,12 +1209,12 @@ ${question}` : question
     if (!feedItemId) {
       let started = false
       await agent.prompt(words, pictures, { userTurn: true, onStart: () => { started = true; admission?.delivered() },
-        sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText: question, threadId: snapshottedTopicId, held }).catch(failed)
+        sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText, threadId: snapshottedTopicId, held }).catch(failed)
       if (!started) throw new ForegroundRequestRetired()
       return
     }
     return await new Promise<void>((resolve, reject) => {
-      const complete = agent.prompt(words, pictures, { userTurn: true, onStart: () => { admission?.delivered(); resolve() }, sourceId: undefined, sourceText: feedCurrent?.supplement ?? '', threadId: snapshottedTopicId, held }).then(() => {
+      const complete = agent.prompt(words, pictures, { userTurn: true, onStart: () => { admission?.delivered(); resolve() }, sourceId: undefined, sourceText, threadId: snapshottedTopicId, held }).then(() => {
         reject(new Error(t('main.memory.context.stale')))
       }, error => { if (!admission || admission.current()) finishForegroundTurn(); reject(error) })
       admission?.completed.push(complete)
@@ -1487,7 +1488,8 @@ ${question}` : question
       if (!agent || !source || sessions.isChanging()) return { ok: false, reason: 'unavailable' }
       return agent.startTask()
     },
-    promptTask: (taskId: string, text: string, meta?: TaskDispatchMeta) => dsh.current?.promptTask(taskId, text, meta),
+    promptTask: (taskId: string, text: string, meta?: TaskDispatchMeta, images?: ReadonlyArray<{ data: string, mimeType: string }>) =>
+      dsh.current?.promptTask(taskId, text, meta, images),
   }
 
   /** Opens the database and drops conversations whose undo window has passed. */
@@ -1602,18 +1604,23 @@ ${question}` : question
       const selected = sessions.current()
       return selected.sessionId === place.sessionId && selected.id === place.conversationId
     }
+    const taskImages = (refs: readonly ImageRef[] | undefined) => {
+      if (!refs?.length) return undefined
+      if (!requireBridge().canReadImages()) throw new Error(t('main.acp-bridge.this.model.cannot.read.images.among.deepseek'))
+      return { refs, payloads: imagesForPrompt(imageStore, refs) }
+    }
     requests = createRequestRuntime({
       store: createRequestStore({ db: appDb.db }),
       apply: applyChange,
       tasks: {
         start: async ({ title, brief }, place) => {
           requestEvidence(place)
-          return tasks.start(brief, title, admitTask(place))
+          return tasks.start(brief, title, admitTask(place), taskImages(place.images))
         },
         message: async (taskId, text, place) => {
           requestEvidence(place)
           visible(taskId, place.cwd)
-          return tasks.message(taskId, text, admitTask(place))
+          return tasks.message(taskId, text, admitTask(place), taskImages(place.images))
         },
         stop: async (taskId, place) => {
           requestEvidence(place)
@@ -1706,13 +1713,18 @@ ${question}` : question
     traceDb?.close()
   }
 
-  onLocaleChange(() => {
+    onLocaleChange(() => {
     SETUP_MESSAGES = setupMessages()
   })
+  const droppedFiles = createDroppedFileRegistry()
 
   return {
     open,
     startBridge,
+    allowDroppedFiles(raw: unknown) {
+      if (!Array.isArray(raw)) return
+      droppedFiles.allow(raw.filter((item): item is string => typeof item === 'string'))
+    },
     /** One input from the shell (the window came to the front, the computer woke): recorded, then routed. */
     signal,
     /** The stored events after `seq`, for a shell that missed them (event-core.ts). */

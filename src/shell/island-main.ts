@@ -25,10 +25,11 @@ export const COMPOSER_TYPING_GRACE_MS = 4_000
 let NOT_SENT = t("main.island-main.could.not.send.please.try.again")
 
 /** deps.Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu */
-export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff, keepImage, preview, onTypingChange, typingGraceMs = COMPOSER_TYPING_GRACE_MS }: {
+export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff, keepImage, allowDroppedFiles, preview, onTypingChange, typingGraceMs = COMPOSER_TYPING_GRACE_MS }: {
   desk: () => DeskIsland | null, window: () => BrowserWindow | null, showWindow: () => void,
   Menu: Pick<typeof ElectronMenu, 'buildFromTemplate'>, switchOff: () => void,
   keepImage: (bytes: Uint8Array | ArrayBuffer) => Promise<KeptImage>,
+  allowDroppedFiles?: (paths: readonly string[]) => Promise<unknown> | unknown,
   preview?: () => ReturnType<typeof createDeskPreview> | null,
   onTypingChange?: (typing: boolean) => void,
   typingGraceMs?: number,
@@ -121,12 +122,20 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     if (!source(event)) return
     const checkedPaths = checkDroppedPaths(paths)
     const checked = checkedPaths ? describeDropped(checkedPaths) : { error: MISSING }
-    if ('error' in checked) drafts.setError(key, checked.error)
-    else {
+    if ('error' in checked) {
+      drafts.setError(key, checked.error)
+      return
+    }
+    const commit = () => {
       drafts.appendFiles(key, checked.files)
       const current = drafts.snapshot()
       if (current.key === key) noteDraftActivity(current)
     }
+    if (!allowDroppedFiles) {
+      commit()
+      return
+    }
+    return Promise.resolve().then(() => allowDroppedFiles(checked.files.map(file => file.path))).catch(() => {}).then(commit)
   })
 
   const openWindow = (island: DeskIsland) => {
@@ -213,7 +222,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     if (!receipt) return
     clearTimeout(receipt.timer); receipts.delete(receiptId); receipt.finish(result)
   })
-  ipcMain.handle('island:ask', (event, raw) => {
+  ipcMain.handle('island:ask', async (event, raw) => {
     const island = fromDesk(event)
     const ask = island && checkAsk(raw)
     if (!ask) return { ok: false, error: NOT_SENT }

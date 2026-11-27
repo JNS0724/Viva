@@ -23,8 +23,8 @@
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "e55c6d40fa5261567f3426bf72371239df84f1c1b0d7370c1c36bd3522fd48c5",
-      "zhHash": "03303e1ad21979c77d1293274e27600b98acbdacdb12dc8757a3204b215a45e7"
+      "enHash": "c1466619a7405453a1aa5e0acbca711f1775ef4e897145977af89976c8bb282a",
+      "zhHash": "0058170ff5cde294e75062c7dd11bebd21696b1a9b102e8fc87b5d6f5e7d15d8"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -77,8 +77,8 @@
     {
       "en": "docs/agent-routing-design.md",
       "zh": "docs/agent-routing-design.zh-CN.md",
-      "enHash": "7376462f8e64fc955eb959e9b9040925029db2febcefdbfcc6caae727d46cecf",
-      "zhHash": "267ecd08147e5cb44aceffb570e5f5cb44fe38501b6bf9b5085e672ecb41ed92"
+      "enHash": "2a50ad4298adc2cb805f23c81765694970edeac4cea18bbb924cf854d6d0f050",
+      "zhHash": "84b876f8c7b949cc97917fb10eb1a5a1aedf0dcb9429efad02bb3e8c68efe646"
     },
     {
       "en": "docs/agent-routing-feasibility.md",

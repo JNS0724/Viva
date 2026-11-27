@@ -59,6 +59,9 @@ test('the plugins shipped with the app all pass, each with its data file under u
   // The main conversation routes each request (viva-routing gives it this persona instead).
   assert.match(ROUTING_PERSONA.prefix, /个人工作助手/)
   assert.match(ROUTING_PERSONA.prefix, /必须调用一次 commit_route/)
+  assert.match(ROUTING_PERSONA.prefix, /第一步直接调用 commit_route/)
+  assert.match(ROUTING_PERSONA.prefix, /最多 2 次只读速查/)
+  assert.match(ROUTING_PERSONA.prefix, /用户粘贴的图片会自动随任务转交/)
   assert.match(ROUTING_PERSONA.prefix, /【插话】/)
   assert.match(ROUTING_PERSONA.prefix, /必须先用 list_background_tasks/)
   assert.match(ROUTING_PERSONA.prefix, /它们为空不能证明 Viva 没有后台任务/)

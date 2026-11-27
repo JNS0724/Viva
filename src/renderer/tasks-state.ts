@@ -4,6 +4,7 @@ import type { ConversationAction, ConversationPayloads, PermissionRequest } from
 import type { TaskStream } from './action-types.ts'
 import type { ActionHandlers, PayloadFor } from './action-types.ts'
 import type { ActiveTool, TaskOpening } from '../shared/ipc-results.ts'
+import type { ImageRef } from '../shared/images.ts'
 import { reduceConversation } from './conversation-state.ts'
 import { currentAction } from './selectors.ts'
 
@@ -34,7 +35,7 @@ export const initialTasks = Object.freeze({
  * A task from the last launch starts from what it had said; the rest of its view begins afresh: at work
  * when taken up again (`at`), at rest when it had ended (no `at`).
  */
-type SavedMessage = { role: string, text: string, receipt?: Receipt | null, open?: boolean, streamKey?: string, blocks?: ReadonlyArray<{ index: number, text: string }> }
+type SavedMessage = { role: string, text: string, images?: readonly ImageRef[], receipt?: Receipt | null, open?: boolean, streamKey?: string, blocks?: ReadonlyArray<{ index: number, text: string }> }
 const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = null): ConversationView => ({
   messages: messages.map((message, i): ThreadMessage => {
     // Open: the answer a task at work was still writing when the window opened (a reload), which goes on from here.
@@ -42,7 +43,16 @@ const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = nu
     // starting another: more of it (with its blocks, until it settles), or the turn's fallback withdrawing it.
     const open = at !== null && message.open === true
     const stream = message.streamKey ? { streamKey: message.streamKey, ...(at !== null && message.blocks ? { streamBlocks: message.blocks } : {}) } : {}
-    return { id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open, receipt: message.receipt ?? null, ...stream }
+    return {
+      id: `r${i}`,
+      role: message.role,
+      text: message.text,
+      shown: message.text.length,
+      open,
+      receipt: message.receipt ?? null,
+      ...(message.images?.length ? { images: [...message.images] } : {}),
+      ...stream,
+    }
   }),
   thoughts: [], tools: {}, modelCalls: {}, timeline: [], permission: null, question: null, secret: null,
   turn: at === null ? null : { startedAt: at, tools: 0, thoughts: 0 }, phase: at === null ? 'idle' : 'working', usage: null, stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null,
@@ -255,10 +265,11 @@ export function taskActions() {
    * conversation's id yet), else nowhere here.
    */
   function made(state: State, snapshot: Untyped, opening: TaskOpening): State {
-    const { task, words, hostSession = null } = opening
+    const { task, words, images, hostSession = null } = opening
     if (!task) return state
     const entry = settled({ ...task, runId: snapshot.runId, seq: snapshot.taskSeq ?? 0, revision: snapshot.revision, startedAt: snapshot.startedAt,
-      endedAt: snapshot.endedAt, status: snapshot.status, waitingFor: snapshot.waitingFor, view: savedView([{ role: 'user', text: words }], snapshot.startedAt) })
+      endedAt: snapshot.endedAt, status: snapshot.status, waitingFor: snapshot.waitingFor,
+      view: savedView([{ role: 'user', text: words, ...(images?.length ? { images } : {}) }], snapshot.startedAt) })
     const here = !state.newTopicPending && hostSession !== null && hostSession === (state.info.sessionId ?? null)
     const host = here ? hostTask(state, entry.id) : { messages: state.messages, taskCards: state.taskCards }
     return { ...withTasks(state, { list: [...state.tasks.list, entry] }), ...host }
@@ -282,7 +293,7 @@ export function taskActions() {
       // the read has already): how it stood then, not now; nor a run begun again.
       if (isStale(snapshot, task)) return state
       const begun = opening && snapshot.runId !== task.runId
-        ? ACTIONS.task_asked!(state, { taskId: task.id, text: opening.words, at: snapshot.startedAt }) : state
+        ? ACTIONS.task_asked!(state, { taskId: task.id, text: opening.words, ...(opening.images?.length ? { images: opening.images } : {}), at: snapshot.startedAt }) : state
       // How it stands is the snapshot's, as it says it; what it is doing now its card works out from its view.
       return withTasks(begun, { list: begun.tasks.list.map((entry) => entry.id !== task.id ? entry : settled({
         ...entry, status: snapshot.status, updatedAt: snapshot.updatedAt, startedAt: snapshot.startedAt,
@@ -324,8 +335,11 @@ export function taskActions() {
      * 接着问 to a task that ended: the words are its next question, and it is back at work in the background,
      * its line in the conversation saying so.
      */
-    task_asked: (state, { taskId, text, at }) =>
-      mapTask({ ...state, ...hostTask(state, taskId) }, taskId, (task) => ({ ...task, view: reduceConversation(task.view, { type: 'user_prompt', text, at }) })),
+    task_asked: (state, { taskId, text, images, at }) =>
+      mapTask({ ...state, ...hostTask(state, taskId) }, taskId, (task) => ({
+        ...task,
+        view: reduceConversation(task.view, { type: 'user_prompt', text, ...(images?.length ? { images: [...images] } : {}), at }),
+      })),
 
     /** The 后台 page, on the task asked for, else the one it was on, else the first in its list. */
     tasks_page_open: (state, { taskId = null }) => {

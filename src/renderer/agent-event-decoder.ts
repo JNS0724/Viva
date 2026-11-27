@@ -1,5 +1,6 @@
 import type { ScheduleRuleView } from './proposal-types.ts'
 import { objectOf } from '../shared/unknown-value.ts'
+import { checkImages } from '../shared/images.ts'
 import { contextOf } from '../shared/conversation-context.ts'
 import type { WindowSnapshot, TaskOpening, TaskSummary } from '../shared/ipc-results.ts'
 import type { ConversationUpdate, ForegroundWaits, PermissionRequest, AskedSecret, MemoryInjection } from './conversation-types.ts'
@@ -159,8 +160,9 @@ function snapshot(value: unknown): WindowSnapshot | null {
   let opening: TaskOpening | undefined
   if (item.opening !== undefined) {
     const row = objectOf(item.opening), task = row?.task === undefined ? undefined : summary(row.task)
-    if (!row || !string(row.words) || !optional(row.hostSession, nullableText) || task === null) return null
-    opening = { words: row.words, hostSession: row.hostSession, task }
+    const images = row?.images === undefined ? undefined : checkImages(row.images)
+    if (!row || !string(row.words) || !optional(row.hostSession, nullableText) || task === null || images === null) return null
+    opening = { words: row.words, ...(images?.length ? { images } : {}), hostSession: row.hostSession, task }
   }
   return { taskId: item.taskId, runId: item.runId, title: item.title, startedAt: item.startedAt, updatedAt: item.updatedAt, endedAt: item.endedAt,
     revision: item.revision, taskSeq: item.taskSeq, currentAction: item.currentAction, resultPreview: item.resultPreview, status: item.status, waitingFor: item.waitingFor, opening }

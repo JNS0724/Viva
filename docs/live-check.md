@@ -2,7 +2,7 @@
 
 English | [简体中文](live-check.zh-CN.md)
 
-Unit and smoke tests use fake models. They validate UI and control flow, but only actual-model checks can verify clarification, tool selection, reasoning, and resistance to injected instructions. This suite exercises 29 model-dependent scenarios from [Features](features.md). Run the core set for every beta; run all scenarios for stable releases or major changes. Assert outcomes, files, numbers, cards, and errors rather than exact wording. Each scenario defaults to three runs and must pass all three.
+Unit and smoke tests use fake models. They validate UI and control flow, but only actual-model checks can verify clarification, tool selection, reasoning, and resistance to injected instructions. This suite exercises 37 model-dependent scenarios from [Features](features.md). Run the core set for every beta; run all scenarios for stable releases or major changes. Assert outcomes, files, numbers, cards, and errors rather than exact wording. Each scenario defaults to three runs and must pass all three.
 
 ## Preparation
 
@@ -59,6 +59,14 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | desk | Desktop-island file question produces a file-aware answer | ✓ |
 | history | Restart resumes the prior secret phrase and search finds it | ✓ |
 | route-reply | An ordinary question is routed, then answered; no forbidden calls; no request header or routing JSON on screen or in the database | ✓ |
+| route-peek | A single-file lookup routes as reply first, inspects at most two read-only targets, and answers directly without starting a background task | ✓ |
+| route-image-peek | A pasted screenshot checked against one workspace file routes as reply first, reads the mapping file, and answers directly without a task | ✓ |
+| route-image-handoff | Pasted screenshots accompany start and message actions into a background task, which writes the visual codes to disk and renders both images in task details | ✓ |
+| route-drop-outside | A small text file dropped from outside the workspace is safely inlined by the host and answered directly with zero permission cards or tasks | ✓ |
+| route-ambiguous-file | Ambiguous files in a directory trigger one pre-route glob and an immediate clarify without starting a task, then hand over once chosen | ✓ |
+| route-implicit-memory | A remembered team term without explicit "as usual" cue words resolves to the right file in a new topic without reading the distractor | |
+| route-implicit-chat | An internal alias mentioned in a recent topic (not yet in memory) is recovered via conversation search in a new topic and answered directly | |
+| route-peek-artifact | A follow-up about an appendix detail in a finished task's output file is answered via main-session peek without waking the ended task | ✓ |
 | route-handoff | A brief from workspace meeting notes goes to a background task; the chat frees quickly; brief.md uses the notes | ✓ |
 | route-update | "Add a risks section" right after the task starts goes to that task, no second task; the brief gains the section | |
 | route-interject | "Also put the todos in todo.md" said mid-explanation gets a task card quickly; the explanation still finishes | ✓ |

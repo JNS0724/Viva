@@ -1,3 +1,4 @@
+import type { ImageRef } from '../shared/images.ts'
 import type { QuestionAnswer } from '../shared/question-answer.ts'
 import { answered, ended, fromSaved, said, saved, unsaid, updated, type SavedMessage, type Transcript } from './task-transcript.ts'
 
@@ -84,16 +85,16 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
   }
 
   /** A task this launch holds, from what it had said (none for a new one). */
-  function track(taskId: string, before: ReadonlyArray<{ role?: unknown, text?: unknown, key?: unknown, sourceId?: unknown }> = []) {
+  function track(taskId: string, before: ReadonlyArray<{ role?: unknown, text?: unknown, images?: unknown, key?: unknown, sourceId?: unknown }> = []) {
     transcripts.set(taskId, fromSaved(before))
   }
 
   /** The user said something to the task: its first words, words into its turn, its next question. */
-  function userSaid(taskId: string, words: string, key?: string, sourceId?: string) {
+  function userSaid(taskId: string, words: string, key?: string, sourceId?: string, images?: readonly ImageRef[], { strict = false } = {}) {
     const transcript = transcripts.get(taskId)
     if (!transcript) return
-    change(taskId, said(transcript, words, key, sourceId))
-    if (sourceId) save(taskId)
+    change(taskId, said(transcript, words, key, sourceId, images))
+    if (strict || sourceId || images?.length) save(taskId, strict)
   }
 
   /** Retract a steered user message after dsh explicitly rejects delivery, persisting the clean history. */
@@ -174,8 +175,8 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
    */
   const current = (taskId: string) => {
     const transcript = transcripts.get(taskId)
-    return transcript ? transcript.map(({ role, text, open, streamKey, blocks, sourceId }) => ({
-      role, text, ...(sourceId ? { sourceId } : {}), ...(open ? { open: true } : {}), ...(streamKey ? { streamKey, ...(blocks ? { blocks } : {}) } : {}),
+    return transcript ? transcript.map(({ role, text, images, open, streamKey, blocks, sourceId }) => ({
+      role, text, ...(images?.length ? { images: [...images] } : {}), ...(sourceId ? { sourceId } : {}), ...(open ? { open: true } : {}), ...(streamKey ? { streamKey, ...(blocks ? { blocks } : {}) } : {}),
     })) : null
   }
 

@@ -80,6 +80,7 @@ async function start(message: StartMessage) {
         if (typeof key !== 'string' || !SHELL_PREFERENCES.has(key)) throw new Error(`the shell may not set ${String(key)}`)
         return backend.preferences().set(key, value)
       },
+      'allow-dropped-files': (paths) => backend.allowDroppedFiles(paths),
       'has-bridge': () => backend.hasBridge(),
       'mark-quitting': () => backend.markQuitting(),
       stop: () => backend.stop(),

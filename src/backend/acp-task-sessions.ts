@@ -139,7 +139,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     return { ok: true, taskId }
   }
 
-  async function promptTask(taskId: string, text: string, meta?: TaskDispatchMeta) {
+  async function promptTask(taskId: string, text: string, meta?: TaskDispatchMeta, images: ReadonlyArray<{ data: string, mimeType: string }> = []) {
     if (disposed) return
     const attachment = sessions.get(taskId)
     if (!attachment?.attached) { emit({ type: 'task_end', taskId, stopReason: 'error', message: goneMessage() }); return }
@@ -148,8 +148,11 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
       : meta
     try { text = await preparePrompt(taskId, text, effectiveMeta) } catch (error) { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(error) }); return }
     if (!current(taskId, attachment)) return
+    const prompt = images.length
+      ? [...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })), ...(text ? [{ type: 'text' as const, text }] : [])]
+      : [{ type: 'text' as const, text }]
     await operations.run({
-      sessionId: taskId, prompt: [{ type: 'text', text }],
+      sessionId: taskId, prompt,
       onEnd: response => { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: response.stopReason }) },
       onError: error => { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(error) }) },
     })

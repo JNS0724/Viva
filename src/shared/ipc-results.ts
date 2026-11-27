@@ -1,5 +1,6 @@
 import type { MemoryDreamStatus } from '../memory/contracts/dream-status.ts'
 import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult, MemoryFileForgetResult, MemoryManagedFileIdentity } from '../memory/contracts/file-management.ts'
+import type { ImageRef } from './images.ts'
 
 export type MemoryFileSourceView = MemoryFileDetail['sources'][number] & { link: string | null }
 export type MemoryFileDetailView = Omit<MemoryFileDetail, 'sources'> & {
@@ -57,7 +58,7 @@ export type KeptTask = ({ mark?: TaskMark }) & (
  * What a run begins with, on the snapshot that starts it (the window makes the task, or its new run, from it): the
  * words it was given, and, for a task new, its summary and the session of the conversation its line goes in.
  */
-export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
+export interface TaskOpening { words: string, images?: readonly ImageRef[], task?: TaskSummary, hostSession?: string | null }
 
 export interface IpcResults {
   'diagnostics:export': { status: 'saved' | 'cancelled' | 'failed' | 'busy'; reason?: string }

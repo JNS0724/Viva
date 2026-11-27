@@ -707,7 +707,7 @@ export const en = {
   "island-input.image": "Image {value1}",
   "island-input.remove.image": "Remove image {value1}",
   "island-input.drop.to.give.to.viva": "Drop to give to Viva",
-  "island-input.only.file.paths.are.shared.with.the": "{value1} · Only file paths are shared with the assistant; files are not copied",
+  "island-input.only.file.paths.are.shared.with.the": "{value1} · Read in place; small text files include their content, without copying",
   "island-input.files": "{count} files",
   "island-input.enter.to.send.esc.to.close": "Enter to send · Esc to close",
   "island-input.shift.enter.for.a.new.line.esc": "Shift+Enter for a new line · Esc to close",
@@ -1509,5 +1509,6 @@ export const en = {
   "diagnostics.clear.pending": "Cleanup is not confirmed yet. Retry clearing after the processes respond.",
   "diagnostics.debug": "Enable debug logs for 15 minutes",
   "diagnostics.debug.stop": "Stop debug logs",
+  "main.task-ipc.running.no.images": "This background task is currently running and cannot take images mid-turn. Wait for it to finish, or start a new task with the image.",
 } as const
 export type MessageKey = keyof typeof en
