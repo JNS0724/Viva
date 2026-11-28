@@ -53,9 +53,15 @@ function retainReaderRecords(
       bound.last = Math.max(bound.last, msg.seq)
     }
   }
+  const trimmed = messages.length < allMessagesBeforeTrim.length
+  const firstKeptAt = messages[0]?.at ?? 0
+  const lastKeptAt = messages.at(-1)?.at ?? Number.MAX_SAFE_INTEGER
   const kept = deduped.filter((record) => {
     const win = keptBounds.get(record.segmentId)
-    if (!win) return !fullBounds.has(record.segmentId)
+    if (!win) {
+      if (fullBounds.has(record.segmentId)) return false
+      return !trimmed || (record.at >= firstKeptAt && record.at <= lastKeptAt)
+    }
     const full = fullBounds.get(record.segmentId)!
     const minAfter = win.first === full.first && win.first === 0 ? 0 : (win.first === full.first ? record.after : win.first + 1)
     const maxAfter = win.last === full.last ? Number.MAX_SAFE_INTEGER : win.last + 1

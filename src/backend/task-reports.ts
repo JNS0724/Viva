@@ -246,6 +246,8 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
   activeTurnId = () => null, typing = () => false, now = Date.now, wakeLater = () => {}, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
   /** effect.key → timestamp when an idle report first deferred for an actively typing composer. */
   const typingDeferSince = new Map<string, number>()
+  /** Keys already probed in the current multi-slice status sweep when >MAX_STATUS_PROBES_PER_PASS items are queued. */
+  const seenInSweep = new Set<string>()
   /** Cumulative steer budget shared across repeated wakes within the same busy foreground turn. */
   let busyBudget: { key: string, sentKeys: Set<string>, chars: number } = { key: '', sentKeys: new Set(), chars: 0 }
   const budgetFor = (sessionKey: string, turnId: string | null) => {
@@ -271,7 +273,10 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       if (await superseded(taskId, runId)) outcomes.set(effect.key, 'done')
       else mine.push(effect)
     }
-    if (!mine.length) return outcomes
+    if (!mine.length) {
+      seenInSweep.clear()
+      return outcomes
+    }
     const state = await conversation()
     const passTurn = state === 'busy' ? activeTurnId() : null
     if (state !== 'busy') {
@@ -280,6 +285,7 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       budgetFor(bound, passTurn)
     }
     if (state === 'away' || !bound) {
+      seenInSweep.clear()
       for (const effect of mine) outcomes.set(effect.key, 'wait')
       return outcomes
     }
@@ -316,21 +322,24 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
     const turnCap = state === 'busy' ? MAX_STEER_REPORTS_PER_TURN : MAX_REPORTS_PER_TURN
     let freshProbes = 0
     let totalProbes = 0
-    let deferredProbes = false
+    let stillUnprobed = false
     const unsent: Array<Effect<ReportPayload>> = []
     for (const original of mine) {
-      if (totalProbes >= MAX_STATUS_PROBES_PER_PASS) {
+      if (seenInSweep.has(original.key)) {
         outcomes.set(original.key, 'wait')
-        deferredProbes = true
         continue
       }
-      if (!original.payload.deliveredTo) {
-        if (freshProbes >= turnCap) {
-          outcomes.set(original.key, 'wait')
-          continue
-        }
-        freshProbes += 1
+      if (!original.payload.deliveredTo && freshProbes >= turnCap) {
+        outcomes.set(original.key, 'wait')
+        continue
       }
+      if (totalProbes >= MAX_STATUS_PROBES_PER_PASS) {
+        outcomes.set(original.key, 'wait')
+        stillUnprobed = true
+        continue
+      }
+      seenInSweep.add(original.key)
+      if (!original.payload.deliveredTo) freshProbes += 1
       totalProbes += 1
       // A token before anything else, kept: the same on every try from now on.
       const effect = original.payload.token ? original : kept(original, { ...original.payload, token: randomUUID().replaceAll('-', '') })
@@ -400,7 +409,11 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
           remaining = Math.min(remaining, TYPING_DEFER_MS - (at - since))
         }
         if (remaining > 0) {
-          wakeLater(remaining)
+          if (stillUnprobed) wakeLater(Math.min(remaining, 50))
+          else {
+            seenInSweep.clear()
+            wakeLater(remaining)
+          }
           for (const effect of forTurn) outcomes.set(effect.key, 'wait')
           return outcomes
         }
@@ -442,7 +455,8 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       typingDeferSince.clear()
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
-    if (deferredProbes) wakeLater(50)
+    if (stillUnprobed) wakeLater(50)
+    else seenInSweep.clear()
     return outcomes
   }, { stage: 'report', metrics: { count: effects.length } })
 }

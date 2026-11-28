@@ -700,4 +700,34 @@ test('foreground turn switch during async status check does not steer under stal
   })
   await downHarness.outcomes(fiftyReports)
   assert.equal(unavailableProbes, 10, 'unavailable status probes also stop at MAX_REPORTS_PER_TURN')
+
+  // 21 deliveredTo reports where the first 20 are pending and the 21st is read: pass 1 probes 20 and schedules one
+  // continuation wake; pass 2 probes the 21st item (settling its read receipt) and stops waking without spinning.
+  const mixedKnown: Record<string, ReportState> = {}
+  const twentyOneDelivered = Array.from({ length: 21 }, (_, i) => {
+    const item = effect({
+      taskId: `schedule:d-${i}`,
+      runId: `d-${i}@2026-11-06T08:00:00.000Z`,
+      title: `待确认 ${i}`,
+      status: 'done',
+      host: null,
+      output: '结果',
+      token: `${String(i + 200).padStart(32, '0')}`,
+      by: 'schedule',
+      deliveredTo: 's1',
+      via: 'steer',
+    })
+    mixedKnown[`s1 ${item.key}`] = i === 20 ? 'read' : 'pending'
+    return item
+  })
+  const sweepHarness = setup({ state: 'idle', known: mixedKnown })
+  await sweepHarness.outcomes(twentyOneDelivered)
+  assert.equal(sweepHarness.asked.length, 20, 'pass 1 caps at MAX_STATUS_PROBES_PER_PASS (20)')
+  assert.equal(sweepHarness.reads.length, 0)
+  assert.equal(sweepHarness.wakes.length, 1, 'schedules a continuation slice for the 21st item')
+
+  await sweepHarness.outcomes(twentyOneDelivered)
+  assert.equal(sweepHarness.asked.length, 21, 'pass 2 probes only the remaining 21st item')
+  assert.deepEqual(sweepHarness.reads.map(([key]) => key), [twentyOneDelivered[20]!.key], '21st read item settles without head-of-line starvation')
+  assert.equal(sweepHarness.wakes.length, 1, 'sweep completes without scheduling an infinite wake loop')
 })
