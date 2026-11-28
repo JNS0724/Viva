@@ -727,7 +727,36 @@ test('foreground turn switch during async status check does not steer under stal
   assert.equal(sweepHarness.wakes.length, 1, 'schedules a continuation slice for the 21st item')
 
   await sweepHarness.outcomes(twentyOneDelivered)
-  assert.equal(sweepHarness.asked.length, 21, 'pass 2 probes only the remaining 21st item')
+  assert.equal(sweepHarness.asked.length, 40, 'pass 2 prioritizes the unprobed 21st item first and stays within 20 probes per pass')
+  assert.equal(sweepHarness.asked[20]?.[1], twentyOneDelivered[20]!.key, '21st item is probed first on continuation pass')
   assert.deepEqual(sweepHarness.reads.map(([key]) => key), [twentyOneDelivered[20]!.key], '21st read item settles without head-of-line starvation')
   assert.equal(sweepHarness.wakes.length, 1, 'sweep completes without scheduling an infinite wake loop')
+
+  // State change mid-sweep (typing stops after pass 1 deferred r0 while r1..r19 settled and r20 waited for slice 2)
+  // immediately opens r0's turn on the external wake without stranding r0 behind seenInSweep.
+  const midSweepKnown: Record<string, ReportState> = {}
+  const midSweepItems = Array.from({ length: 21 }, (_, i) => {
+    const item = effect({
+      taskId: `schedule:m-${i}`,
+      runId: `m-${i}@2026-11-06T08:00:00.000Z`,
+      title: `中途停打字 ${i}`,
+      status: 'done',
+      host: null,
+      output: '结果',
+      token: `${String(i + 300).padStart(32, '0')}`,
+      by: 'schedule',
+      ...(i > 0 ? { deliveredTo: 's1', via: 'turn' as const } : {}),
+    })
+    midSweepKnown[`s1 ${item.key}`] = i === 0 ? 'none' : 'read'
+    return item
+  })
+  const midHarness = setup({ state: 'idle', typing: true, known: midSweepKnown })
+  await midHarness.outcomes(midSweepItems)
+  assert.equal(midHarness.turns.length, 0, 'r0 deferred while typing')
+  assert.equal(midHarness.reads.length, 19, 'r1..r19 settled on pass 1')
+
+  midHarness.world.typing = false
+  await midHarness.outcomes([midSweepItems[0]!, midSweepItems[20]!])
+  assert.equal(midHarness.reads.length, 20, 'r20 settled on pass 2')
+  assert.equal(midHarness.turns.length, 1, 'r0 immediately opens its turn when typing stops mid-sweep')
 })

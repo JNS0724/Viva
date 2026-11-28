@@ -25,6 +25,7 @@ function retainReaderRecords(
   messages: readonly ReaderMessage[],
   allMessagesBeforeTrim: readonly ReaderMessage[],
   combined: readonly ReaderRecord[],
+  edge: ReaderEdge,
 ): readonly ReaderRecord[] | undefined {
   if (!combined.length) return undefined
   const seen = new Set<string>()
@@ -60,7 +61,8 @@ function retainReaderRecords(
     const win = keptBounds.get(record.segmentId)
     if (!win) {
       if (fullBounds.has(record.segmentId)) return false
-      return !trimmed || (record.at >= firstKeptAt && record.at <= lastKeptAt)
+      if (!trimmed) return true
+      return edge === 'after' ? record.at >= firstKeptAt : record.at <= lastKeptAt
     }
     const full = fullBounds.get(record.segmentId)!
     const minAfter = win.first === full.first && win.first === 0 ? 0 : (win.first === full.first ? record.after : win.first + 1)
@@ -84,7 +86,7 @@ export function readOn(window: ReaderWindow, edge: ReaderEdge, part: ReadPart): 
     const added = part.messages.slice(0, Math.max(0, window.from - part.from))
     const joined = [...added, ...window.messages]
     const messages = joined.slice(0, READER_MAX)
-    const records = retainReaderRecords(messages, joined, combinedRecords)
+    const records = retainReaderRecords(messages, joined, combinedRecords, edge)
     const base: ReaderWindow = { key: window.key, read: window.read, whole: window.whole, total: part.total, from: window.from - added.length, messages, loading: null }
     return records ? { ...base, records } : base
   }
@@ -92,7 +94,7 @@ export function readOn(window: ReaderWindow, edge: ReaderEdge, part: ReadPart): 
   const joined = [...window.messages, ...added]
   const dropped = Math.max(0, joined.length - READER_MAX)
   const messages = joined.slice(dropped)
-  const records = retainReaderRecords(messages, joined, combinedRecords)
+  const records = retainReaderRecords(messages, joined, combinedRecords, edge)
   const base: ReaderWindow = { key: window.key, read: window.read, whole: window.whole, total: part.total, from: window.from + dropped, messages, loading: null }
   return records ? { ...base, records } : base
 }

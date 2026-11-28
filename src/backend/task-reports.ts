@@ -319,26 +319,29 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       }
     }
 
+    if (!typing()) {
+      for (const deferredKey of typingDeferSince.keys()) seenInSweep.delete(deferredKey)
+    }
     const turnCap = state === 'busy' ? MAX_STEER_REPORTS_PER_TURN : MAX_REPORTS_PER_TURN
     let freshProbes = 0
     let totalProbes = 0
-    let stillUnprobed = false
+    const unprobedKeys = new Set(mine.filter((effect) => !seenInSweep.has(effect.key)).map((effect) => effect.key))
+    const orderedMine = seenInSweep.size > 0
+      ? [...mine.filter((effect) => unprobedKeys.has(effect.key)), ...mine.filter((effect) => !unprobedKeys.has(effect.key))]
+      : mine
     const unsent: Array<Effect<ReportPayload>> = []
-    for (const original of mine) {
-      if (seenInSweep.has(original.key)) {
-        outcomes.set(original.key, 'wait')
-        continue
-      }
+    for (const original of orderedMine) {
       if (!original.payload.deliveredTo && freshProbes >= turnCap) {
+        unprobedKeys.delete(original.key)
         outcomes.set(original.key, 'wait')
         continue
       }
       if (totalProbes >= MAX_STATUS_PROBES_PER_PASS) {
         outcomes.set(original.key, 'wait')
-        stillUnprobed = true
         continue
       }
       seenInSweep.add(original.key)
+      unprobedKeys.delete(original.key)
       if (!original.payload.deliveredTo) freshProbes += 1
       totalProbes += 1
       // A token before anything else, kept: the same on every try from now on.
@@ -409,6 +412,7 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
           remaining = Math.min(remaining, TYPING_DEFER_MS - (at - since))
         }
         if (remaining > 0) {
+          const stillUnprobed = unprobedKeys.size > 0
           if (stillUnprobed) wakeLater(Math.min(remaining, 50))
           else {
             seenInSweep.clear()
@@ -455,7 +459,7 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       typingDeferSince.clear()
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
-    if (stillUnprobed) wakeLater(50)
+    if (unprobedKeys.size > 0) wakeLater(50)
     else seenInSweep.clear()
     return outcomes
   }, { stage: 'report', metrics: { count: effects.length } })
