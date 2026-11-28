@@ -21,16 +21,46 @@ const limitOf = (limit: number) => Number.isSafeInteger(limit) && limit > 0 ? li
 export function openMemoryFileIndex({ db, checkpoint = () => {}, onCleanupPending }: { db: DatabaseSync, now?: () => number, checkpoint?: (point: string) => void, onCleanupPending?: () => void }): MemoryFileIndex {
   db.exec(`PRAGMA secure_delete=ON;
     CREATE TABLE IF NOT EXISTS memory_file_index_nodes(rowid INTEGER PRIMARY KEY,workspace TEXT NOT NULL,id TEXT NOT NULL,path TEXT NOT NULL,kind TEXT NOT NULL,day TEXT,updated_at INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,id),UNIQUE(workspace,path));
-    CREATE TABLE IF NOT EXISTS memory_file_index_chunks(rowid INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT NOT NULL,file_id TEXT NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,file_id,ordinal));
+    CREATE TABLE IF NOT EXISTS memory_file_index_chunks(rowid INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT NOT NULL,file_id TEXT NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,ref_key TEXT,UNIQUE(workspace,file_id,ordinal));
     CREATE TABLE IF NOT EXISTS memory_file_index_vectors(generation INTEGER NOT NULL,ref TEXT NOT NULL,passage INTEGER NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(generation,ref,passage));
     CREATE TABLE IF NOT EXISTS memory_file_index_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS memory_file_index_vectors_ai AFTER INSERT ON memory_file_index_vectors BEGIN
+      INSERT INTO memory_file_index_meta(key,value) VALUES('vector-write-seq','1')
+        ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memory_file_index_vectors_au AFTER UPDATE ON memory_file_index_vectors BEGIN
+      INSERT INTO memory_file_index_meta(key,value) VALUES('vector-write-seq','1')
+        ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT);
+    END;
   `)
+  const chunkColumns = db.prepare('PRAGMA table_info(memory_file_index_chunks)').all() as Array<{ name: string }>
+  if (!chunkColumns.some(col => col.name === 'ref_key')) {
+    db.exec('ALTER TABLE memory_file_index_chunks ADD COLUMN ref_key TEXT')
+  }
+  if (db.prepare('SELECT 1 FROM memory_file_index_chunks WHERE ref_key IS NULL LIMIT 1').get()) {
+    transaction(db, () => {
+      const backfill = db.prepare('UPDATE memory_file_index_chunks SET ref_key=? WHERE rowid=?')
+      for (const row of db.prepare('SELECT rowid,payload FROM memory_file_index_chunks WHERE ref_key IS NULL').iterate()) {
+        backfill.run(key((JSON.parse(String(row.payload)) as MemoryFilePassage).ref), Number(row.rowid))
+      }
+    })
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS memory_file_index_chunks_ref_key ON memory_file_index_chunks(ref_key)')
   const meta = (name: string) => db.prepare('SELECT value FROM memory_file_index_meta WHERE key=?').get(name)?.value as string | undefined
   const setMeta = (name: string, value: string) => db.prepare('INSERT OR REPLACE INTO memory_file_index_meta VALUES(?,?)').run(name, value)
   if (!meta('salt')) setMeta('salt', randomBytes(32).toString('hex'))
   if (!meta('vectors')) setMeta('vectors', JSON.stringify({space: null, generation: 0, active: false}))
   const salt = meta('salt')!
-  const token = (value: string) => 't' + createHmac('sha256', salt).update(value).digest('hex')
+  const MAX_TOKEN_CACHE = 32_768
+  const tokenCache = new Map<string, string>()
+  const token = (value: string) => {
+    let cached = tokenCache.get(value)
+    if (cached !== undefined) return cached
+    cached = 't' + createHmac('sha256', salt).update(value).digest('hex')
+    if (tokenCache.size >= MAX_TOKEN_CACHE) tokenCache.clear()
+    tokenCache.set(value, cached)
+    return cached
+  }
   const termsOf = (text: string) => memorySearchTokens(text, true).map(token).join(' ')
   const queryOf = (text: string) => [...new Set(memorySearchTokens(text, false))].map(token).join(' OR ')
   let lexicalReady = false
@@ -76,6 +106,20 @@ ${entry.description}`))
     setMeta('erase-pending', '1')
     onCleanupPending?.()
   }
+  const vectorWriteSeq = () => meta('vector-write-seq') ?? '0'
+  let verifiedVectors: { generation: number, fingerprint: string, dimensions: number, writeSeq: string } | null = null
+  const isGenerationVerified = (state: MemoryVectorState) => Boolean(
+    state.space && verifiedVectors
+    && verifiedVectors.generation === state.generation
+    && verifiedVectors.fingerprint === state.space.fingerprint
+    && verifiedVectors.dimensions === state.space.dimensions
+    && verifiedVectors.writeSeq === vectorWriteSeq(),
+  )
+  const markGenerationVerified = (state: MemoryVectorState) => {
+    if (state.space) {
+      verifiedVectors = { generation: state.generation, fingerprint: state.space.fingerprint, dimensions: state.space.dimensions, writeSeq: vectorWriteSeq() }
+    }
+  }
   function recover() {
     if (!meta('erase-pending')) return
     checkpoint('before-truncate')
@@ -87,6 +131,25 @@ ${entry.description}`))
   }
   const allChunks = () => db.prepare('SELECT payload FROM memory_file_index_chunks ORDER BY workspace,file_id,ordinal')
     .all().map(row => JSON.parse(String(row.payload)) as MemoryFilePassage)
+  const allChunkRefsStmt = db.prepare(`SELECT c.ref_key,n.path
+    FROM memory_file_index_chunks c
+    JOIN memory_file_index_nodes n ON n.workspace=c.workspace AND n.id=c.file_id
+    ORDER BY c.workspace,c.file_id,c.ordinal`)
+  function parseRefKey(raw: string): MemoryFileChunkRef {
+    const [workspace, fileId, ordinal, revision, usageVersion, policyToken] = JSON.parse(raw) as [string, string, number, string, number, string]
+    return { workspace, fileId, ordinal, revision, usageVersion, policyToken }
+  }
+  function chunkRefs(authorized: readonly MemoryFileIdentity[]): MemoryFileChunkRef[] {
+    if (!authorized.length) return []
+    const allowed = new Map(authorized.map(file => [JSON.stringify([file.workspace, file.id]), file]))
+    const refs: MemoryFileChunkRef[] = []
+    for (const row of allChunkRefsStmt.all()) {
+      const ref = parseRefKey(String(row.ref_key))
+      const entry = allowed.get(JSON.stringify([ref.workspace, ref.fileId]))
+      if (entry && entry.path === String(row.path) && same(entry, ref)) refs.push(ref)
+    }
+    return refs
+  }
   function chunks(authorized: readonly MemoryFileIdentity[]): MemoryFilePassage[] {
     const allowed = new Map(authorized.map(file => [JSON.stringify([file.workspace,file.id]), file]))
     return allChunks().filter(chunk => {
@@ -95,14 +158,14 @@ ${entry.description}`))
     })
   }
   function erase(file: Pick<MemoryFileIdentity, 'workspace' | 'id'>) {
-    const rows = db.prepare('SELECT rowid,payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').all(file.workspace, file.id)
+    const rows = db.prepare('SELECT rowid,ref_key,payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').all(file.workspace, file.id)
     if (lexicalReady) try {
       for (const row of rows) db.prepare('DELETE FROM memory_file_index_fts WHERE rowid=?').run(Number(row.rowid))
       db.prepare('DELETE FROM memory_file_index_node_fts WHERE rowid IN (SELECT rowid FROM memory_file_index_nodes WHERE workspace=? AND id=?)')
         .run(file.workspace, file.id)
     } catch { lexicalReady = false; setMeta('fts-dirty','1'); db.exec('DROP TABLE IF EXISTS memory_file_index_fts; DROP TABLE IF EXISTS memory_file_index_node_fts') }
     if (!lexicalReady) { setMeta('fts-dirty','1'); db.exec('DROP TABLE IF EXISTS memory_file_index_fts; DROP TABLE IF EXISTS memory_file_index_node_fts') }
-    for (const row of rows) db.prepare('DELETE FROM memory_file_index_vectors WHERE ref=?').run(key((JSON.parse(String(row.payload)) as MemoryFilePassage).ref))
+    for (const row of rows) db.prepare('DELETE FROM memory_file_index_vectors WHERE ref=?').run(row.ref_key ? String(row.ref_key) : key((JSON.parse(String(row.payload)) as MemoryFilePassage).ref))
     db.prepare('DELETE FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').run(file.workspace,file.id)
     db.prepare('DELETE FROM memory_file_index_nodes WHERE workspace=? AND id=?').run(file.workspace,file.id)
     dirty()
@@ -132,7 +195,8 @@ ${entry.description}`))
 ${file.description}`))
       } catch { lexicalReady = false; setMeta('fts-dirty','1') }
       for (const [ordinal, payload] of nextChunks.entries()) {
-        const row = db.prepare('INSERT INTO memory_file_index_chunks(workspace,file_id,ordinal,payload) VALUES(?,?,?,?)').run(file.workspace, file.id, ordinal, payload)
+        const row = db.prepare('INSERT INTO memory_file_index_chunks(workspace,file_id,ordinal,payload,ref_key) VALUES(?,?,?,?,?)')
+          .run(file.workspace, file.id, ordinal, payload, key(entry[ordinal]!.ref))
         if (lexicalReady) try { db.prepare('INSERT INTO memory_file_index_fts(rowid,terms) VALUES(?,?)').run(row.lastInsertRowid, termsOf(entry[ordinal]!.searchText)) } catch { lexicalReady = false; setMeta('fts-dirty','1') }
       }
       if (!lexicalReady) setMeta('fts-dirty','1')
@@ -229,10 +293,17 @@ ${file.description}`))
     validSpace(space)
     return transaction(db, () => {
       const state = vectorState()
-      if (state.space?.fingerprint === space.fingerprint && state.space.dimensions === space.dimensions && vectorsValid(state)) return state.generation
+      if (state.space?.fingerprint === space.fingerprint && state.space.dimensions === space.dimensions
+        && (isGenerationVerified(state) || vectorsValid(state))) {
+        markGenerationVerified(state)
+        return state.generation
+      }
       if (db.prepare('DELETE FROM memory_file_index_vectors').run().changes) dirty()
-      saveState({space,generation:state.generation+1,active:false})
-      return state.generation+1
+      const nextGen = state.generation + 1
+      const next = { space, generation: nextGen, active: false }
+      saveState(next)
+      markGenerationVerified(next)
+      return nextGen
     })
   }
   function vectors(ref: MemoryFileChunkRef, state: MemoryVectorState): Float32Array[] {
@@ -246,25 +317,45 @@ ${file.description}`))
     return transaction(db, () => {
       const state = vectorState()
       if (generation !== state.generation || !state.space) return 0
-      const acceptedChunk = db.prepare('SELECT payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=? AND ordinal=?')
+      const wasVerified = isGenerationVerified(state)
+      const acceptedChunk = db.prepare('SELECT ref_key FROM memory_file_index_chunks WHERE workspace=? AND file_id=? AND ordinal=?')
       let count = 0
       for (const record of records) {
         const { workspace, fileId, ordinal } = record.ref
         const row = acceptedChunk.get(workspace, fileId, ordinal)
-        if (!row || key((JSON.parse(String(row.payload)) as MemoryFilePassage).ref) !== key(record.ref)) continue
+        const refKey = key(record.ref)
+        if (!row || String(row.ref_key) !== refKey) continue
         if (!record.vectors.length || !record.vectors.every(v => validVector(v,state.space!.dimensions))) throw new Error('invalid-passage-vectors')
-        db.prepare('DELETE FROM memory_file_index_vectors WHERE generation=? AND ref=?').run(generation,key(record.ref))
-        record.vectors.forEach((vector,passage) => db.prepare('INSERT INTO memory_file_index_vectors VALUES(?,?,?,?)').run(generation,key(record.ref),passage,new Uint8Array(vector.buffer,vector.byteOffset,vector.byteLength)))
+        db.prepare('DELETE FROM memory_file_index_vectors WHERE generation=? AND ref=?').run(generation,refKey)
+        record.vectors.forEach((vector,passage) => db.prepare('INSERT INTO memory_file_index_vectors VALUES(?,?,?,?)').run(generation,refKey,passage,new Uint8Array(vector.buffer,vector.byteOffset,vector.byteLength)))
         count++
       }
+      if (wasVerified && count > 0) markGenerationVerified(state)
       return count
     })
   }
+  const currentChunkRefKeysStmt = db.prepare('SELECT ref_key FROM memory_file_index_chunks')
+  const anyMissingVectorStmt = db.prepare(`SELECT 1 FROM memory_file_index_chunks c
+    WHERE NOT EXISTS (SELECT 1 FROM memory_file_index_vectors v WHERE v.generation=? AND v.ref=c.ref_key) LIMIT 1`)
+  const missingVectorPayloadsStmt = db.prepare(`SELECT c.payload FROM memory_file_index_chunks c
+    WHERE NOT EXISTS (SELECT 1 FROM memory_file_index_vectors v WHERE v.generation=? AND v.ref=c.ref_key)
+    ORDER BY c.workspace,c.file_id,c.ordinal`)
   function finishVectors(generation: number, expected: readonly MemoryFileChunkRef[]) {
     return transaction(db, () => {
-      const state = vectorState(), current = allChunks().map(chunk => chunk.ref), expectedKeys = new Set(expected.map(key))
-      if (state.generation !== generation || !state.space || expected.length !== expectedKeys.size || current.length !== expectedKeys.size || !current.every(ref => expectedKeys.has(key(ref)) && covered(ref,state))) return false
-      saveState({...state,active:true}); return true
+      const state = vectorState(), expectedKeys = new Set(expected.map(key))
+      if (state.generation !== generation || !state.space || expected.length !== expectedKeys.size) return false
+      const currentRows = currentChunkRefKeysStmt.all() as Array<{ ref_key: string }>
+      if (currentRows.length !== expectedKeys.size || !currentRows.every(row => expectedKeys.has(String(row.ref_key)))) return false
+      const allValid = isGenerationVerified(state) || vectorsValid(state)
+      if (allValid) {
+        if (anyMissingVectorStmt.get(generation)) return false
+      } else if (!expected.every(ref => covered(ref, state))) {
+        return false
+      }
+      const next = { ...state, active: true }
+      saveState(next)
+      if (allValid) markGenerationVerified(next)
+      return true
     })
   }
   function matchesVectorSpace(state: MemoryVectorState, space: MemoryVectorSpace, query: Float32Array) {
@@ -363,15 +454,29 @@ ${file.description}`))
     return { rows, incomplete }
   }
   return {
-    accept, snapshot, chunks, beginVectors, vectorState, stageVectors, finishVectors, vector,
+    accept, snapshot, chunks, chunkRefs, beginVectors, vectorState, stageVectors, finishVectors, vector,
     lexicalCandidates, nodeCandidates, vectorCandidates, nodeAt,
     digestNodes: workspace => db.prepare("SELECT payload FROM memory_file_index_nodes WHERE workspace=? AND kind='digest'").all(workspace)
       .map(row => JSON.parse(String(row.payload)) as MemoryFileNode),
     files: workspaces => db.prepare('SELECT payload FROM memory_file_index_nodes WHERE workspace IN (SELECT value FROM json_each(?)) ORDER BY workspace,id')
       .all(JSON.stringify(workspaces)).map(row => identity(JSON.parse(String(row.payload)) as MemoryFileNode)),
-    remove(file) { return transaction(db, () => { const old=snapshot(file.workspace,file.id); if (!old || old.path !== file.path || !same(old,file)) return false; erase(old); return true }) },
-    missingVectors(generation) { const state=vectorState(); return state.generation !== generation || !state.space ? [] : allChunks().filter(chunk => !covered(chunk.ref,state)) },
-    reindex() { lexicalReady=initializeFts(true); const state=vectorState(); transaction(db, () => { db.exec('DELETE FROM memory_file_index_vectors'); dirty(); saveState({...state,generation:state.generation+1,active:false}) }); return {lexical:lexicalReady,vectorGeneration:state.generation+1} },
+    remove(file) { return transaction(db, () => { const old=snapshot(file.workspace,file.id); if (!old || old.path !== file.path || !same(old,file)) return false; erase(old); tokenCache.clear(); return true }) },
+    missingVectors(generation) {
+      const state = vectorState()
+      if (state.generation !== generation || !state.space) return []
+      if (isGenerationVerified(state) || vectorsValid(state)) {
+        return missingVectorPayloadsStmt.all(generation).map(row => JSON.parse(String(row.payload)) as MemoryFilePassage)
+      }
+      return allChunks().filter(chunk => !covered(chunk.ref, state))
+    },
+    reindex() {
+      tokenCache.clear()
+      lexicalReady = initializeFts(true)
+      verifiedVectors = null
+      const state = vectorState()
+      transaction(db, () => { db.exec('DELETE FROM memory_file_index_vectors'); dirty(); saveState({ ...state, generation: state.generation + 1, active: false }) })
+      return { lexical: lexicalReady, vectorGeneration: state.generation + 1 }
+    },
     recover, pendingCleanup: () => meta('erase-pending') ? 1 : 0,
   }
 }

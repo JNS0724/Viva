@@ -43,22 +43,31 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
   let memoryRequest = 0, profileGeneration = 0
   let active: { page: string, lifetime: ReturnType<typeof createRequestBudget>, promise: Promise<boolean> } | undefined
 
+  function cancelProfileReads() {
+    files.cancelReads()
+    memoryRequest++
+    active?.lifetime.cancel(); active?.lifetime.close(); active = undefined
+  }
+
   function readProfile(): Promise<boolean> {
     const page = `${getState().memory.open}:${getState().memory.view}`
+    const samePage = () => `${getState().memory.open}:${getState().memory.view}` === page
     if (active?.page === page && !active.lifetime.signal.aborted) return active.promise
     active?.lifetime.cancel(); active?.lifetime.close()
     const request = ++memoryRequest, generation = profileGeneration
     const lifetime = createRequestBudget(readBudgetMs)
-    const promise = lifetime.run(() => readPage(() => request === memoryRequest && !lifetime.signal.aborted,
+    const promise = lifetime.run(() => readPage(() => request === memoryRequest && samePage() && !lifetime.signal.aborted,
       () => api.getMemory({ budgetMs: lifetime.remainingMs() }))).then(data => {
-      if (request !== memoryRequest || generation !== profileGeneration) return false
+      if (request !== memoryRequest || generation !== profileGeneration || !samePage()) return false
       dispatch({ type: 'memory_loaded', data })
       return true
     }, err => {
-      if (request === memoryRequest && generation === profileGeneration) dispatch({ type: 'memory_load_failed', message: err instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(err) })
+      if (request === memoryRequest && generation === profileGeneration && samePage()) {
+        dispatch({ type: 'memory_load_failed', message: err instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(err) })
+      }
       return false
     }).finally(() => { lifetime.close(); if (request === memoryRequest) active = undefined })
-      .then(loaded => request === memoryRequest && generation !== profileGeneration ? readProfile() : loaded)
+      .then(loaded => request === memoryRequest && samePage() && generation !== profileGeneration ? readProfile() : loaded)
     active = { page, lifetime, promise }
     return promise
   }
@@ -98,9 +107,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       loadMemory()
     },
     closeProfile() {
-      files.cancelReads()
-      memoryRequest++
-      active?.lifetime.cancel(); active?.lifetime.close(); active = undefined
+      cancelProfileReads()
       dispatch({ type: 'memory_close' })
     },
 
@@ -121,6 +128,12 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     /** Keep the profile and file views aligned with committed owner changes. */
     onMemoryChanged(event: { failure?: string }) {
       if (event.failure) showToast(event.failure)
+      if (!getState().memory.open) {
+        profileGeneration++
+        cancelProfileReads()
+        files.invalidateFiles()
+        return
+      }
       void refreshMemoryViews()
     },
   }

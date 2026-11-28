@@ -49,6 +49,7 @@ export interface MemoryFileIndex {
   files(workspaces: readonly string[]): MemoryFileIdentity[]
   snapshot(workspace: string, id: string): MemoryFileNode | null
   chunks(authorized: readonly MemoryFileIdentity[]): MemoryFilePassage[]
+  chunkRefs?(authorized: readonly MemoryFileIdentity[]): MemoryFileChunkRef[]
   /** Candidate pages contain trusted projections. Current access and revision are checked by core. */
   lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileHit> & { mode: 'fts' | 'fallback' }
   nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileNode> & { mode?: 'fts' | 'fallback' }

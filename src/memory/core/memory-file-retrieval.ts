@@ -236,7 +236,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     try {
       const generation = index.beginVectors(space())
       const files = index.files(workspaces())
-      const expected = index.chunks(files).map(chunk => chunk.ref)
+      const expected = index.chunkRefs ? index.chunkRefs(files) : index.chunks(files).map(chunk => chunk.ref)
       observation.progress({ stage: 'vector', identities: { generation }, metrics: { count: expected.length } })
       for (const chunk of index.missingVectors(generation)) {
         if (closed || run.controller.signal.aborted || !valid(chunk.file)) return false
