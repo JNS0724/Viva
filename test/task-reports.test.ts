@@ -151,7 +151,7 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
-  return { outcomes, turns, delivered, world, asked, kept, reads, wakes }
+  return { outcomes, run, turns, delivered, world, asked, kept, reads, wakes }
 }
 
 test('a second pass cannot steer an opening report into its own turn before the native write', async () => {
@@ -759,4 +759,47 @@ test('foreground turn switch during async status check does not steer under stal
   await midHarness.outcomes([midSweepItems[0]!, midSweepItems[20]!])
   assert.equal(midHarness.reads.length, 20, 'r20 settled on pass 2')
   assert.equal(midHarness.turns.length, 1, 'r0 immediately opens its turn when typing stops mid-sweep')
+
+  // External wake + report_dropped during a multi-slice sweep (40 deliveredTo reports: 0..18 read, 19 pending on pass 1,
+  // 20..39 read; then report_dropped(19) + onExternalWake() preempts the 50ms slice timer): pass 2 probes 19 first,
+  // re-delivers 19, settles 20..38, and still schedules slice 3 for 39 before stopping cleanly.
+  const dropKnown: Record<string, ReportState> = {}
+  const fortyDelivered = Array.from({ length: 40 }, (_, i) => {
+    const item = effect({
+      taskId: `schedule:dr-${i}`,
+      runId: `dr-${i}@2026-11-06T08:00:00.000Z`,
+      title: `丢失重投 ${i}`,
+      status: 'done',
+      host: null,
+      output: '结果',
+      token: `${String(i + 400).padStart(32, '0')}`,
+      by: 'schedule',
+      deliveredTo: 's1',
+      via: 'steer',
+    })
+    dropKnown[`s1 ${item.key}`] = i === 19 ? 'pending' : 'read'
+    return item
+  })
+  const dropHarness = setup({ state: 'idle', known: dropKnown })
+  await dropHarness.outcomes(fortyDelivered)
+  assert.equal(dropHarness.reads.length, 19, 'pass 1 settles 0..18')
+  assert.equal(dropHarness.wakes.length, 1, 'pass 1 schedules slice 2 for 20..39')
+
+  // viva-steer emits report_dropped for item 19 and wakeEffects() cancels the slice timer and advances sweepEpoch.
+  dropKnown[`s1 ${fortyDelivered[19]!.key}`] = 'none'
+  dropHarness.run.onDropped(fortyDelivered[19]!.key)
+  dropHarness.run.onExternalWake()
+
+  const remainingPass2 = [fortyDelivered[19]!, ...fortyDelivered.slice(20)]
+  await dropHarness.outcomes(remainingPass2)
+  assert.equal(dropHarness.asked[20]?.[1], fortyDelivered[19]!.key, 'dropped report 19 is prioritized first on pass 2')
+  assert.equal(dropHarness.turns.length, 1, 'dropped report 19 is immediately re-delivered in pass 2')
+  assert.equal(dropHarness.reads.length, 38, 'pass 2 settles 20..38 (19 more reads)')
+  assert.equal(dropHarness.wakes.length, 2, 'pass 2 schedules slice 3 for remaining unprobed report 39')
+
+  // Report 19 is now pending in its new turn; pass 3 settles report 39 and stops waking.
+  dropKnown[`s1 ${fortyDelivered[19]!.key}`] = 'pending'
+  await dropHarness.outcomes([fortyDelivered[19]!, fortyDelivered[39]!])
+  assert.equal(dropHarness.reads.length, 39, 'pass 3 settles report 39')
+  assert.equal(dropHarness.wakes.length, 2, 'pass 3 stops waking once every item has been probed in the current epoch')
 })

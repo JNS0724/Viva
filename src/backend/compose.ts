@@ -550,7 +550,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           const reportId = String(event.reportId)
           const queued = effects?.get(REPORT, reportId) as Effect<ReportPayload> | null | undefined
           if (!queued || queued.payload.deliveredTo !== event.sessionId) return undefined
-          if (event.type === 'report_dropped') return wakeEffects()
+          if (event.type === 'report_dropped') {
+            taskReports.onDropped(reportId)
+            return wakeEffects()
+          }
           foregroundRequests.reportWritten(reportId)
           try {
             return event.type === 'report_written' ? records.written(queued) : records.read(queued)
@@ -673,6 +676,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       ? 'away' : turn.active ? 'busy' : 'idle'),
     activeTurnId: () => (turn.active ? turn.id : null),
     typing: () => Boolean(host.window.composerTyping?.()),
+    onPassStart: () => clearReportWake(),
     wakeLater: (ms) => scheduleReportWake(ms),
     session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
@@ -738,7 +742,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
   let reportWakeTimer: ReturnType<typeof setTimeout> | null = null
   const clearReportWake = () => { if (reportWakeTimer) { clearTimeout(reportWakeTimer); reportWakeTimer = null } }
-  const wakeEffects = () => { clearReportWake(); void effects?.wake() }
+  const wakeEffects = () => { clearReportWake(); taskReports.onExternalWake(); void effects?.wake() }
   function scheduleReportWake(ms: number) {
     clearReportWake()
     reportWakeTimer = setTimeout(() => { reportWakeTimer = null; void effects?.wake() }, Math.max(1, ms))

@@ -207,8 +207,10 @@ export interface TaskReportsDeps {
   typing?: () => boolean
   /** Clock for bounding the typing deferral window. */
   now?: () => number
-  /** Schedule a future wake when an idle report defers for typing. */
+  /** Schedule a future wake when an idle report defers for typing or a capped status sweep needs another slice. */
   wakeLater?: (ms: number) => void
+  /** Invoked when a runner pass begins so any pending slice timer can be disarmed before re-evaluating at pass end. */
+  onPassStart?: () => void
   /** Whether a report's context can be used in the receiving session. */
   /** How a report stands in a session (acp-bridge.ts reportStatus). */
   status: (session: string, reportId: string, token: string) => Promise<ReportState>
@@ -242,12 +244,25 @@ const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
  * again, to the main conversation as it is now. A report queued before tokens (#84) has one made and kept before it
  * is first sent, so every later try knows it by the same token.
  */
+export type TaskReportsRunner = Runner & {
+  /** Marks a specific report key for immediate front-of-line re-probing (e.g. on viva-steer `report_dropped`). */
+  onDropped: (reportId: string) => void
+  /** Advances the sweep epoch on an external wake so every queued item is probed at least once after that event. */
+  onExternalWake: () => void
+}
+
 export function createTaskReports({ currentConversation, session, unsavedConversation = () => null, superseded, holds = () => true, opening = () => false, conversation,
-  activeTurnId = () => null, typing = () => false, now = Date.now, wakeLater = () => {}, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
+  activeTurnId = () => null, typing = () => false, now = Date.now, wakeLater = () => {}, onPassStart = () => {}, status, deliver, report, amend, onRead }: TaskReportsDeps): TaskReportsRunner {
   /** effect.key → timestamp when an idle report first deferred for an actively typing composer. */
   const typingDeferSince = new Map<string, number>()
-  /** Keys already probed in the current multi-slice status sweep when >MAX_STATUS_PROBES_PER_PASS items are queued. */
-  const seenInSweep = new Set<string>()
+  /** Monotonic external-wake epoch and last epoch at which each queued key+generation was probed. */
+  let sweepEpoch = 0
+  const probedEpoch = new Map<string, { generation: number, epoch: number }>()
+  const priorityKeys = new Set<string>()
+  const epochOf = (effect: Effect<ReportPayload>) => {
+    const entry = probedEpoch.get(effect.key)
+    return entry && entry.generation === effect.generation ? entry.epoch : -1
+  }
   /** Cumulative steer budget shared across repeated wakes within the same busy foreground turn. */
   let busyBudget: { key: string, sentKeys: Set<string>, chars: number } = { key: '', sentKeys: new Set(), chars: 0 }
   const budgetFor = (sessionKey: string, turnId: string | null) => {
@@ -262,7 +277,8 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       current.chars += chars
     }
   }
-  return (effects: readonly Effect[]) => withOperation('task.report', async () => {
+  const runner: Runner = (effects: readonly Effect[]) => withOperation('task.report', async () => {
+    onPassStart()
     const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
     const bound = session()
@@ -270,13 +286,23 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
     for (const effect of effects as ReadonlyArray<Effect<ReportPayload>>) {
       const { taskId, runId } = effect.payload
       // Superseded (asked again, taken up, closed): let go. Any other goes to the main conversation, on any topic.
-      if (await superseded(taskId, runId)) outcomes.set(effect.key, 'done')
-      else mine.push(effect)
+      if (await superseded(taskId, runId)) {
+        probedEpoch.delete(effect.key)
+        priorityKeys.delete(effect.key)
+        outcomes.set(effect.key, 'done')
+      } else {
+        mine.push(effect)
+      }
     }
     if (!mine.length) {
-      seenInSweep.clear()
+      probedEpoch.clear()
+      priorityKeys.clear()
       return outcomes
     }
+    const mineKeys = new Set(mine.map((effect) => effect.key))
+    for (const key of probedEpoch.keys()) if (!mineKeys.has(key)) probedEpoch.delete(key)
+    for (const key of priorityKeys) if (!mineKeys.has(key)) priorityKeys.delete(key)
+
     const state = await conversation()
     const passTurn = state === 'busy' ? activeTurnId() : null
     if (state !== 'busy') {
@@ -285,7 +311,7 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       budgetFor(bound, passTurn)
     }
     if (state === 'away' || !bound) {
-      seenInSweep.clear()
+      probedEpoch.clear()
       for (const effect of mine) outcomes.set(effect.key, 'wait')
       return outcomes
     }
@@ -319,20 +345,25 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       }
     }
 
+    const passEpoch = sweepEpoch
     if (!typing()) {
-      for (const deferredKey of typingDeferSince.keys()) seenInSweep.delete(deferredKey)
+      for (const deferredKey of typingDeferSince.keys()) {
+        probedEpoch.delete(deferredKey)
+        priorityKeys.add(deferredKey)
+      }
     }
     const turnCap = state === 'busy' ? MAX_STEER_REPORTS_PER_TURN : MAX_REPORTS_PER_TURN
     let freshProbes = 0
+    let settledFreshProbes = 0
     let totalProbes = 0
-    const unprobedKeys = new Set(mine.filter((effect) => !seenInSweep.has(effect.key)).map((effect) => effect.key))
-    const orderedMine = seenInSweep.size > 0
-      ? [...mine.filter((effect) => unprobedKeys.has(effect.key)), ...mine.filter((effect) => !unprobedKeys.has(effect.key))]
-      : mine
+    const settledKeys = new Set<string>()
+    const rankOf = (effect: Effect<ReportPayload>) => (priorityKeys.has(effect.key) ? -2 : epochOf(effect))
+    const orderedMine = mine.map((effect, index) => ({ effect, rank: rankOf(effect), index }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map(({ effect }) => effect)
     const unsent: Array<Effect<ReportPayload>> = []
     for (const original of orderedMine) {
-      if (!original.payload.deliveredTo && freshProbes >= turnCap) {
-        unprobedKeys.delete(original.key)
+      if (!original.payload.deliveredTo && freshProbes - settledFreshProbes >= turnCap) {
         outcomes.set(original.key, 'wait')
         continue
       }
@@ -340,9 +371,10 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
         outcomes.set(original.key, 'wait')
         continue
       }
-      seenInSweep.add(original.key)
-      unprobedKeys.delete(original.key)
-      if (!original.payload.deliveredTo) freshProbes += 1
+      const wasFresh = !original.payload.deliveredTo
+      priorityKeys.delete(original.key)
+      probedEpoch.set(original.key, { generation: original.generation, epoch: passEpoch })
+      if (wasFresh) freshProbes += 1
       totalProbes += 1
       // A token before anything else, kept: the same on every try from now on.
       const effect = original.payload.token ? original : kept(original, { ...original.payload, token: randomUUID().replaceAll('-', '') })
@@ -359,7 +391,13 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
           && !budgetFor(bound, passTurn).sentKeys.has(effect.key)) {
           creditBudget(bound, passTurn, effect.key, noteFor([endedOf(effect)], { inTurn: true }).length)
         }
-        outcomes.set(effect.key, readOutcome(effect.payload.deliveredTo ? effect : { ...effect, payload: { ...effect.payload, deliveredTo: where, deliveredConversation: unsavedConversation(where) } }))
+        const outcome = readOutcome(effect.payload.deliveredTo ? effect : { ...effect, payload: { ...effect.payload, deliveredTo: where, deliveredConversation: unsavedConversation(where) } })
+        if (outcome !== 'retry') {
+          settledKeys.add(effect.key)
+          if (wasFresh) settledFreshProbes += 1
+          probedEpoch.delete(effect.key)
+        }
+        outcomes.set(effect.key, outcome)
       }
       // Lost where it went (or never sent): to the main conversation as it is now.
       else if (now === 'none' && !opening(effect.key)) unsent.push(effect)
@@ -401,6 +439,21 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
     const activeForTurn = new Set(forTurn.map(effect => effect.key))
     for (const key of typingDeferSince.keys()) if (!activeForTurn.has(key)) typingDeferSince.delete(key)
 
+    const needsFollowUpSlice = () => {
+      if (priorityKeys.size > 0) return true
+      return mine.some((effect) => !settledKeys.has(effect.key)
+        && outcomes.get(effect.key) !== 'retry'
+        && outcomes.get(effect.key) !== 'done'
+        && epochOf(effect) < sweepEpoch
+        && (Boolean(effect.payload.deliveredTo) || freshProbes - settledFreshProbes < turnCap))
+    }
+    const finalizeOutcomes = () => {
+      for (const [key, outcome] of outcomes) {
+        if (outcome === 'retry') probedEpoch.delete(key)
+      }
+      return outcomes
+    }
+
     // A turn of its own, once nothing runs, for those still theirs right now: done when their reading is confirmed.
     if (forTurn.length && await conversation() === 'idle') {
       if (typing()) {
@@ -412,14 +465,9 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
           remaining = Math.min(remaining, TYPING_DEFER_MS - (at - since))
         }
         if (remaining > 0) {
-          const stillUnprobed = unprobedKeys.size > 0
-          if (stillUnprobed) wakeLater(Math.min(remaining, 50))
-          else {
-            seenInSweep.clear()
-            wakeLater(remaining)
-          }
+          wakeLater(needsFollowUpSlice() ? Math.min(remaining, 50) : remaining)
           for (const effect of forTurn) outcomes.set(effect.key, 'wait')
-          return outcomes
+          return finalizeOutcomes()
         }
       }
       const selectedBatch: Array<Effect<ReportPayload>> = []
@@ -459,10 +507,19 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       typingDeferSince.clear()
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
-    if (unprobedKeys.size > 0) wakeLater(50)
-    else seenInSweep.clear()
-    return outcomes
+    if (needsFollowUpSlice()) wakeLater(50)
+    return finalizeOutcomes()
   }, { stage: 'report', metrics: { count: effects.length } })
+
+  return Object.assign(runner, {
+    onDropped(reportId: string) {
+      probedEpoch.delete(reportId)
+      priorityKeys.add(reportId)
+    },
+    onExternalWake() {
+      sweepEpoch += 1
+    },
+  })
 }
 
 /**
