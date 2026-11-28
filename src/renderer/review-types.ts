@@ -12,6 +12,9 @@ export type ReviewTopic = {
 /** A message read in 回顾, with the segment it is kept in. */
 export type ReaderMessage = SegmentMessage & { segmentId: string }
 
+/** A delivered task/schedule report record read in 回顾, with the segment it is anchored in. */
+export type ReaderRecord = ReportRecord & { segmentId: string }
+
 /**
  * What is read at the top: opened from a hit, a link or a star; `found`, the message it named (its `data-msg`),
  * marked while it is open; `notice` when that message itself is not there.
@@ -27,10 +30,11 @@ export type ReviewFocus = { key: string, title: string, at: number | null, head:
  * read with the talk it shares, as every part read on of it is too.
  */
 export type ReaderWindow = {
-  key: string, read: number, whole: boolean, total: number, from: number, messages: readonly ReaderMessage[], loading: 'before' | 'after' | null,
+  key: string, read: number, whole: boolean, total: number, from: number, messages: readonly ReaderMessage[],
+  records?: readonly ReaderRecord[], loading: 'before' | 'after' | null,
 }
 
 export type ReaderEdge = 'before' | 'after'
 
 /** A part read from the history: where it starts, what it holds. */
-export type ReadPart = { total: number, from: number, messages: readonly ReaderMessage[] }
+export type ReadPart = { total: number, from: number, messages: readonly ReaderMessage[], records?: readonly ReaderRecord[] }

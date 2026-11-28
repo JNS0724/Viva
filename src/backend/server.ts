@@ -90,7 +90,6 @@ async function start(message: StartMessage) {
         return backend.memoryOwnerPid()
       },
       since: (seq) => backend.since(Number(seq)),
-      'automation.seed-feed': (item) => seedFeed(message.automation, backend, item),
       'automation.publish-event': (event) => backend.publishAutomation(event),
       close: () => { closing ??= shutdown() },
     },
@@ -110,14 +109,6 @@ async function start(message: StartMessage) {
   // The shell gone (it quit, or crashed): nobody is left to serve.
   process.on('disconnect', () => { closing ??= shutdown() })
   reply({ type: 'ready', port, channels: [...channels].map(([channel, { kind }]) => ({ channel, kind })), locale: getLocale() })
-}
-
-/** An item in 动态 for an automation client (smoke tests' showcase); refused outside automation. */
-function seedFeed(automation: boolean, backend: ReturnType<typeof createBackend>, raw: unknown) {
-  if (!automation) throw new Error('only for automation')
-  const { title, body } = (raw ?? {}) as { title?: unknown, body?: unknown }
-  if (typeof title !== 'string' || typeof body !== 'string') throw new Error('an item needs a title and a body')
-  backend.seedFeed({ title, body })
 }
 
 process.once('message', (raw) => {

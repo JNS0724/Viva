@@ -47,7 +47,7 @@ export interface SmokeHooks {
   fixtures: string
   importHome: string
   openTasksPage: () => Promise<void>
-  seedShowcase: () => Promise<void>
+  openSchedulesPage?: () => Promise<void>
   scaleFactor: () => Promise<number>
   renderPanel: (html: string, size: { width: number, height: number }) => Promise<Buffer>
 }

@@ -4,7 +4,7 @@
 # Viva
 
 **A desktop AI assistant that follows up.**<br>
-It remembers what you mention, does it when it is due and brings the result to Activity, and asks before taking action.
+It remembers what you mention, does it when it is due and brings the result back to your conversation, and asks before taking action.
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -15,9 +15,9 @@ It remembers what you mention, does it when it is due and brings the result to A
 
 [Download](https://github.com/JNS0724/Viva/releases) · [Features](docs/features.md) · [Development](docs/development.md)
 
-<img src="docs/images/demo.gif" width="880" alt="Schedule flow: mention a weekly report, approve the schedule card, see what is coming up and what came back in Activity, then continue in chat">
+<img src="docs/images/demo.gif" width="880" alt="Schedule flow (earlier UI recording): mention a weekly report and approve the schedule card">
 
-<sub>Real app recording: ask → review a schedule → approve → it runs when due and lands in Activity → continue in chat.</sub>
+<sub>Real app recording (earlier UI): ask → review a schedule → approve. Current builds deliver due results straight into the main conversation.</sub>
 </div>
 
 > Viva is a personal project, not an official DeepSeek product. It uses the open-source [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). Connect DeepSeek or models with OpenAI-compatible or Anthropic-compatible APIs.
@@ -38,15 +38,13 @@ Most assistants wait for a request. Work often requires remembering things you m
 
 Say “My weekly report is due before I leave on Friday; help me draft it then.” The model writes what to do as a prompt, and a card shows when it runs and what it will do. Nothing is saved until you click **Schedule**. Times can be once, daily, weekly, or cron. To change, pause, or delete one later, just say so in the conversation.
 
-| Review the proposal | What came back |
-|---|---|
-| ![Schedule card: weekly report, every Friday at 16:00, draft this week's report from last week's template](docs/images/schedule-card.png) | ![Activity page with New, Coming up and Seen on the left, and a result with Continue in chat and Not needed](docs/images/feed-item.png) |
+![Schedule card: weekly report, every Friday at 16:00, draft this week's report from last week's template](docs/images/schedule-card.png)
 
-### Runs when due, results in Activity
+### Runs when due, reports to the conversation
 
-When it is due, the prompt runs in a session of its own, at the permission level you picked; what that level would ask approval for is refused, without waiting for you, since nobody is there. The answer becomes an item in Activity, with a notification; the Activity button in the title bar counts what is new. Runs missed while the computer slept or Viva was closed happen at the next launch, once per due time.
+When it is due, the prompt runs in an unattended session of its own, at the permission level you picked; what that level would ask approval for is refused, without waiting for you, since nobody is there. The answer comes straight back into the main conversation, with a desktop notification that brings Viva to the front when clicked. Runs missed while the computer slept or Viva was closed happen at the next launch, once per due time.
 
-Activity is separate from Background: Background holds the tasks you hand over; Activity holds what the app brings on its own.
+Saved schedules live in the **Schedules** sub-page alongside Background and About you, where you can view, pause, resume, or delete them.
 
 ### Review actions before they run
 
@@ -60,13 +58,13 @@ Confirmation cards explain actions that require approval. Choose **Read only**, 
 |---|---|
 | ![Answer containing tables and task lists](docs/images/chat.png) | ![Workspace tree and a Markdown file preview](docs/images/files.png) |
 
-Closing the window leaves Viva in the tray. The desktop island shows work and approvals; the tray menu counts what is new in Activity. Press `⌘⇧Space` on macOS or `Ctrl+Shift+Space` on Windows from any app to ask a question, or drop files onto her.
+Closing the window leaves Viva in the tray, and the desktop island shows ongoing work and approvals. Press `⌘⇧Space` on macOS or `Ctrl+Shift+Space` on Windows from any app to ask a question, or drop files onto her.
 
 ![Desktop island with an inline approval and an input opened by the global shortcut](docs/images/desk-island.png)
 
 ### More
 
-- **Today:** the home page's Today card counts what is new in Activity and the schedules still to run today; click it to open Activity.
+- **Today:** the home page's Today card counts the schedules still to run today; click it to open Schedules.
 - **Remember you:** say “Remember…” or let Viva learn in conversation. View, edit, delete, or restore memories in About you.
 - **Connect tools through conversation:** ask to connect GitHub or save a workflow as a skill. Secrets go in a dedicated card, are encrypted locally, and are not given to the model.
 - **Ask when uncertain:** if a missing detail changes the answer, the assistant asks instead of guessing.
@@ -77,10 +75,9 @@ Closing the window leaves Viva in the tray. The desktop island shows work and ap
 ```mermaid
 flowchart LR
   A["Conversation"] --> P{"Schedule it?"}
-  P -->|You approve| S["Coming up"]
-  S -->|When due, its own session| R["New in Activity"]
-  R -->|Notification| N["You open it"]
-  N -->|Continue in chat| C["In the input; you review and send"]
+  P -->|You approve| S["Schedules sub-page"]
+  S -->|When due, unattended session| R["Result in main conversation"]
+  R -->|Notification| N["Click to open Viva"]
 ```
 
 Embedded dsh powers conversations over ACP. It runs as a child of Viva's backend process, which keeps the history, background tasks and schedules; the Electron main process only handles the desktop. Memory, permissions and the tools the model uses for tasks and schedules are dsh plugins; Viva does not modify dsh. Schedule times use dsh's `dsh-schedule`. See [System design](docs/system-design.md) and [Features](docs/features.md).
@@ -104,14 +101,14 @@ Installers are unsigned. First launch may require an extra step:
 
 1. Open Connect a model and enter a [DeepSeek API key](https://platform.deepseek.com/api_keys), or add another provider in Settings.
 2. Ask for help, such as summarizing weekly reports. Review approval cards before allowing actions.
-3. Mention a future task and click **Schedule** on its card. When it is due, the result appears in Activity.
+3. Mention a future task and click **Schedule** on its card. When it is due, the result comes straight back to the main conversation.
 5. Choose Follow system, 简体中文, or English in Settings → Language. Existing profiles retain Chinese on upgrade. Switching language does not translate history or restart the assistant.
 
 ## Privacy and safety
 
 - **Encrypted keys:** macOS Keychain or Windows DPAPI encrypts keys locally; the UI shows only the last four characters.
 - **dsh's permission levels:** what the assistant may do without asking is dsh's level you pick (Read only, Workspace changes, Auto, Full); Viva adds no rules of its own. A scheduled run has nobody to ask, so what its level would ask about is refused.
-- **Local data:** conversations, memories, schedules, and Activity stay locally. Viva has no server. Model calls, network tools, and connected services use the network. Conversation history is plaintext locally.
+- **Local data:** conversations, memories, tasks, and schedules stay locally. Viva has no server. Model calls, network tools, and connected services use the network. Conversation history is plaintext locally.
 
 ## Run from source
 

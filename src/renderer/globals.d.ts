@@ -25,6 +25,7 @@ type Widened<T> = [T] extends [never] ? Untyped
   : T extends readonly (infer U)[] ? ReadonlyArray<Widened<U>>
   : T extends (...args: any[]) => any ? T
   : T extends BackgroundTask ? BackgroundTask
+  : T extends import('../shared/ipc-results.ts').ScheduleView ? import('../shared/ipc-results.ts').ScheduleView
   : T extends import('./memory-file-state.ts').MemoryFileState ? import('./memory-file-state.ts').MemoryFileState
   : T extends import('./theme-state.ts').ThemeSlice ? import('./theme-state.ts').ThemeSlice
   : T extends object ? ([keyof T] extends [never] ? Readonly<Record<string, Untyped>> : { -readonly [K in keyof T]: Widened<T[K]> })
@@ -45,7 +46,6 @@ interface SegmentMessage {
   role: string
   text: string
   key?: string
-  feedItemId?: string
   delivery?: 'pending' | 'not-sent'
   receipt?: Receipt | null
   at?: number
@@ -277,15 +277,6 @@ interface AgentApi extends DraftApi {
   declineSchedule: Invoke<'schedules:decline'>
   pauseSchedule: Invoke<'schedules:pause'>
   deleteSchedule: Invoke<'schedules:delete'>
-  listFeed: Invoke<'feed:list'>
-  continueFeed: Invoke<'feed:continue'>
-  markFeedSeen: Invoke<'feed:seen'>
-  listFeedSources: Invoke<'feed-sources:list'>
-  createFeedSource: Invoke<'feed-sources:create'>
-  updateFeedSource: Invoke<'feed-sources:update'>
-  pauseFeedSource: Invoke<'feed-sources:pause'>
-  deleteFeedSource: Invoke<'feed-sources:delete'>
-  runFeedSourceNow: Invoke<'feed-sources:run-now'>
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (...args: Args<'island:view'>) => void
   islandAskResult: (...args: Args<'island:ask-result'>) => void

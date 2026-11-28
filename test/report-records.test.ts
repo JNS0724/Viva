@@ -242,3 +242,112 @@ test('a recovered read keeps an opening report above the first user interjection
     assert.deepEqual(recoveredHistory.recordsOf(world.current.id).map(({ after }) => after), [1])
   } finally { reopened.close() }
 })
+
+test('crash recovery after native read on an unsaved blank foreground topic persists both the conversation and its report record, while still dropping deleted conversations', async (t) => {
+  const app = open(t)
+  const file = String(app.db.prepare('PRAGMA database_list').get()!.file)
+  const core1 = createEventCore({ app, publish: () => {}, now: () => 1_000 })
+  const history1 = journaled(openHistoryDb({ db: app.db, now: () => 1_000 }), 'history', ['save', 'addRecord', 'softDelete'], core1.apply)
+  const effects1 = createEffects({ db: app.db, apply: core1.apply, now: () => 1_000 })
+  const blank = history1.create({ sessionId: 's-blank', cwd: '/work' })
+  const scheduleReportId = reportId('schedule:s1', 's1@2026-11-06T08:00:00.000Z')
+  core1.apply('test.queued', {}, () => effects1.queue(REPORT, scheduleReportId, {
+    taskId: 'schedule:s1', runId: 's1@2026-11-06T08:00:00.000Z', title: '晨报', status: 'done', host: null, output: '今日摘要', by: 'schedule',
+  }))
+
+  let nativeRead = false
+  const runner1 = createTaskReports({
+    conversation: () => 'idle',
+    currentConversation: () => blank.id,
+    session: () => 's-blank',
+    unsavedConversation: (sessionId) => (sessionId === blank.sessionId && !history1.hasAnyConversation(blank.id) ? blank : null),
+    superseded: () => false,
+    holds: (effect) => effects1.holds(effect),
+    status: async () => 'none',
+    deliver: async () => 'none',
+    report: () => { nativeRead = true; return true },
+    amend: (effect, next) => effects1.amend(effect, next),
+    onRead: () => { throw new Error('should not run before crash') },
+  })
+  await runner1([effects1.get(REPORT, scheduleReportId)!])
+  assert.equal(nativeRead, true)
+  assert.equal(history1.get(blank.id), null, 'blank conversation was not saved before crash')
+
+  // Simulate process restart before viva-steer report_read reached the backend, while dsh already persisted the report.
+  const reopened = openAppDb({ file })
+  try {
+    const core2 = createEventCore({ app: reopened, publish: () => {}, now: () => 2_000 })
+    const history2 = journaled(openHistoryDb({ db: reopened.db, now: () => 2_000 }), 'history', ['save', 'addRecord', 'softDelete', 'purgeDeleted'], core2.apply)
+    const effects2 = createEffects({ db: reopened.db, apply: core2.apply, now: () => 2_000 })
+    const freshOnRestart = history2.create({ sessionId: 's-after-restart', cwd: '/work' })
+    const records2 = createReportRecords({
+      history: () => history2, effects: () => effects2, apply: core2.apply,
+      current: () => freshOnRestart, show: () => {}, now: () => 2_000,
+    })
+    const runner2 = createTaskReports({
+      conversation: () => 'idle',
+      currentConversation: () => freshOnRestart.id,
+      session: () => 's-after-restart',
+      unsavedConversation: () => null,
+      superseded: () => false,
+      holds: (effect) => effects2.holds(effect),
+      status: async (session) => (session === 's-blank' ? 'read' : 'none'),
+      deliver: async () => 'none',
+      report: () => false,
+      amend: (effect, next) => effects2.amend(effect, next),
+      onRead: (effect) => records2.read(effect),
+    })
+    await runner2([effects2.get(REPORT, scheduleReportId)!])
+
+    assert.equal(effects2.get(REPORT, scheduleReportId), null, 'effect settled')
+    assert.ok(history2.get(blank.id), 'blank conversation recovered and persisted')
+    assert.deepEqual(history2.recordsOf(blank.id).map((r) => [r.reportId, r.after]), [[scheduleReportId, 0]])
+    assert.match(history2.recordsOf(blank.id)[0]!.text, /今日摘要/)
+
+    // A conversation that WAS saved and then soft-deleted OR physically purged must still be dropped, never resurrected.
+    const saved = history2.save(history2.create({ sessionId: 's-deleted', cwd: '/work' }), [{ role: 'user', text: '旧对话' }]) as Conversation
+    const deletedReportId = reportId('schedule:s2', 's2@2026-11-06T09:00:00.000Z')
+    const purgedReportId = reportId('schedule:s3', 's3@2026-11-06T10:00:00.000Z')
+    core2.apply('test.queued', {}, () => {
+      effects2.queue(REPORT, deletedReportId, {
+        taskId: 'schedule:s2', runId: 's2@2026-11-06T09:00:00.000Z', title: '待删', status: 'done', host: null,
+        output: '不该复活', by: 'schedule', deliveredTo: 's-deleted', deliveredConversation: saved,
+      })
+      effects2.queue(REPORT, purgedReportId, {
+        taskId: 'schedule:s3', runId: 's3@2026-11-06T10:00:00.000Z', title: '已清理', status: 'done', host: null,
+        output: '物理删除后也不该复活', by: 'schedule', deliveredTo: 's-deleted', deliveredConversation: saved,
+      })
+    })
+    history2.softDelete(saved.id)
+    records2.read(effects2.get(REPORT, deletedReportId) as Effect<ReportPayload>)
+    assert.equal(effects2.get(REPORT, deletedReportId), null)
+    assert.equal(history2.hasRecord(deletedReportId), false, 'soft-deleted conversation is not resurrected')
+
+    history2.purgeDeleted({ olderThanMs: 0 })
+    assert.equal(history2.get(saved.id), null)
+    records2.read(effects2.get(REPORT, purgedReportId) as Effect<ReportPayload>)
+    assert.equal(effects2.get(REPORT, purgedReportId), null)
+    assert.equal(history2.get(saved.id), null, 'physically purged conversation is not resurrected')
+    assert.equal(history2.hasRecord(purgedReportId), false, 'no orphan record written for purged conversation')
+
+    // Target snapshotted while blank, then saved by a user message and detached from its native session (or sharing a
+    // sessionId with an older segment), still records on the exact snapshotted conversation rather than dropping or misrouting.
+    const olderSameSession = history2.save(history2.create({ sessionId: 's-shared', cwd: '/work' }), [{ role: 'user', text: '旧分段' }]) as Conversation
+    const blankThenSaved = history2.create({ sessionId: 's-shared', cwd: '/work' })
+    const detachedReportId = reportId('schedule:s4', 's4@2026-11-06T11:00:00.000Z')
+    core2.apply('test.queued', {}, () => {
+      effects2.queue(REPORT, detachedReportId, {
+        taskId: 'schedule:s4', runId: 's4@2026-11-06T11:00:00.000Z', title: '解绑后回执', status: 'done', host: null,
+        output: '必须落在目标分段', by: 'schedule', deliveredTo: 's-shared', deliveredConversation: blankThenSaved,
+      })
+    })
+    history2.save(blankThenSaved, [{ role: 'user', text: '用户插话落库' }])
+    history2.detachNativeSession(blankThenSaved.id, 's-shared')
+    records2.read(effects2.get(REPORT, detachedReportId) as Effect<ReportPayload>)
+    assert.equal(effects2.get(REPORT, detachedReportId), null, 'effect settled')
+    assert.deepEqual(history2.recordsOf(blankThenSaved.id).map((r) => [r.reportId, r.after]), [[detachedReportId, 1]], 'record kept on snapshotted conversation even after session_id detached')
+    assert.deepEqual(history2.recordsOf(olderSameSession.id), [], 'not misrouted to older segment sharing native session')
+  } finally {
+    reopened.close()
+  }
+})

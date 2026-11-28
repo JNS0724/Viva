@@ -60,6 +60,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   publishCarry?: (target: Conversation, carry: HistoryCarry) => Promise<boolean>,
   recordSession?: (id: string | null) => void | Promise<void>,
   deleteHistory?: (id: string) => Promise<void>,
+  retainTombstones?: () => Iterable<string>,
 }) {
   const { db, dshHome, traceDb, current, agentInfo, chooseExportPath } = deps
   const selectSession = deps.selectSession
@@ -153,6 +154,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (isBusy()) throw new Error(BUSY)
     const found = db.get(assertId(id))
     if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
+    if (found.conversation.id === 'legacy-feed-archive') throw new Error(GONE)
     if (typeof dir !== 'string' || !folderExists(dir)) throw new Error(t("workspace.missing.choose"))
     const topicId = db.topicOf(found.conversation.id)
     const part = topicId ? db.read(`t:${topicId}`, { from: Number.MAX_SAFE_INTEGER, count: CARRY_TURNS * 2 }) : null
@@ -194,7 +196,12 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:rename', (id, title) => db.rename(id, title))
   handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))
   handle('history:delete', (id) => {
-    const purge = () => { schedule(() => db.purgeDeleted({ olderThanMs: UNDO_WINDOW_MS }), UNDO_WINDOW_MS + PURGE_SLACK_MS) }
+    const purge = () => {
+      schedule(
+        () => db.purgeDeleted({ olderThanMs: UNDO_WINDOW_MS, retainIds: deps.retainTombstones?.() }),
+        UNDO_WINDOW_MS + PURGE_SLACK_MS,
+      )
+    }
     if (deps.deleteHistory) return deps.deleteHistory(assertId(id)).then(purge)
     db.softDelete(id)
     purge()

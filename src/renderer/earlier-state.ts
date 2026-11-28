@@ -39,7 +39,6 @@ export function withCurrentKept(state: State, at = Date.now()): State['earlier']
     messages: state.messages.map((message: ThreadMessage, seq: number) => ({
       seq: offset + seq, role: message.role, text: message.text, receipt: message.receipt ?? null, at, ...(message.images ? { images: message.images } : {}),
       ...(message.streamKey ? { key: message.streamKey } : {}),
-      ...(message.feedItemId ? { feedItemId: message.feedItemId } : {}),
     })),
     records: state.records,
   }

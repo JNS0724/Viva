@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { harness, settle } from './fixtures/conversation-actions.ts'
-import { historyMessages } from '../src/renderer/selectors.ts'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -67,40 +66,6 @@ test('a rejected replay cannot mark an already delivered source not-sent', async
   await settle()
   assert.notEqual(h.state().messages[0]?.failed, true)
 })
-
-test('an Updates draft awaits backend admission before clearing or entering saved history', async () => {
-  const pending = deferred<void>()
-  const sent: string[] = []
-  const accepted: boolean[] = []
-  const h = harness({ prompt: (_words, _images, _operation, resultId) => { sent.push(resultId!); return pending.promise } })
-  assert.equal(h.actions.ask('旧结果', { feedItemId: 'feed-1', admitted: ok => accepted.push(ok) }), true)
-  assert.deepEqual(historyMessages(h.state()), [])
-  pending.reject(new Error('已失效'))
-  await settle()
-  assert.deepEqual([sent, accepted, h.state().messages], [['feed-1'], [false], []])
-  assert.match(h.state().error ?? '', /已失效/)
-})
-
-test('an Updates send settles its pending message when the kept conversation reopens in a fresh DSH session', async () => {
-  for (const accepted of [true, false]) {
-    const receipt = deferred<void>()
-    const notifications: boolean[] = []
-    const h = harness({ prompt: () => receipt.promise })
-    const info = { ...h.state().info, conversationId: 'topic', sessionId: 'old' }
-    h.dispatch({ type: 'ready', info })
-    assert.equal(h.actions.ask('定时结果', { feedItemId: 'feed-1', admitted: ok => notifications.push(ok) }), true)
-    h.dispatch({ type: 'ready', info: { ...info, sessionId: 'fresh' } })
-    assert.deepEqual(historyMessages(h.state()), [])
-    if (accepted) receipt.resolve(undefined)
-    else receipt.reject(new Error('结果已失效'))
-    await settle()
-    assert.deepEqual(notifications, [accepted])
-    assert.equal(h.state().messages.length, accepted ? 1 : 0)
-    assert.deepEqual(historyMessages(h.state()).map(message => message.text), accepted ? ['定时结果'] : [])
-    assert.equal(h.state().phase, accepted ? 'working' : 'error')
-  }
-})
-
 
 test('directory, rewind and settings transitions refuse new questions and interjections without adding unsent words', () => {
   for (const type of ['workdir_switching', 'rewind_busy', 'settings_busy'] as const) {

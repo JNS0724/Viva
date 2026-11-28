@@ -13,11 +13,11 @@ import { closeHub, hubPage, initialHub, oneHubPage } from './hub-state.ts'
 import { initialModels, MODEL_ACTIONS } from './model-state.ts'
 import { initialPlugins, PLUGIN_ACTIONS } from './plugins-state.ts'
 import { initialRewind, rewindActions } from './rewind-state.ts'
+import { initialSchedules, SCHEDULES_ACTIONS } from './schedules-state.ts'
 import { initialTasks, routeToTask, taskActions, toldByRecords } from './tasks-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
 import { WAITS_ACTIONS } from './waits-state.ts'
 import { PROPOSAL_ACTIONS } from './proposal-state.ts'
-import { FEED_ACTIONS, initialFeed } from './feed-state.ts'
 import { CAPABILITY_ACTIONS, initialCapabilities } from './capabilities-state.ts'
 import { initialImportFlow, IMPORT_FLOW_ACTIONS } from './import-flow-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
@@ -84,13 +84,13 @@ export const initialState = Object.freeze({
   resume: initialResume,
   /** Turns that went on in the background, and the move that can still be undone (tasks-state.js). */
   tasks: initialTasks,
+  /** Saved conversational schedules shown on the 定时任务 hub sub-page (schedules-state.ts). */
+  schedules: initialSchedules,
   /** Task cards started before any foreground message, anchored at the start of this topic only. */
   taskCards: [] as string[],
   files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
-  /** 动态: its items and the schedules (feed-state.ts). */
-  feed: initialFeed,
   /** Cards for the schedules the model proposed in this conversation (proposal-state.ts ProposalCard). */
   proposals: [] as Untyped[],
   models: initialModels,
@@ -177,7 +177,7 @@ export function trimConversationWindow(state: State): State {
   if (next.messages.length > CONVERSATION_WINDOW_LIMIT) {
     const drop = next.messages.length - CONVERSATION_WINDOW_MESSAGES
     let safe = 0
-    while (safe < drop && !next.messages[safe]!.open && !next.messages[safe]!.pending) safe += 1
+    while (safe < drop && !next.messages[safe]!.open) safe += 1
     if (safe > 0) {
       const dropped = next.messages.slice(0, safe)
       const carriedCards = dropped.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])]).filter((id): id is string => Boolean(id))
@@ -188,10 +188,15 @@ export function trimConversationWindow(state: State): State {
           after: card.after === undefined ? undefined : Math.max(0, card.after - safe),
         }))
         : next.proposals
+      const nextOffset = (next.historyOffset ?? 0) + safe
+      const records = next.records.some(record => record.after < nextOffset)
+        ? next.records.filter(record => record.after >= nextOffset)
+        : next.records
       next = {
         ...next,
-        historyOffset: (next.historyOffset ?? 0) + safe,
+        historyOffset: nextOffset,
         messages: next.messages.slice(safe),
+        records,
         taskCards,
         proposals,
       }
@@ -316,12 +321,11 @@ const ACTION_HANDLERS: ActionHandlers = {
     history: state.history,
     earlier: withCurrentKept(state),
     workDir: state.workDir,
-    // Background tasks go on whatever the conversation on screen does.
+    // Background tasks and saved schedules go on whatever the conversation on screen does.
     tasks: state.tasks,
+    schedules: { ...state.schedules, open: false },
     memory: state.memory,
     extensions: state.extensions,
-    // 动态 is the app's, not the conversation's.
-    feed: state.feed,
     toast: state.toast,
   }),
 
@@ -411,6 +415,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...REPORT_ACTIONS,
   ...rewindActions((state, action) => ACTION_HANDLERS.new_session!(state, action)),
   ...taskActions(),
+  ...SCHEDULES_ACTIONS,
   ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
   ...MEMORY_FILE_ACTIONS,
@@ -422,7 +427,6 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...SECRET_ACTIONS,
   ...WAITS_ACTIONS,
   ...PROPOSAL_ACTIONS,
-  ...FEED_ACTIONS,
   ...CAPABILITY_ACTIONS,
   ...IMPORT_FLOW_ACTIONS,
 } satisfies ActionHandlers

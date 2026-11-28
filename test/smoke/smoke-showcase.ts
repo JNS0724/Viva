@@ -79,12 +79,7 @@ async function seedWorkspace(cwd: string) {
   await fs.writeFile(path.join(cwd, 'drafts', '正式稿.md'), '# 正式稿\n')
 }
 
-/** What was there before the demo: something a schedule brought into 动态 overnight, for 今天. */
-async function seedFeed(hooks: SmokeHooks) {
-  await hooks.seedShowcase()
-}
-
-/** A schedule's whole way, recorded: asked, proposed, kept; then 动态, where what a schedule brought is taken up. */
+/** A schedule's whole way, recorded: asked, proposed, kept; then listed on 后台 under 接下来. */
 async function demo(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   const frames = path.join(outDir, 'frames')
   await fs.rm(frames, { recursive: true, force: true })
@@ -103,18 +98,13 @@ async function demo(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   await run(win, clickText('#thread .fu-card', '定时'))
   await until(win, q('#thread .fu-card.fu-done'), 'kept')
   await wait(PAUSE_MS * 1.5)
-  await run(win, `${q('#open-feed')}.click()`)
-  await until(win, `[...document.querySelectorAll('#feed-page .fu-row[data-status="active"] .tp-name')].some((el) => el.textContent === '周报')`, 'the schedule in 动态, coming up')
-  await wait(PAUSE_MS)
-  await run(win, `[...document.querySelectorAll('#feed-page .fu-row[data-status="new"]')][0].click()`)
-  await until(win, q('#feed-page .fu-draft'), 'what a schedule brought')
-  await wait(PAUSE_MS * 1.5)
-  await capture(win, outDir, 'feed-item')
-  await run(win, clickText('#feed-page .fu-main', '在对话里继续'))
-  await until(win, `document.getElementById('composer-input').value.startsWith('来自动态')`, '在对话里继续 puts it in the input')
+  if (hooks.openSchedulesPage) await hooks.openSchedulesPage()
+  else await run(win, `if (document.getElementById('hub').dataset.open !== 'true') document.getElementById('open-profile').click(); document.querySelector('.hub-nav[data-page="schedules"]').click()`)
+  await until(win, `[...document.querySelectorAll('#schedules-page .fu-row[data-status="active"] .tp-name')].some((el) => el.textContent === '周报')`, 'the schedule on 定时任务, coming up')
+  await run(win, `[...document.querySelectorAll('#schedules-page .fu-row[data-status="active"]')].find((el) => el.textContent.includes('周报')).click()`)
+  await until(win, q('#schedules-page .tp-main[data-schedule]'), 'the schedule detail on 定时任务')
   await wait(PAUSE_MS * 2)
   await rec.stop()
-  await run(win, setInput(''))
 }
 
 async function chatScenes(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
@@ -171,8 +161,6 @@ export async function runShowcase(win: SmokeAppWindow, outDir: string, hooks: Sm
   await seedWorkspace(hooks.cwd)
   await wait(UI_WAIT_MS)
   await run(win, clickText('#home', '以后再说'))
-  await seedFeed(hooks)
-  await until(win, q('#home .home-today'), 'the 今天 card on the home page')
   await wait(PAUSE_MS)
   await capture(win, outDir, 'home')
   await demo(win, outDir, hooks)

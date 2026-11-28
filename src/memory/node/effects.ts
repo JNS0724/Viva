@@ -77,7 +77,9 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const due = db.prepare(`SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE due_at <= ? AND ${registered} ORDER BY due_at, rowid`)
   const next = db.prepare(`SELECT MIN(due_at) AS at FROM effects WHERE due_at > ? AND ${registered}`)
   const all = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects ORDER BY rowid')
+  const byKindStmt = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE kind = ? ORDER BY rowid')
   const holding = db.prepare('SELECT 1 AS held FROM effects WHERE kind = ? AND key = ? AND generation = ?')
+  const anyOfKind = db.prepare('SELECT 1 AS held FROM effects WHERE kind = ? LIMIT 1')
   const one = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE kind = ? AND key = ?')
   const timing = db.prepare('SELECT due_at AS dueAt, attempts, generation FROM effects WHERE kind = ? AND key = ?')
   const rewrite = db.prepare('UPDATE effects SET payload = ? WHERE kind = ? AND key = ? AND generation = ?')
@@ -274,11 +276,13 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     finish,
     finishGeneration,
     holds,
+    hasKind: (kind: string): boolean => Boolean(anyOfKind.get(kind)),
     get,
     timing: (kind: string, key: string) => timing.get(kind, key) as { dueAt: number, attempts: number, generation: number } | undefined,
     amend,
     cancelStarting,
     list,
+    listByKind: <P = unknown>(kind: string): Effect<P>[] => (byKindStmt.all(kind) as Row[]).map(effectOf) as Effect<P>[],
     wake,
     close() { closed = true; if (timer !== null) cancelTimer(timer); timer = null },
     /** How the effects of `kind` are done. */

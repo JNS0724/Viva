@@ -22,6 +22,12 @@ export interface RecordHistory {
   bySession: (sessionId: string) => Conversation | null
   /** Whether a conversation is stored (a blank topic is not, till its first save). */
   get: (id: string) => unknown
+  /** Fast indexed check for an active stored conversation without loading its messages or report records. */
+  hasConversation?: (id: string) => boolean
+  /** Lightweight metadata lookup for an active stored conversation without loading messages or report records. */
+  conversationMeta?: (id: string) => Conversation | null
+  /** Whether a conversation row ever existed in `conversations`, including soft-deleted or purged ones. */
+  hasAnyConversation?: (id: string) => boolean
   save: (conversation: Conversation, messages: readonly never[], options: { keepEmpty: boolean }) => unknown
   addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number }) => boolean
 }
@@ -53,13 +59,30 @@ export interface ReportRecordsDeps {
 }
 
 export function createReportRecords({ history, effects, apply, current, show, beforeRecord, now = Date.now }: ReportRecordsDeps) {
-  /** The conversation of the session a report went to: the one on screen first (it may not be stored yet). */
+  const isStored = (store: RecordHistory, id: string): boolean =>
+    store.hasConversation ? store.hasConversation(id) : Boolean(store.get(id))
+
+  /** The conversation of the session a report went to: exact snapshotted target first (alive, unsaved, or deleted), then live session, then saved session lookup. */
   function targetOf(effect: Effect<ReportPayload>): Conversation | null {
     const session = effect.payload.deliveredTo
     if (!session) return null
+    const store = history()
     const here = current()
-    if (here.sessionId === session) return here
-    return history()?.bySession(session) ?? null
+    const snap = effect.payload.deliveredConversation
+    if (snap && snap.sessionId === session) {
+      if (store && isStored(store, snap.id)) {
+        return here.id === snap.id ? here : (store.conversationMeta?.(snap.id) ?? snap)
+      }
+      if (store?.hasAnyConversation?.(snap.id)) {
+        return null
+      }
+      return here.id === snap.id ? here : snap
+    }
+    if (here.sessionId === session) {
+      if (store && !isStored(store, here.id) && store.hasAnyConversation?.(here.id)) return null
+      return here
+    }
+    return store?.bySession(session) ?? null
   }
 
   /** The time a report's record says: when it was first drawn, kept with the report so the kept record says the same. */
@@ -120,7 +143,7 @@ export function createReportRecords({ history, effects, apply, current, show, be
     const kept = apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
       if (!queue.finishGeneration(effect)) return false
       // A blank topic on screen is stored with it, so the record has a conversation to come back with after a restart.
-      if (!store.get(target.id)) store.save(target, [], { keepEmpty: true })
+      if (!isStored(store, target.id)) store.save(target, [], { keepEmpty: true })
       store.addRecord({
         conversationId: target.id, reportId: effect.key, at, text: recordedNote(effect.payload),
         beforeSource: effect.payload.beforeSource, ...(anchored !== undefined ? { after: anchored } : {}),

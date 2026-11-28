@@ -97,7 +97,7 @@ export type AutomaticRecallResult =
 
 ### 2.6 Modules and Acceptance Tests
 
-- **Affected modules:** [memory-context.ts](../src/memory/core/memory-context.ts), [memory-runtime.ts](../src/memory/core/memory-runtime.ts), [memory-file-retrieval.ts](../src/memory/core/memory-file-retrieval.ts), [acp-bridge.ts](../src/backend/acp-bridge.ts), [compose.ts](../src/backend/compose.ts), [feed-continuation.ts](../src/backend/feed-continuation.ts), [adapter.ts](../plugins/memory/lib/adapter.ts), plus `src/memory/node/owner-worker.ts`, `src/backend/desktop-memory-owner.ts`, and `src/memory/contracts/memory-daily-defaults.ts` on `main`.
+- **Affected modules:** [memory-context.ts](../src/memory/core/memory-context.ts), [memory-runtime.ts](../src/memory/core/memory-runtime.ts), [memory-file-retrieval.ts](../src/memory/core/memory-file-retrieval.ts), [acp-bridge.ts](../src/backend/acp-bridge.ts), [compose.ts](../src/backend/compose.ts), `src/backend/feed-continuation.ts` (since removed), [adapter.ts](../plugins/memory/lib/adapter.ts), plus `src/memory/node/owner-worker.ts`, `src/backend/desktop-memory-owner.ts`, and `src/memory/contracts/memory-daily-defaults.ts` on `main`.
 - **Required unit tests and benchmarks:**
   1. Real-DSH sequence of `hit` → tool continuation → `empty` next turn: continuation retains the hit; next turn adds neither duplicate profile nor clearing reminder and never rewrites historical nodes;
   2. Late prefetch result from an old session after rebinding is ignored by the new session; multi-source replays bind or fall back cleanly;

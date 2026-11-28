@@ -52,8 +52,6 @@ export function createPageElements(page: Document, platform: string) {
     historyList: byId('history-list'),
     toast: byId('toast-root'),
     openProfile: byId('open-profile'),
-    openFeed: byId('open-feed'),
-    feedCount: byId('feed-count'),
     profile: byId('profile-root'),
     /** 搜索 · 关于你 · 设置, one page under the title bar (view/hub.js). */
     hub: byId('hub'),
@@ -63,7 +61,8 @@ export function createPageElements(page: Document, platform: string) {
     hubSearchKey: byId('hub-search-key'),
     /** 后台: every background task and the one picked (view/tasks-page.js). */
     tasksPage: byId('tasks-page'),
-    feedPage: byId('feed-page'),
+    /** 定时任务: saved schedules and the one picked (view/schedules-page.ts). */
+    schedulesPage: byId('schedules-page'),
     main: byId('main'),
   }
   /** The page's elements, and what keeps the thread scrolled to the latest (view/scroll-follow.ts). */

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Effect, Outcome } from '../src/backend/effects.ts'
 import type { ReportState } from '../src/backend/steer-channel.ts'
-import { createTaskReports, noteFor, recordedNote, REPORT_OUTPUT_HEAD_CHARS, REPORT_OUTPUT_TAIL_CHARS, reportId, TYPING_DEFER_MS, windowReportOutput, type ReportPayload } from '../src/backend/task-reports.ts'
+import { boundScheduleRecordOutput, createTaskReports, MAX_REPORTS_PER_TURN, MAX_STEER_REPORTS_PER_TURN, MAX_STEER_TURN_CHARS, MAX_TURN_NOTE_CHARS, modelSafeScheduleFailure, noteFor, recordedNote, REPORT_OUTPUT_HEAD_CHARS, REPORT_OUTPUT_TAIL_CHARS, reportId, SCHEDULE_RECORD_MAX_CHARS, TYPING_DEFER_MS, windowReportOutput, type ReportPayload } from '../src/backend/task-reports.ts'
 import { earlierRows, historyMessages } from '../src/renderer/selectors.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { recordsAt } from '../src/renderer/report-state.ts'
@@ -122,16 +122,17 @@ type State = 'idle' | 'busy' | 'away'
 function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(), known = {} as Record<string, ReportState>,
   steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true,
   opening = (_id: string): boolean => false,
-  typing = false, now = 0 } = {}) {
+  typing = false, now = 0, turnId = 'turn-1' as string | null } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
   const asked: Array<[string, string, string]> = []
   const kept: ReportPayload[] = []
   const reads: Array<[string, string | null | undefined]> = []
   const wakes: number[] = []
-  const world = { here, session: 's1' as string | null, released: new Set<string>(), atWork, amends: true, state, typing, now }
+  const world = { here, session: 's1' as string | null, released: new Set<string>(), atWork, amends: true, state, typing, now, turnId }
   const run = createTaskReports({
     conversation: () => world.state,
+    activeTurnId: () => (world.state === 'busy' ? world.turnId : null),
     currentConversation: () => world.here,
     session: () => world.session,
     superseded: (taskId) => world.atWork.has(taskId),
@@ -150,7 +151,7 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
-  return { outcomes, turns, delivered, world, asked, kept, reads, wakes }
+  return { outcomes, run, turns, delivered, world, asked, kept, reads, wakes }
 }
 
 test('a second pass cannot steer an opening report into its own turn before the native write', async () => {
@@ -514,4 +515,324 @@ test('going back, a path opened, back onto a path: the window takes the records 
   const opened = reduce(rewound, { type: 'fold_opened', id: 'c1', messages: [{ seq: 0, role: 'assistant', text: '改了' }], records: [{ reportId: 'task-0002:run-1', at, text: inTurnText, after: 1 }] })
   assert.deepEqual(opened.rewind.openRecords.c1.map((record: ReportRecord) => record.reportId), ['task-0002:run-1'])
   assert.deepEqual(reduce(opened, { type: 'fold_closed', id: 'c1' }).rewind.openRecords, {})
+})
+
+test('a large backlog of schedule reports opens bounded batches per idle turn and only marks the sent batch as deliveredTo', async () => {
+  const { outcomes, turns, kept } = setup({ state: 'idle' })
+  const backlog = Array.from({ length: 25 }, (_, i) => effect({
+    taskId: `schedule:s-${i}`,
+    runId: `s-${i}@2026-11-06T08:00:00.000Z`,
+    title: `定时 #${i}`,
+    status: 'done',
+    host: null,
+    output: '中'.repeat(20_000),
+    token: `${String(i).padStart(32, '0')}`,
+    by: 'schedule',
+  }))
+  const result = await outcomes(backlog)
+  assert.equal(turns.length, 1)
+  assert.ok(turns[0]!.length <= MAX_TURN_NOTE_CHARS, `turn note (${turns[0]!.length}) stays within ${MAX_TURN_NOTE_CHARS}`)
+  assert.ok(kept.length > 0 && kept.length <= MAX_REPORTS_PER_TURN, `sent batch (${kept.length}) stays within ${MAX_REPORTS_PER_TURN}`)
+  assert.ok(kept.every((item) => item.deliveredTo === 's1' && item.via === 'turn'))
+  assert.ok(backlog.every((item) => result[item.key] === 'wait'))
+})
+
+test('recordedNote and shownNote preserve task output lines that start with 回报凭据： while omitting the system token', () => {
+  const secretToken = 'f'.repeat(32)
+  const outputWithPrefix = '第一行\n回报凭据：这是业务正文不是系统令牌\n第三行'
+  const rawPayload: ReportPayload = {
+    taskId: 'schedule:s1',
+    runId: 's1@2026-11-06T08:00:00.000Z',
+    title: '日报',
+    status: 'done',
+    host: null,
+    output: outputWithPrefix,
+    token: secretToken,
+    by: 'schedule',
+  }
+  const text = recordedNote(rawPayload)
+  assert.doesNotMatch(text, new RegExp(secretToken))
+  assert.match(text, /回报凭据：这是业务正文不是系统令牌/)
+
+  const rawNote = noteFor([{
+    taskId: rawPayload.taskId,
+    title: rawPayload.title,
+    status: 'done',
+    host: null,
+    output: outputWithPrefix,
+    token: secretToken,
+    by: 'schedule',
+  }])
+  assert.doesNotMatch(shownNote(rawNote), new RegExp(secretToken))
+  assert.match(shownNote(rawNote), /回报凭据：这是业务正文不是系统令牌/)
+})
+
+test('busy foreground turns enforce a cumulative steer budget across repeated wakes, and titles with corner brackets parse cleanly', async () => {
+  const known: Record<string, ReportState> = {}
+  const harness = setup({ state: 'busy', known })
+  const backlog = Array.from({ length: 25 }, (_, i) => effect({
+    taskId: `schedule:s-${i}`,
+    runId: `s-${i}@2026-11-06T08:00:00.000Z`,
+    title: `整理「项目 ${i}」周报`,
+    status: 'done',
+    host: null,
+    output: '忙'.repeat(20_000),
+    token: `${String(i).padStart(32, '0')}`,
+    by: 'schedule',
+  }))
+  await harness.outcomes(backlog)
+  const firstPassCount = harness.delivered.length
+  const firstPassChars = harness.delivered.reduce((sum, [, , text]) => sum + text.length, 0)
+  assert.ok(firstPassCount > 0 && firstPassCount <= MAX_STEER_REPORTS_PER_TURN)
+  assert.ok(firstPassChars <= MAX_STEER_TURN_CHARS, `steered chars (${firstPassChars}) stays within ${MAX_STEER_TURN_CHARS}`)
+
+  // Mark the first-pass reports as pending/read and wake again while still in the same busy turn: no extra reports enter.
+  for (let i = 0; i < firstPassCount; i++) {
+    known[`s1 ${backlog[i]!.key}`] = 'pending'
+    backlog[i] = { ...backlog[i]!, payload: { ...(backlog[i]!.payload as ReportPayload), deliveredTo: 's1', via: 'steer' } }
+  }
+  await harness.outcomes(backlog)
+  assert.equal(harness.delivered.length, firstPassCount, 'second wake in the same busy turn does not steer remaining backlog')
+
+  // Once the turn finishes and becomes idle, the budget resets and remaining reports go out in bounded turns.
+  harness.world.state = 'idle'
+  await harness.outcomes(backlog.slice(firstPassCount))
+  assert.equal(harness.turns.length, 1)
+
+  const parsed = reportRecordOf(harness.delivered[0]![2])
+  assert.deepEqual(parsed?.tasks, [{ title: '整理「项目 0」周报', taskId: 'schedule:s-0' }])
+})
+
+test('foreground turn switch during async status check does not steer under stale turn A or leak extra budget into turn B, and >180k outputs keep head+tail', async () => {
+  let turnSwitchOnStatus = false
+  const harness = setup({
+    state: 'busy',
+    turnId: 'turn-A',
+    whileAsking: () => {
+      if (turnSwitchOnStatus) harness.world.turnId = 'turn-B'
+    },
+  })
+  const reports = Array.from({ length: 6 }, (_, i) => effect({
+    taskId: `schedule:t-${i}`,
+    runId: `t-${i}@2026-11-06T08:00:00.000Z`,
+    title: `任务 ${i}`,
+    status: 'done',
+    host: null,
+    output: '文'.repeat(8_000),
+    token: `${String(i + 10).padStart(32, '0')}`,
+    by: 'schedule',
+  }))
+
+  turnSwitchOnStatus = true
+  const firstOutcomes = await harness.outcomes([reports[0]!])
+  assert.equal(harness.delivered.length, 0, 'pass bound to turn-A holds back when turn-B starts mid-status')
+  assert.equal(firstOutcomes[reports[0]!.key], 'wait')
+
+  turnSwitchOnStatus = false
+  await harness.outcomes(reports)
+  const turnBChars = harness.delivered.reduce((sum, [, , text]) => sum + text.length, 0)
+  assert.ok(harness.delivered.length <= MAX_STEER_REPORTS_PER_TURN, `turn-B received ${harness.delivered.length} <= ${MAX_STEER_REPORTS_PER_TURN}`)
+  assert.ok(turnBChars <= MAX_STEER_TURN_CHARS, `turn-B chars ${turnBChars} <= ${MAX_STEER_TURN_CHARS}`)
+
+  const over180k = `${'首'.repeat(20_000)}MID_HEAD_MARKER${'首'.repeat(SCHEDULE_RECORD_MAX_CHARS)}FINAL_TAIL_MARKER`
+  const bounded = boundScheduleRecordOutput(over180k)
+  assert.equal(bounded.truncated, true)
+  assert.match(bounded.text, /MID_HEAD_MARKER/)
+  assert.match(bounded.text, /FINAL_TAIL_MARKER/, 'head+tail bound preserves trailing conclusions even past 180k')
+  const overPayload: ReportPayload = {
+    taskId: 'schedule:s-over',
+    runId: 's-over@2026-11-06T08:00:00.000Z',
+    title: '超长归档',
+    status: 'done',
+    host: null,
+    output: bounded.text,
+    outputTruncated: true,
+    by: 'schedule',
+  }
+  assert.match(recordedNote(overPayload), /MID_HEAD_MARKER/, 'recordedNote keeps full 180k archive without re-windowing to 15k')
+  assert.match(recordedNote(overPayload), /FINAL_TAIL_MARKER/)
+  assert.doesNotMatch(noteFor([{ ...overPayload }]), /完整正文已保存在/, 'model note accurately states head+tail archive when >180k')
+
+  // Fast tag scanning in `reportRecordOf` and `shownNote` skips 180k `<task-output>` without regex backtracking or copying.
+  const fullRecordText = recordedNote({
+    ...overPayload,
+    output: `${bounded.text}\n回报凭据：user_output_not_secret`,
+    via: 'steer',
+  })
+  const started = performance.now()
+  for (let i = 0; i < 200; i++) {
+    const parsedRecord = reportRecordOf(fullRecordText)
+    assert.equal(parsedRecord?.tasks[0]?.taskId, 'schedule:s-over')
+    assert.equal(parsedRecord?.inTurn, true)
+  }
+  const elapsedMs = performance.now() - started
+  assert.ok(elapsedMs < 200, `200 reportRecordOf calls on 180k record took ${elapsedMs.toFixed(1)}ms (< 200ms)`)
+  assert.match(shownNote(`${fullRecordText}\n回报凭据：secret_outside`), /回报凭据：user_output_not_secret/)
+  assert.doesNotMatch(shownNote(`${fullRecordText}\n回报凭据：secret_outside`), /secret_outside/)
+
+  // A 50-item unsent backlog queries status() only up to the turn's batch cap rather than serially probing all 50 items.
+  let statusCalls = 0
+  const cappedHarness = setup({
+    state: 'idle',
+    whileAsking: () => { statusCalls += 1 },
+  })
+  const fiftyReports = Array.from({ length: 50 }, (_, i) => effect({
+    taskId: `schedule:b-${i}`,
+    runId: `b-${i}@2026-11-06T08:00:00.000Z`,
+    title: `积压 ${i}`,
+    status: 'done',
+    host: null,
+    output: '简短结果',
+    token: `${String(i + 100).padStart(32, '0')}`,
+    by: 'schedule',
+  }))
+  await cappedHarness.outcomes(fiftyReports)
+  assert.equal(statusCalls, 10, 'only the first MAX_REPORTS_PER_TURN unsent items probe native status in one idle pass')
+  assert.equal(cappedHarness.turns.length, 1)
+
+  // Even when status() returns unavailable (e.g. slow/down channel), unsent backlog probes remain capped at turnCap.
+  let unavailableProbes = 0
+  const downKnown: Record<string, ReportState> = Object.fromEntries(fiftyReports.map((item) => [item.key, 'unavailable' as const]))
+  const downHarness = setup({
+    state: 'idle',
+    known: downKnown,
+    whileAsking: () => { unavailableProbes += 1 },
+  })
+  await downHarness.outcomes(fiftyReports)
+  assert.equal(unavailableProbes, 10, 'unavailable status probes also stop at MAX_REPORTS_PER_TURN')
+
+  // 21 deliveredTo reports where the first 20 are pending and the 21st is read: pass 1 probes 20 and schedules one
+  // continuation wake; pass 2 probes the 21st item (settling its read receipt) and stops waking without spinning.
+  const mixedKnown: Record<string, ReportState> = {}
+  const twentyOneDelivered = Array.from({ length: 21 }, (_, i) => {
+    const item = effect({
+      taskId: `schedule:d-${i}`,
+      runId: `d-${i}@2026-11-06T08:00:00.000Z`,
+      title: `待确认 ${i}`,
+      status: 'done',
+      host: null,
+      output: '结果',
+      token: `${String(i + 200).padStart(32, '0')}`,
+      by: 'schedule',
+      deliveredTo: 's1',
+      via: 'steer',
+    })
+    mixedKnown[`s1 ${item.key}`] = i === 20 ? 'read' : 'pending'
+    return item
+  })
+  const sweepHarness = setup({ state: 'idle', known: mixedKnown })
+  await sweepHarness.outcomes(twentyOneDelivered)
+  assert.equal(sweepHarness.asked.length, 20, 'pass 1 caps at MAX_STATUS_PROBES_PER_PASS (20)')
+  assert.equal(sweepHarness.reads.length, 0)
+  assert.equal(sweepHarness.wakes.length, 1, 'schedules a continuation slice for the 21st item')
+
+  await sweepHarness.outcomes(twentyOneDelivered)
+  assert.equal(sweepHarness.asked.length, 40, 'pass 2 prioritizes the unprobed 21st item first and stays within 20 probes per pass')
+  assert.equal(sweepHarness.asked[20]?.[1], twentyOneDelivered[20]!.key, '21st item is probed first on continuation pass')
+  assert.deepEqual(sweepHarness.reads.map(([key]) => key), [twentyOneDelivered[20]!.key], '21st read item settles without head-of-line starvation')
+  assert.equal(sweepHarness.wakes.length, 1, 'sweep completes without scheduling an infinite wake loop')
+
+  // State change mid-sweep (typing stops after pass 1 deferred r0 while r1..r19 settled and r20 waited for slice 2)
+  // immediately opens r0's turn on the external wake without stranding r0 behind seenInSweep.
+  const midSweepKnown: Record<string, ReportState> = {}
+  const midSweepItems = Array.from({ length: 21 }, (_, i) => {
+    const item = effect({
+      taskId: `schedule:m-${i}`,
+      runId: `m-${i}@2026-11-06T08:00:00.000Z`,
+      title: `中途停打字 ${i}`,
+      status: 'done',
+      host: null,
+      output: '结果',
+      token: `${String(i + 300).padStart(32, '0')}`,
+      by: 'schedule',
+      ...(i > 0 ? { deliveredTo: 's1', via: 'turn' as const } : {}),
+    })
+    midSweepKnown[`s1 ${item.key}`] = i === 0 ? 'none' : 'read'
+    return item
+  })
+  const midHarness = setup({ state: 'idle', typing: true, known: midSweepKnown })
+  await midHarness.outcomes(midSweepItems)
+  assert.equal(midHarness.turns.length, 0, 'r0 deferred while typing')
+  assert.equal(midHarness.reads.length, 19, 'r1..r19 settled on pass 1')
+
+  midHarness.world.typing = false
+  await midHarness.outcomes([midSweepItems[0]!, midSweepItems[20]!])
+  assert.equal(midHarness.reads.length, 20, 'r20 settled on pass 2')
+  assert.equal(midHarness.turns.length, 1, 'r0 immediately opens its turn when typing stops mid-sweep')
+
+  // External wake + report_dropped during a multi-slice sweep (40 deliveredTo reports: 0..18 read, 19 pending on pass 1,
+  // 20..39 read; then report_dropped(19) + onExternalWake() preempts the 50ms slice timer): pass 2 probes 19 first,
+  // re-delivers 19, settles 20..38, and still schedules slice 3 for 39 before stopping cleanly.
+  const dropKnown: Record<string, ReportState> = {}
+  const fortyDelivered = Array.from({ length: 40 }, (_, i) => {
+    const item = effect({
+      taskId: `schedule:dr-${i}`,
+      runId: `dr-${i}@2026-11-06T08:00:00.000Z`,
+      title: `丢失重投 ${i}`,
+      status: 'done',
+      host: null,
+      output: '结果',
+      token: `${String(i + 400).padStart(32, '0')}`,
+      by: 'schedule',
+      deliveredTo: 's1',
+      via: 'steer',
+    })
+    dropKnown[`s1 ${item.key}`] = i === 19 ? 'pending' : 'read'
+    return item
+  })
+  const dropHarness = setup({ state: 'idle', known: dropKnown })
+  await dropHarness.outcomes(fortyDelivered)
+  assert.equal(dropHarness.reads.length, 19, 'pass 1 settles 0..18')
+  assert.equal(dropHarness.wakes.length, 1, 'pass 1 schedules slice 2 for 20..39')
+
+  // viva-steer emits report_dropped for item 19 and wakeEffects() cancels the slice timer and advances sweepEpoch.
+  dropKnown[`s1 ${fortyDelivered[19]!.key}`] = 'none'
+  dropHarness.run.onDropped(fortyDelivered[19]!.key)
+  dropHarness.run.onExternalWake()
+
+  const remainingPass2 = [fortyDelivered[19]!, ...fortyDelivered.slice(20)]
+  await dropHarness.outcomes(remainingPass2)
+  assert.equal(dropHarness.asked[20]?.[1], fortyDelivered[19]!.key, 'dropped report 19 is prioritized first on pass 2')
+  assert.equal(dropHarness.turns.length, 1, 'dropped report 19 is immediately re-delivered in pass 2')
+  assert.equal(dropHarness.reads.length, 38, 'pass 2 settles 20..38 (19 more reads)')
+  assert.equal(dropHarness.wakes.length, 2, 'pass 2 schedules slice 3 for remaining unprobed report 39')
+
+  // Report 19 is now pending in its new turn; pass 3 settles report 39 and stops waking.
+  dropKnown[`s1 ${fortyDelivered[19]!.key}`] = 'pending'
+  await dropHarness.outcomes([fortyDelivered[19]!, fortyDelivered[39]!])
+  assert.equal(dropHarness.reads.length, 39, 'pass 3 settles report 39')
+  assert.equal(dropHarness.wakes.length, 2, 'pass 3 stops waking once every item has been probed in the current epoch')
+
+  // Continuous typing across multi-slice / repeated external wakes keeps original deferral timestamps so the first
+  // batch still opens at TYPING_DEFER_MS (8s) rather than resetting across slices.
+  const twentyFresh = Array.from({ length: 20 }, (_, i) => effect({
+    taskId: `schedule:ty-${i}`,
+    runId: `ty-${i}@2026-11-06T08:00:00.000Z`,
+    title: `打字延迟 ${i}`,
+    status: 'done',
+    host: null,
+    output: '结果',
+    token: `${String(i + 500).padStart(32, '0')}`,
+    by: 'schedule',
+  }))
+  const typingSliceHarness = setup({ state: 'idle', typing: true, now: 1_000 })
+  await typingSliceHarness.outcomes(twentyFresh)
+  assert.equal(typingSliceHarness.turns.length, 0)
+  typingSliceHarness.world.now = 5_000
+  typingSliceHarness.run.onExternalWake()
+  await typingSliceHarness.outcomes(twentyFresh)
+  assert.equal(typingSliceHarness.turns.length, 0, 'still deferred at 4s elapsed')
+  typingSliceHarness.world.now = 1_000 + TYPING_DEFER_MS
+  await typingSliceHarness.outcomes(twentyFresh)
+  assert.equal(typingSliceHarness.turns.length, 1, 'opens promptly at TYPING_DEFER_MS without resetting earlier slice timestamps')
+
+  // Model-safe schedule failure mapping preserves known safe reasons and scrubs raw ACP/dsh host diagnostics.
+  assert.doesNotMatch(
+    modelSafeScheduleFailure('这次定时任务试了几次都没做成：prompt failed（dsh: could not load /Users/secret/settings.yml）'),
+    /settings\.yml|prompt failed|dsh:/,
+  )
+  assert.match(
+    modelSafeScheduleFailure('这次定时任务试了几次都没做成：运行太久，已经停下。'),
+    /运行太久，已经停下/,
+  )
 })

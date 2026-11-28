@@ -56,7 +56,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     if (main && !main.isDestroyed()) main.webContents.send('draft:changed', snapshot)
     desk()?.sendDraft(snapshot)
   })
-  const receipts = new Map<string, { finish: (result: { ok: boolean, error?: string }) => void, timer: ReturnType<typeof setTimeout>, feedItemId?: string }>()
+  const receipts = new Map<string, { finish: (result: { ok: boolean, error?: string }) => void, timer: ReturnType<typeof setTimeout> }>()
   const fromDesk = (event: IpcMainEvent | IpcMainInvokeEvent) => {
     const island = desk()
     return island?.owns(event.sender) ? island : null
@@ -234,7 +234,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     const receiptId = randomUUID()
     return new Promise<{ ok: boolean, error?: string }>(resolve => {
       const timer = setTimeout(() => { receipts.delete(receiptId); resolve({ ok: false, error: NOT_SENT }) }, 10_000)
-      receipts.set(receiptId, { timer, feedItemId: snapshot.feedItemId, finish: result => {
+      receipts.set(receiptId, { timer, finish: result => {
         if (result.ok) {
           drafts.clear(snapshot)
           if (!hasDraftContent(drafts.snapshot())) setTyping(false)
@@ -243,20 +243,10 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
         resolve(result)
       } })
       toWindow({ kind: 'ask', text: ask.text, files: ask.files, images: ask.images, targetKey: snapshot.key, receiptId,
-        expiresAt: Date.now() + 10_000, feedItemId: snapshot.feedItemId })
+        expiresAt: Date.now() + 10_000 })
     })
   })
-  return { ownDraft: drafts.own,
-    eraseFeedDrafts(ids: readonly string[]) {
-      drafts.eraseFeed(ids)
-      if (!hasDraftContent(drafts.snapshot())) setTyping(false)
-      for (const [id, receipt] of receipts) {
-        if (!receipt.feedItemId || !ids.includes(receipt.feedItemId)) continue
-        clearTimeout(receipt.timer); receipts.delete(id)
-        receipt.finish({ ok: false, error: NOT_SENT })
-      }
-    },
-  }
+  return { ownDraft: drafts.own }
 }
 
 /**

@@ -1,5 +1,5 @@
 import { requestsIn } from '../../../src/shared/request-routing/header.ts'
-import { reportRecordOf } from '../../../src/shared/task-report.ts'
+import { isScheduleTaskId, reportRecordOf } from '../../../src/shared/task-report.ts'
 
 /**
  * The tasks whose results came back to the main conversation a short while ago (docs/agent-routing-design.md §5), named
@@ -26,8 +26,10 @@ export function recentTasks(said: readonly string[], within = RECENT_REQUESTS): 
   const found = said.reduce<RecentTask[]>((tasks, text) => {
     const record = reportRecordOf(text)
     if (record) {
-      const told = new Set(record.tasks.map(task => task.taskId))
-      return [...record.tasks.map(({ taskId, title }) => ({ taskId, title, ago: 0 })), ...tasks.filter(task => !told.has(task.taskId))]
+      const background = record.tasks.filter(task => !isScheduleTaskId(task.taskId))
+      if (!background.length) return tasks
+      const told = new Set(background.map(task => task.taskId))
+      return [...background.map(({ taskId, title }) => ({ taskId, title, ago: 0 })), ...tasks.filter(task => !told.has(task.taskId))]
     }
     const asked = requestsIn(text).length
     return asked ? tasks.map(task => ({ ...task, ago: task.ago + asked })) : tasks

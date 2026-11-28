@@ -5,7 +5,7 @@ import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import { registryRelease, type CatalogAnswer } from './plugin-catalog.ts'
 import { normalizeRegistry, type PluginSourceView } from './plugin-source.ts'
 import type { PluginsOp, PluginsResult } from './plugins-channel.ts'
-import { declaredReadOnlyTools, profileFitOptions, vivaFit, type VivaFit } from './plugin-fit.ts'
+import { profileFitOptions, vivaFit, type VivaFit } from './plugin-fit.ts'
 
 /**
  * IPC for the 插件 section of settings: the dsh plugins the user installed (bundles in the profile), installed by
@@ -30,8 +30,6 @@ export interface PluginView {
   error: { code: string, detail: string | null } | null,
   /** Whether it works in Viva, from its package.json. */
   fit: VivaFit
-  /** Read-only tools explicitly declared for 动态 data sources (empty when unsupported). */
-  feedSourceTools: string[]
   rows: PluginRowView[]
   /** dsh's own rows it changes. */
   overrides: string[]
@@ -58,15 +56,6 @@ export function fitOf(profileDir: string, name: string, options = profileFitOpti
   }
 }
 
-/** Explicit read-only tools declared by an installed plugin package for 动态 data source runs. */
-export function readOnlyToolsOf(profileDir: string, name: string): string[] {
-  try {
-    return declaredReadOnlyTools(JSON.parse(fs.readFileSync(path.join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8')))
-  } catch {
-    return []
-  }
-}
-
 /**
  * The bundles the user installed into the profile (the stock ones come with dsh and are not listed), each with its
  * rows as they run now (listPlugins, by entry id).
@@ -85,7 +74,6 @@ export function pluginsView(value: unknown, profileDir: string): PluginView[] {
       removable: bundle.removable === true,
       error: errorOf(bundle.error),
       fit: fitOf(profileDir, name, options),
-      feedSourceTools: readOnlyToolsOf(profileDir, name),
       rows: list(bundle.rows).map(record).map((row) => {
         const entryId = str(row.entryId)
         const live = entryId ? running.get(entryId) : undefined

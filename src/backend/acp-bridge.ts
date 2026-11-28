@@ -422,6 +422,7 @@ export function createAcpBridge({
       })
     },
     emit, describeError: error => describeError(error, stderrTail),
+    describeUnattendedError: error => describeError(error),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
   const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
@@ -865,20 +866,6 @@ export function createAcpBridge({
   /** 重试 on a server that stopped trying. */
   const restartMcp = (name: string) => mcpDesk.restart(name)
 
-  /** Binds an unattended feed source session to verified read-only tools owned by `pluginName`. */
-  async function bindFeedSourceSession(
-    targetSessionId: string,
-    binding: { pluginName: string, ownerEntryIds: readonly string[], allowedTools: readonly string[] },
-  ): Promise<{ ok: true } | { ok: false, reason: string }> {
-    if (!child?.connected) return { ok: false, reason: 'disconnected' }
-    try {
-      await routingDesk.bindSource(targetSessionId, binding)
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, reason: err instanceof Error ? err.message : String(err) }
-    }
-  }
-
   const promptTaskWithImages: typeof promptTask = async (taskId, text, meta, images = []) => {
     if (images.length && !seesImages) {
       if (!disposed && taskSessions.has(taskId)) emit({ type: 'task_end', taskId, stopReason: 'error', message: noImagesMessage() })
@@ -887,5 +874,5 @@ export function createAcpBridge({
     return promptTask(taskId, text, meta, images)
   }
 
-  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, bindFeedSourceSession, promptTask: promptTaskWithImages, canReadImages: () => seesImages, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, needsRecovery: () => recoveryRequired, isSwitching, dispose, pid, memoryOwnerPid, memory }
+  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, promptTask: promptTaskWithImages, canReadImages: () => seesImages, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, needsRecovery: () => recoveryRequired, isSwitching, dispose, pid, memoryOwnerPid, memory }
 }

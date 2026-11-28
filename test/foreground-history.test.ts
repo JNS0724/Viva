@@ -135,18 +135,54 @@ test('incremental commit handles beforeKey insertion shifting stars and report r
   assert.deepEqual(history.starsIn([conv.id]), [{ segmentId: conv.id, seq: 2 }], 'star moved with k-second')
   assert.equal(history.recordsOf(conv.id)[0]?.after, 3, 'report anchor shifted after insertion')
 
-  // Verify no 5000-message cliff and O(window) tail read
+  // Verify no 5000-message cliff and O(window) tail read (including windowed report_records)
   const batch = Array.from({ length: 5_050 }, (_, index) => ({
     kind: 'append_user' as const,
     message: { role: 'user' as const, text: `msg-${index}`, receipt: null },
   }))
   conv = history.commit(conv, batch)
+  history.addRecord({ conversationId: conv.id, reportId: 'r-tail', at: 50, text: '窗口内回报' })
+  assert.equal(history.messageCount(conv.id), 5_053)
+  assert.deepEqual(history.recordTimesOf(conv.id).map(r => r.reportId).sort(), ['r-1', 'r-tail'])
   const tail = history.getTail(conv.id, CONVERSATION_WINDOW_MESSAGES)!
   assert.equal(tail.total, 5_053)
   assert.equal(tail.offset, 5_053 - CONVERSATION_WINDOW_MESSAGES)
   assert.equal(tail.messages.length, CONVERSATION_WINDOW_MESSAGES)
   assert.equal(tail.messages[0]?.text, `msg-${5_050 - CONVERSATION_WINDOW_MESSAGES}`)
   assert.equal(tail.messages.at(-1)?.text, 'msg-5049')
+  assert.deepEqual(tail.records.map(r => r.reportId), ['r-tail'], 'getTail omits pre-window report_records before offset')
+
+  // Earlier report_records trimmed from getTail remain readable in Review (`history.read`) at their exact message slice.
+  const reviewSliceStart = history.read(`t:${conv.id}`, { from: 0, count: 10 })!
+  assert.deepEqual(reviewSliceStart.records?.map(r => [r.reportId, r.after]), [['r-1', 3]], 'Review reader returns pre-window report_records for earlier slices')
+  const reviewSliceMiddle = history.read(`t:${conv.id}`, { from: 100, count: 50 })!
+  assert.equal(reviewSliceMiddle.records, undefined, 'middle slice without records omits empty records array')
+  const reviewSliceEnd = history.read(`t:${conv.id}`, { from: 5_000, count: 100 })!
+  assert.deepEqual(reviewSliceEnd.records?.map(r => [r.reportId, r.after]), [['r-tail', 5_053]], 'trailing slice returns end-of-segment report_records')
+
+  // Multi-segment topic where the first segment has only a report_record and the second segment has messages:
+  const emptySeg = history.save(history.create({ sessionId: 's-empty-seg', cwd: '/w' }), [], { keepEmpty: true }) as Conversation
+  history.addRecord({ conversationId: emptySeg.id, reportId: 'r-empty-seg', at: 60, text: '首段无消息仅回报' })
+  const childSeg = history.save(history.create({ sessionId: 's-child-seg', cwd: '/w', parentId: emptySeg.id, topicId: emptySeg.id }), [
+    { role: 'user', text: '续写问题', receipt: null },
+  ]) as Conversation
+  assert.ok(childSeg.id)
+  const multiRead = history.read(`t:${emptySeg.id}`, { from: 0, count: 10 })!
+  assert.deepEqual(multiRead.records?.map(r => r.reportId), ['r-empty-seg'], 'topic reader includes records from empty sibling segment')
+
+  // Boundary empty segment: 100 messages -> empty record-only segment -> 30 messages returns the record on page 1 without duplication on page 2.
+  const segA = history.save(history.create({ sessionId: 's-b-a', cwd: '/w' }),
+    Array.from({ length: 100 }, (_, i) => ({ role: 'user' as const, text: `a-${i}`, receipt: null }))) as Conversation
+  const segB = history.save(history.create({ sessionId: 's-b-b', cwd: '/w', parentId: segA.id, topicId: segA.id }), [], { keepEmpty: true }) as Conversation
+  history.addRecord({ conversationId: segB.id, reportId: 'r-mid-empty', at: 70, text: '分页边界空段回报' })
+  history.save(history.create({ sessionId: 's-b-c', cwd: '/w', parentId: segB.id, topicId: segA.id }),
+    Array.from({ length: 30 }, (_, i) => ({ role: 'user' as const, text: `c-${i}`, receipt: null })))
+  const page1 = history.read(`t:${segA.id}`, { from: 0, count: 100 })!
+  const page2 = history.read(`t:${segA.id}`, { from: 100, count: 30 })!
+  const crossBoundary = history.read(`t:${segA.id}`, { from: 99, count: 2 })!
+  assert.deepEqual(page1.records?.map(r => r.reportId), ['r-mid-empty'], 'boundary empty segment returned on page 1')
+  assert.equal(page2.records, undefined, 'not duplicated on page 2 (from=100, count=30)')
+  assert.deepEqual(crossBoundary.records?.map(r => r.reportId), ['r-mid-empty'], 'also returned on cross-boundary slice')
 })
 
 test('renderer sliding window trims long sessions on idle turn_end and preserves absolute seq across rewind, stars, search, records and anchors', () => {
@@ -215,11 +251,15 @@ test('renderer sliding window trims long sessions on idle turn_end and preserves
   for (let i = 0; i < CONVERSATION_WINDOW_LIMIT; i += 2) {
     grown = reduce(grown, { type: 'user_prompt', text: `q-${i}`, at: 100 + i })
     grown = reduce(grown, { type: 'acp_update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `a-${i}` } }, at: 101 + i })
+    if (i === CONVERSATION_WINDOW_LIMIT - 2) {
+      grown = reduce(grown, { type: 'report_delivered', conversationId: 'seg-long', sessionId: 's-1', reportId: 'r-in-window', text: '窗口内新汇报', at: 999 })
+    }
     grown = reduce(grown, { type: 'turn_end', stopReason: 'end_turn', at: 102 + i })
   }
   assert.ok(grown.messages.length <= CONVERSATION_WINDOW_LIMIT)
   assert.ok(grown.historyOffset > 400, 'historyOffset advanced when older messages were trimmed')
   assert.equal(grown.messages.length + grown.historyOffset, 402 + Math.ceil(CONVERSATION_WINDOW_LIMIT / 2) * 2)
+  assert.deepEqual(grown.records.map(r => r.reportId), ['r-in-window'], 'pre-window report_records are trimmed with older messages')
 })
 
 test('foreground history keeps replay checkpoint intact on write failures and retries pending writes in order', t => {

@@ -97,7 +97,7 @@ export function createSteerChannel(
     if (!isText(message.id, MAX_ID_CHARS)) return log('ignored a report request without an id')
     const reply = (status: string) => port.send({ type: 'report_result', id: message.id, status })
     const valid = reports && isText(message.sessionId, MAX_ID_CHARS) && isReportId(message.reportId) && isToken(message.token)
-      && (message.type === 'report_status' || isText(message.text, MAX_TEXT_CHARS))
+      && (message.type === 'report_status' || isText(message.text, MAX_STEER_WIRE_CHARS))
     if (!valid) return reply(REASONS.failed)
     const asked = message.type === 'report'
       ? reports.deliver(message.sessionId, message.reportId, message.token, message.text)

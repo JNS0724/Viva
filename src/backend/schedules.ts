@@ -1,8 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
+import type { ScheduleView } from '../shared/ipc-results.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
 import { parseScheduleWords, type ScheduleAction } from './tasks-channel.ts'
+
+export type { ScheduleView } from '../shared/ipc-results.ts'
 
 /**
  * Schedules as the model and the user handle them (system-design §12.2), natural language first: the model proposes,
@@ -11,8 +15,6 @@ import { parseScheduleWords, type ScheduleAction } from './tasks-channel.ts'
  * is schedule-runs.ts's.
  */
 export interface ScheduleProposal { proposalId: string, title: string, prompt: string, rule: ScheduleRule, firstAt: string }
-/** A schedule as the model and the window see it. */
-export interface ScheduleView { id: string, title: string, prompt: string, kind: string, nextAt: string, status: string }
 
 /** dsh-schedule's refusal of a time, in the user's words: one gone by, or one it cannot read; anything else as it is. */
 function timeRefused(err: unknown): unknown {
@@ -24,7 +26,7 @@ function timeRefused(err: unknown): unknown {
 
 const viewOf = (schedule: Schedule): ScheduleView => ({
   id: schedule.id, title: schedule.record.title, prompt: schedule.record.prompt, kind: schedule.record.kind,
-  nextAt: schedule.record.scheduledAt, status: schedule.status,
+  nextAt: schedule.record.scheduledAt, status: schedule.status === 'paused' ? 'paused' : 'active',
 })
 
 /** The schedules' writes made by the user or the model, each an event (journal.ts); being run is schedule-runs.ts's. */
@@ -113,3 +115,17 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
 }
 
 export type Schedules = ReturnType<typeof createSchedules>
+
+export function registerSchedulesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, getSchedules: () => Schedules | null) {
+  const handle = handlerOf(ipcMain)
+  const requireSchedules = (): Schedules => {
+    const current = getSchedules()
+    if (!current) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+    return current
+  }
+  handle('schedules:list', () => getSchedules()?.list() ?? [])
+  handle('schedules:accept', (proposalId, edits) => requireSchedules().accept(proposalId, edits))
+  handle('schedules:decline', (proposalId) => { requireSchedules().decline(proposalId) })
+  handle('schedules:pause', (id, paused) => requireSchedules().update(id, { paused }))
+  handle('schedules:delete', (id) => requireSchedules().remove(id))
+}

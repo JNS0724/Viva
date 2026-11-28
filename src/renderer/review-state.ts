@@ -1,5 +1,5 @@
-import type { ReviewTask, ReviewTopic, ReaderMessage, ReviewFocus, ReaderWindow, ReaderEdge, ReadPart } from './review-types.ts'
-export type { ReviewTask, ReviewTopic, ReaderMessage, ReviewFocus, ReaderWindow, ReaderEdge, ReadPart } from './review-types.ts'
+import type { ReviewTask, ReviewTopic, ReaderMessage, ReaderRecord, ReviewFocus, ReaderWindow, ReaderEdge, ReadPart } from './review-types.ts'
+export type { ReviewTask, ReviewTopic, ReaderMessage, ReaderRecord, ReviewFocus, ReaderWindow, ReaderEdge, ReadPart } from './review-types.ts'
 import type { ActionHandlers } from './action-types.ts'
 import { getLocale } from '../shared/i18n/locale.ts'
 import { formatDate, calendarDays } from '../shared/i18n/format.ts'
@@ -21,6 +21,57 @@ const joins = (window: ReaderWindow, edge: ReaderEdge, part: ReadPart) => (edge 
   ? part.from + part.messages.length === window.from
   : part.from === window.from + window.messages.length)
 
+function retainReaderRecords(
+  messages: readonly ReaderMessage[],
+  allMessagesBeforeTrim: readonly ReaderMessage[],
+  combined: readonly ReaderRecord[],
+  edge: ReaderEdge,
+): readonly ReaderRecord[] | undefined {
+  if (!combined.length) return undefined
+  const seen = new Set<string>()
+  const deduped = combined.filter((record) => {
+    const key = `${record.segmentId}:${record.reportId}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  if (!messages.length) return deduped.length ? deduped : undefined
+  const fullBounds = new Map<string, { first: number, last: number }>()
+  for (const msg of allMessagesBeforeTrim) {
+    const bound = fullBounds.get(msg.segmentId)
+    if (!bound) fullBounds.set(msg.segmentId, { first: msg.seq, last: msg.seq })
+    else {
+      bound.first = Math.min(bound.first, msg.seq)
+      bound.last = Math.max(bound.last, msg.seq)
+    }
+  }
+  const keptBounds = new Map<string, { first: number, last: number }>()
+  for (const msg of messages) {
+    const bound = keptBounds.get(msg.segmentId)
+    if (!bound) keptBounds.set(msg.segmentId, { first: msg.seq, last: msg.seq })
+    else {
+      bound.first = Math.min(bound.first, msg.seq)
+      bound.last = Math.max(bound.last, msg.seq)
+    }
+  }
+  const trimmed = messages.length < allMessagesBeforeTrim.length
+  const firstKeptAt = messages[0]?.at ?? 0
+  const lastKeptAt = messages.at(-1)?.at ?? Number.MAX_SAFE_INTEGER
+  const kept = deduped.filter((record) => {
+    const win = keptBounds.get(record.segmentId)
+    if (!win) {
+      if (fullBounds.has(record.segmentId)) return false
+      if (!trimmed) return true
+      return edge === 'after' ? record.at >= firstKeptAt : record.at <= lastKeptAt
+    }
+    const full = fullBounds.get(record.segmentId)!
+    const minAfter = win.first === full.first && win.first === 0 ? 0 : (win.first === full.first ? record.after : win.first + 1)
+    const maxAfter = win.last === full.last ? Number.MAX_SAFE_INTEGER : win.last + 1
+    return record.after >= minAfter && record.after <= maxAfter
+  })
+  return kept.length ? kept : undefined
+}
+
 /**
  * A window with a part read on at one end, what it no longer needs let go at the other. A part that does not join
  * on there (the history changed under it) is not taken.
@@ -28,15 +79,24 @@ const joins = (window: ReaderWindow, edge: ReaderEdge, part: ReadPart) => (edge 
 export function readOn(window: ReaderWindow, edge: ReaderEdge, part: ReadPart): ReaderWindow {
   if (!joins(window, edge, part)) return { ...window, loading: null }
   const end = window.from + window.messages.length
+  const combinedRecords = edge === 'before'
+    ? [...(part.records ?? []), ...(window.records ?? [])]
+    : [...(window.records ?? []), ...(part.records ?? [])]
   if (edge === 'before') {
     const added = part.messages.slice(0, Math.max(0, window.from - part.from))
-    const messages = [...added, ...window.messages].slice(0, READER_MAX)
-    return { ...window, total: part.total, from: window.from - added.length, messages, loading: null }
+    const joined = [...added, ...window.messages]
+    const messages = joined.slice(0, READER_MAX)
+    const records = retainReaderRecords(messages, joined, combinedRecords, edge)
+    const base: ReaderWindow = { key: window.key, read: window.read, whole: window.whole, total: part.total, from: window.from - added.length, messages, loading: null }
+    return records ? { ...base, records } : base
   }
   const added = part.messages.slice(Math.max(0, end - part.from))
   const joined = [...window.messages, ...added]
   const dropped = Math.max(0, joined.length - READER_MAX)
-  return { ...window, total: part.total, from: window.from + dropped, messages: joined.slice(dropped), loading: null }
+  const messages = joined.slice(dropped)
+  const records = retainReaderRecords(messages, joined, combinedRecords, edge)
+  const base: ReaderWindow = { key: window.key, read: window.read, whole: window.whole, total: part.total, from: window.from + dropped, messages, loading: null }
+  return records ? { ...base, records } : base
 }
 
 /** What 回顾 reads: a topic's conversation, or one segment on its own (a task, a path left behind). */
@@ -129,8 +189,8 @@ export const REVIEW_ACTIONS= {
   }),
   review_unfocus: (state) => withReview(state, { open: null, reading: null, focus: null }),
   /** A part of what is open read afresh (opened, or opened at a message). */
-  review_read: (state, { key, read = 0, whole = false, messages, from = 0, total = messages.length }) => (state.review.open === key
-    ? withReview(state, { reading: { key, read, whole, messages, from, total, loading: null } })
+  review_read: (state, { key, read = 0, whole = false, messages, records, from = 0, total = messages.length }) => (state.review.open === key
+    ? withReview(state, { reading: { key, read, whole, messages, ...(records?.length ? { records } : {}), from, total, loading: null } })
     : state),
   review_read_loading: (state, { read, edge }) => (state.review.reading?.read === read
     ? withReview(state, { reading: { ...state.review.reading, loading: edge } })

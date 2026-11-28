@@ -54,7 +54,7 @@ export function workspaceName(cwd: string | null | undefined): string {
 
 /** What gets saved: finished messages only, in the shape the main process stores. */
 export const historyMessages = (state: State, { keys = false }: { keys?: boolean } = {}) => state.messages
-  .filter((m) => !m.open && !m.pending)
+  .filter((m) => !m.open)
   .map(({ role, text, receipt, images, sourceId, streamKey }) => ({ role, text, receipt: receipt ?? null, ...(images?.length ? { images } : {}), ...(sourceId ? { sourceId } : {}), ...(keys && streamKey ? { key: streamKey } : {}) }))
 
 const DAY_MS = 86_400_000
@@ -157,10 +157,19 @@ export function earlierRows(earlier: State['earlier'], { currentCwd = null, now 
     lastCwd = segment.cwd ?? lastCwd
     // A task's record after the message it came after (report-state.ts); one after them all, at the end.
     const records: ReadonlyArray<ReportRecord> = segment.records ?? []
-    const recordRows = (at: (after: number) => boolean) => records.filter((record: ReportRecord) => at(record.after))
-      .map((record: ReportRecord): EarlierRow => ({ kind: 'record', id: `${segment.id}-record-${record.reportId}`, record, segment: segment.id }))
-    own.push(...recordRows((after) => after === 0))
-    let before = 0
+    const base = segment.offset ?? 0
+    const end = base + segment.messages.length
+    const recordsByAfter = new Map<number, EarlierRow[]>()
+    for (const record of records) {
+      if (record.after < base) continue
+      const key = segment.messages.length > 0 ? Math.min(record.after, end) : record.after
+      const row: EarlierRow = { kind: 'record', id: `${segment.id}-record-${record.reportId}`, record, segment: segment.id }
+      const group = recordsByAfter.get(key)
+      if (group) group.push(row)
+      else recordsByAfter.set(key, [row])
+    }
+    own.push(...(recordsByAfter.get(base) ?? []))
+    let before = base
     for (const message of segment.messages) {
       const day = timelineDay(message.at, now)
       if (day !== lastDay) own.push({ kind: 'day', label: day, segment: segment.id })
@@ -171,8 +180,7 @@ export function earlierRows(earlier: State['earlier'], { currentCwd = null, now 
         ...(message.delivery ? { delivery: message.delivery } : {}),
       })
       before += 1
-      const last = before === segment.messages.length
-      own.push(...recordRows((after) => after === before || (last && after > before)))
+      own.push(...(recordsByAfter.get(before) ?? []))
     }
     segmentRows.set(segment, { locale: localeRevision(), day: today, beforeDay, beforeCwd, continues, rows: own, lastDay, lastCwd })
     for (const row of own) rows.push(row)

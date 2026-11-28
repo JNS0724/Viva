@@ -82,7 +82,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   getSnapshot: (options) => ipcRenderer.invoke('agent:snapshot', ...options ? [options] : []),
   waits: () => ipcRenderer.invoke('agent:waits'),
   /** @param {{ id: string }[]} [images] pictures kept by keepImage, sent with the words */
-  prompt: (text, images = [], operation = undefined, feedItemId = undefined, turnId = undefined) => ipcRenderer.invoke('agent:prompt', text, images, operation, feedItemId, turnId),
+  prompt: (text, images = [], operation = undefined, turnId = undefined) => ipcRenderer.invoke('agent:prompt', text, images, operation, turnId),
   /** A pasted or dropped picture into the pictures folder: { id, mimeType, size } (main/image-store.js). */
   keepImage: (bytes) => ipcRenderer.invoke('images:keep', bytes),
   /** Settings' 贴过的图片: its size and place; open, empty or move it. */
@@ -224,15 +224,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   declineSchedule: (proposalId) => ipcRenderer.invoke('schedules:decline', proposalId),
   pauseSchedule: (id, paused) => ipcRenderer.invoke('schedules:pause', id, paused),
   deleteSchedule: (id) => ipcRenderer.invoke('schedules:delete', id),
-  listFeed: () => ipcRenderer.invoke('feed:list'),
-  continueFeed: (id) => ipcRenderer.invoke('feed:continue', id),
-  markFeedSeen: (id) => ipcRenderer.invoke('feed:seen', id),
-  listFeedSources: () => ipcRenderer.invoke('feed-sources:list'),
-  createFeedSource: (input) => ipcRenderer.invoke('feed-sources:create', input),
-  updateFeedSource: (id, changes) => ipcRenderer.invoke('feed-sources:update', id, changes),
-  pauseFeedSource: (id, paused) => ipcRenderer.invoke('feed-sources:pause', id, paused),
-  deleteFeedSource: (id) => ipcRenderer.invoke('feed-sources:delete', id),
-  runFeedSourceNow: (id) => ipcRenderer.invoke('feed-sources:run-now', id),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
   islandAskResult: (receiptId, result) => ipcRenderer.send('island:ask-result', receiptId, result),

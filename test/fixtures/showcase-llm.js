@@ -39,7 +39,7 @@ const wordsOf = (request) => (afterTool(request) ? lastWords(request.messages) :
 
 /** A schedule for the weekly report: every Friday at 16:00, its prompt written from what was said. */
 function scheduleAnswer(request) {
-  if (afterTool(request)) return { text: '好。时间和要做的事写在卡片上了，你点「定时」才会记下。到时候我只读地按上周的模板起草，结果放进「动态」，不会发送。' }
+  if (afterTool(request)) return { text: '好。时间和要做的事写在卡片上了，你点「定时」才会记下。到时候我只读地按上周的模板起草，结果直接发回对话，不会发送。' }
   return { tool: { name: 'schedule_create', input: {
     title: '周报',
     prompt: '按上周的模板起草本周周报：本周进展、风险、下周计划。材料是工作区里的《本周进展.md》和《周报模板.md》。只写草稿，不发送。',

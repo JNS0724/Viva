@@ -51,7 +51,7 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | mcp-add-use | Approval, separate encrypted secret entry, usable MCP tool, draft without sending | |
 | skill-create | Approved skill appears in Capabilities | |
 | mcp-import | Existing dsh MCP imports without approval | |
-| schedule-propose | The schedule card says the right task and time; once kept, it is in Activity's Coming up | ✓ |
+| schedule-propose | The schedule card says the right task and time; once kept, it is listed in Schedules | ✓ |
 | schedule-by-talk | Asked in the conversation, a daily schedule's time changes, then it is deleted | |
 | task-background | Asked to, the assistant moves work to the background without occupying chat; a result card comes back | ✓ |
 | model-openai | Switch to OpenAI-compatible model, answer, switch back | |
@@ -73,7 +73,7 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | route-interject-correct | "Say it in English" mid-explanation corrects the answer: no task, the rest in English | |
 | route-history | A brief rule set and corrected in another topic is found by "as usual" and followed in the brief | |
 | route-stop | "Stop that translation task" just after it starts stops that task; its card says stopped | |
-| route-schedule | "Remind me every Friday at five…" is routed as an app operation, then its tool proposes the schedule; kept, it is in Activity | |
+| route-schedule | "Remind me every Friday at five…" is routed as an app operation, then its tool proposes the schedule; kept, it is in Schedules | |
 | route-memory | "Remember: my manager is…" is routed as an app operation, then remembered; a new topic knows it | |
 | route-mcp | Adding an MCP server in chat is routed as an app operation; approval card and key window as usual; key kept encrypted only | |
 
@@ -83,8 +83,8 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 
 Run on both macOS and Windows before release:
 
-- [ ] A schedule's result sends a system notification that opens Activity.
-- [ ] Closing retains tray/menu-bar presence; the count of what is new in Activity, open, and quit work.
+- [ ] A schedule's result sends a system notification that opens Viva's window.
+- [ ] Closing retains tray/menu-bar presence; open and quit work.
 - [ ] Installed app's launch-at-login starts in tray without opening its window.
 - [ ] A schedule missed while the computer slept runs once after it wakes.
 - [ ] Global shortcut works from another application and returns keyboard focus.

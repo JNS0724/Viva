@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { requestsIn, withoutHeaders, withRequestHeader, withRequestSource } from '../src/shared/request-routing/header.ts'
 import { parsePlan } from '../src/shared/request-routing/protocol.ts'
-import { asBind, asBound, asDecide, asDecided, asFast, asSourceBound } from '../src/shared/request-routing/channel.ts'
+import { asBind, asBound, asDecide, asDecided, asFast } from '../src/shared/request-routing/channel.ts'
 import { fastNotice, fastPlan, fastTasks, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
 import { createHostChannel } from '../plugins/routing/lib/host.ts'
 import { grantsOf } from '../plugins/routing/lib/policy.ts'
@@ -110,10 +110,6 @@ test('the routing channel takes only well-formed messages of its version', () =>
   assert.deepEqual(asBind({ type: 'routing_bind', version: 1, id: 'b', sessionId: 's', extra: 1 }), { type: 'routing_bind', version: 1, id: 'b', sessionId: 's' })
   assert.equal(asBind({ type: 'routing_bind', version: 2, id: 'b', sessionId: 's' }), null)
   assert.deepEqual(asBound({ type: 'routing_bound', version: 1, id: 'b' }), { type: 'routing_bound', version: 1, id: 'b' })
-  assert.equal(asSourceBound({ type: 'routing_bound', version: 1, id: 'b', ok: true }), null)
-  assert.equal(asSourceBound({ type: 'routing_source_bound', version: 1, id: 'b' }), null)
-  assert.deepEqual(asSourceBound({ type: 'routing_source_bound', version: 1, id: 'b', ok: false, reason: 'refused' }),
-    { type: 'routing_source_bound', version: 1, id: 'b', ok: false, reason: 'refused' })
   assert.equal(asDecide({ type: 'routing_decide', version: 1, id: 'd', sessionId: 's' }), null)
   const receipts = [{ kind: 'start', ok: true, taskId: 't1' }, { kind: 'stop', ok: false, error: '任务不存在' }]
   assert.deepEqual(asDecided({ type: 'routing_decided', version: 1, id: 'd', accepted: true, receipts }), { type: 'routing_decided', version: 1, id: 'd', accepted: true, receipts })

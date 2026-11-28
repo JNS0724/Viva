@@ -1,4 +1,4 @@
-/** A system notification: what 动态 has that is new. */
+/** A system notification (e.g. a completed schedule run). */
 export interface Notice { title: string, body: string }
 
 /**
@@ -47,7 +47,7 @@ export interface HostCapabilities {
     showItemInFolder(path: string): void
     trash(path: string): Promise<void>
   }
-  /** A system notification (clicked, the window opens on 动态); `opened` when the user clicks it. */
+  /** A system notification (clicked, the window comes to the front); `opened` when the user clicks it. */
   notify(notice: Notice, opened?: (afterMs: number) => void): void
   power: { idleSeconds(): number }
   window: {
@@ -58,8 +58,6 @@ export interface HostCapabilities {
     inFront(): boolean
     /** Whether the user is actively typing in a composer (main window or desktop island). */
     composerTyping?(): boolean
-    /** The tray's count of what is new in 动态. */
-    setPending(count: number): void
     /** Native words (the tray menu) after the language changed. */
     refreshNative(): void
   }

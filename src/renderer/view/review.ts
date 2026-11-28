@@ -1,9 +1,10 @@
 import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
-import { REVIEW_FILTERS, begunEarlier, dayLabel, reviewDays, segmentKey, topicKey, type ReaderEdge, type ReaderMessage, type ReviewTask, type ReviewTopic } from '../review-state.ts'
+import { REVIEW_FILTERS, begunEarlier, dayLabel, reviewDays, segmentKey, topicKey, type ReaderEdge, type ReaderMessage, type ReaderRecord, type ReviewTask, type ReviewTopic } from '../review-state.ts'
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h } from './dom.ts'
 import { markMessage, pastMessageView } from './thread.ts'
+import { reportRecord } from './report-record.ts'
 import { reconcileChildren } from './reconcile.ts'
 
 /**
@@ -37,6 +38,16 @@ function filterBar(filter: string, handlers: Handlers) {
  * so their views are kept with them and only the new ones are built (a long Markdown answer is not drawn again).
  */
 let readViews = new WeakMap<ReaderMessage, View>()
+let readRecordViews = new WeakMap<ReaderRecord, HTMLElement>()
+
+function readRecord(record: ReaderRecord, handlers: Handlers): HTMLElement {
+  let view = readRecordViews.get(record)
+  if (!view) {
+    view = reportRecord(record, handlers)
+    readRecordViews.set(record, view)
+  }
+  return view
+}
 
 /** A message read, marked with where it is kept; `found`, the one a hit, link or star named. */
 function readMessage(message: ReaderMessage, found: string | null, handlers: Handlers): View {
@@ -68,11 +79,68 @@ function readerBody(key: string, review: State['review'], handlers: Handlers, fo
   const reading = review.reading?.key === key ? review.reading : null
   if (reading === null) return [hint(t("earlier.loading"))]
   const after = reading.total - reading.from - reading.messages.length
-  return [
-    reading.from > 0 ? readerEdge('before', reading.from, handlers) : null,
-    ...reading.messages.map((message: ReaderMessage) => readMessage(message, found, handlers)),
-    after > 0 ? readerEdge('after', after, handlers) : null,
-  ]
+  const records: readonly ReaderRecord[] = reading.records ?? []
+  if (!records.length) {
+    return [
+      reading.from > 0 ? readerEdge('before', reading.from, handlers) : null,
+      ...reading.messages.map((message: ReaderMessage) => readMessage(message, found, handlers)),
+      after > 0 ? readerEdge('after', after, handlers) : null,
+    ]
+  }
+  if (!reading.messages.length) {
+    return records.map((record) => readRecord(record, handlers))
+  }
+  const segBounds = new Map<string, { first: number, last: number }>()
+  for (const message of reading.messages) {
+    const bound = segBounds.get(message.segmentId)
+    if (!bound) segBounds.set(message.segmentId, { first: message.seq, last: message.seq })
+    else bound.last = message.seq
+  }
+  const topicSegments = key.startsWith('t:') ? review.topics.find((topic) => topic.id === key.slice(2))?.segments : undefined
+  const beforeFirst = new Map<string, ReaderRecord[]>()
+  const afterSeq = new Map<string, ReaderRecord[]>()
+  const trailingOrphans: ReaderRecord[] = []
+  for (const record of records) {
+    const bound = segBounds.get(record.segmentId)
+    if (!bound) {
+      const recIdx = topicSegments ? topicSegments.indexOf(record.segmentId) : -1
+      const nextMsgSeg = recIdx >= 0
+        ? topicSegments?.slice(recIdx + 1).find((segId) => segBounds.has(segId))
+        : (record.at <= reading.messages[0]!.at ? reading.messages[0]!.segmentId : undefined)
+      if (nextMsgSeg) {
+        const list = beforeFirst.get(nextMsgSeg)
+        if (list) list.push(record)
+        else beforeFirst.set(nextMsgSeg, [record])
+      } else {
+        trailingOrphans.push(record)
+      }
+      continue
+    }
+    if (record.after <= bound.first) {
+      const list = beforeFirst.get(record.segmentId)
+      if (list) list.push(record)
+      else beforeFirst.set(record.segmentId, [record])
+    } else {
+      const targetSeq = Math.min(record.after - 1, bound.last)
+      const mapKey = `${record.segmentId}:${targetSeq}`
+      const list = afterSeq.get(mapKey)
+      if (list) list.push(record)
+      else afterSeq.set(mapKey, [record])
+    }
+  }
+  const seenSegFirst = new Set<string>()
+  const rows: View[] = [reading.from > 0 ? readerEdge('before', reading.from, handlers) : null]
+  for (const message of reading.messages) {
+    if (!seenSegFirst.has(message.segmentId)) {
+      seenSegFirst.add(message.segmentId)
+      for (const rec of beforeFirst.get(message.segmentId) ?? []) rows.push(readRecord(rec, handlers))
+    }
+    rows.push(readMessage(message, found, handlers))
+    for (const rec of afterSeq.get(`${message.segmentId}:${message.seq}`) ?? []) rows.push(readRecord(rec, handlers))
+  }
+  for (const rec of trailingOrphans) rows.push(readRecord(rec, handlers))
+  if (after > 0) rows.push(readerEdge('after', after, handlers))
+  return rows
 }
 
 /** What a reader holds: the part read, and for a topic 继续这个话题 (the only thing here that changes the conversation). */
@@ -190,4 +258,7 @@ export function reviewView(state: State, handlers: Handlers, now = Date.now()): 
     ...(review.filter === 'stars' ? starredList(review, handlers, now) : topicList(review, handlers, now))]
 }
 
-onLocaleChange(() => { readViews = new WeakMap<ReaderMessage, View>() })
+onLocaleChange(() => {
+  readViews = new WeakMap<ReaderMessage, View>()
+  readRecordViews = new WeakMap<ReaderRecord, HTMLElement>()
+})

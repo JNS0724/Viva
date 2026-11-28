@@ -16,7 +16,6 @@ import { createTaskStore } from '../src/backend/task-store.ts'
 import { createTaskRuntime } from '../src/backend/task-runtime.ts'
 import { createScheduleRuns } from '../src/backend/schedule-runs.ts'
 import { openScheduleStore } from '../src/backend/schedule-store.ts'
-import { openFeedStore } from '../src/backend/feed-store.ts'
 import { createAcpOperations } from '../src/backend/acp-operations.ts'
 import { createAssistantStream } from '../src/backend/assistant-stream.ts'
 import { openMemoryFileIndex } from '../src/memory/node/memory-file-index.ts'
@@ -33,8 +32,8 @@ const tasks = createTaskRuntime({ db: history, store: createTaskStore({ db }), c
   agent: { startTask: () => ({ ok: true, taskId: randomUUID() }), promptTask() {}, closeTask() {}, cancelTask() {},
     steerTask: () => ({ ok: true }), resumeTask: () => ({ ok: true }) } })
 let now = Date.UTC(2026, 0, 1), delivered = () => {}
-const store = openScheduleStore({ db, now: () => now }), feed = openFeedStore({ db })
-const schedules = createScheduleRuns({ db, store, feed, apply: (kind, data, write) => events.apply(kind, data, write), now: () => now, later: () => null, cancel() {},
+const store = openScheduleStore({ db, now: () => now })
+const schedules = createScheduleRuns({ db, store, apply: (kind, data, write) => events.apply(kind, data, write), now: () => now, later: () => null, cancel() {},
   run: async () => ({ ok: true, text: 'done' }), keep() {}, delivered: () => delivered() })
 const streams = createAssistantStream({ emit() {}, send(raw) {
   const { type, operation } = raw as { type: string, operation: string }

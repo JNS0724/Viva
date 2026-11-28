@@ -169,8 +169,6 @@ let ownDraft = (_owner: 'main' | 'desk'): unknown => undefined
 let deskAllowed = true
 /** The tray icon, made the first time the window is closed to it (tray.ts). */
 let tray: ReturnType<typeof createTray> | null = null
-/** Ready follow-ups, for the tray, which may be made after the count changed. */
-let pendingFeed = 0
 /** Whether the shortcut that opens the island's input is ours (another app may hold it); null before it is tried. */
 let shortcutHeld: ReturnType<typeof registerAskShortcut> | null = null
 /** The desktop island's preferences, kept here as the island reads them at once; written through to the backend. */
@@ -223,13 +221,7 @@ function mirrorInFront() {
   mirror({ inFront: now })
 }
 
-/** 动态, from a notification or the tray: the window in front, on that page. */
-function openFeedPage() {
-  showWindow()
-  if (win && !win.isDestroyed()) win.webContents.send('island:action', { kind: 'feed' })
-}
-
-/** Something new in 动态 as a system notification; clicked, it opens 动态. */
+/** System notification for a completed schedule run; clicked, it brings Viva to the front. */
 function showNotice(notice: Notice, opened: (afterMs: number) => void) {
   // Native Windows notifications may register/update a Start-menu shortcut for
   // our app ID. Automated smoke runs must not point that shortcut at a QA binary.
@@ -243,7 +235,7 @@ function showNotice(notice: Notice, opened: (afterMs: number) => void) {
   shown.on('click', () => {
     done()
     opened(Date.now() - shownAt)
-    openFeedPage()
+    showWindow()
   })
   shown.on('close', done)
   // Some systems never say a notification closed: let it go after a while.
@@ -259,7 +251,7 @@ const folderOf = async (options: Electron.OpenDialogOptions) => {
 /** The language changed in the backend: the shell's own words (the tray, dialogs) and every window follow. */
 function followLanguage(state: LanguageState) {
   setLocale(state.locale)
-  tray?.setPending(pendingFeed)
+  tray?.refresh()
   installDiagnosticsMenu()
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send('language:changed', state)
 }
@@ -270,11 +262,7 @@ const HOST: { readonly [M in HostMethod]: (...args: any[]) => unknown } = {
     if (win && !win.isDestroyed()) win.webContents.send('agent:event', event)
   },
   'window.broadcastLanguage': (state: LanguageState) => followLanguage(state),
-  'window.setPending': (count: number) => {
-    pendingFeed = count
-    tray?.setPending(count)
-  },
-  'window.refreshNative': () => tray?.setPending(pendingFeed),
+  'window.refreshNative': () => tray?.refresh(),
   'dialogs.chooseFolder': ({ title, createDirectory = false, defaultPath, showHidden = false }: FolderOptions) => folderOf({
     title, ...(defaultPath ? { defaultPath } : {}),
     properties: ['openDirectory', ...(createDirectory ? ['createDirectory' as const] : []), ...(showHidden ? ['showHiddenFiles' as const] : [])],
@@ -434,13 +422,11 @@ function showTray() {
     platform: process.platform,
     onOpen: showWindow,
     onQuit: () => app.quit(),
-    onPending: openFeedPage,
     onDiagnosticsExport: () => { void exportDiagnosticsFromMenu() },
     onDiagnosticsOpen: () => { void openDiagnosticsFolder() },
     onDiagnosticsClear: () => { void clearDiagnosticsFromMenu() },
     onDiagnosticsDebug: () => debugDiagnostics(true),
     onDiagnosticsDebugStop: () => debugDiagnostics(false),
-    pending: pendingFeed,
   })
 }
 
@@ -633,7 +619,6 @@ app.whenReady().then(async () => {
     memoryOwnerPid: async () => (await backendConnection()).control<number | null>('automation.memory-owner-pid'),
     backendPid: () => keeper.running()?.pid ?? null,
     desk: () => desk,
-    seedFeed: async (item) => (await backendConnection()).control<void>('automation.seed-feed', item),
     publishEvent: async (event) => (await backendConnection()).control<void>('automation.publish-event', event),
   })
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.

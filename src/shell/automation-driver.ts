@@ -1,8 +1,5 @@
 import type { createDeskIsland } from './desk-island.ts'
 
-/** An item in 动态, as the showcase shows it (server.ts seedFeed). */
-export interface SeededItem { title: string, body: string }
-
 /**
  * Explicit control surface for an external Electron automation client; never loads or runs test code. What is the
  * backend's is asked of its process, so it answers later.
@@ -13,7 +10,6 @@ export interface AutomationDriver {
   /** The backend process's pid, for a smoke run that checks it is started again (backend-keeper.ts). */
   backendPid: () => number | null
   desk: () => ReturnType<typeof createDeskIsland> | null
-  seedFeed: (item: SeededItem) => Promise<void>
   publishEvent: (event: object) => Promise<void>
 }
 

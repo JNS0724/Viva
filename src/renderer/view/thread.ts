@@ -15,7 +15,6 @@ import { foldKey, foldTall } from './message-fold.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
 import { reportRecord } from './report-record.ts'
-import { recordsAt } from '../report-state.ts'
 import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
@@ -496,8 +495,19 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   const earlierCards = state.messages.slice(0, start).flatMap((_, i) => hostedBy(i))
   // A task's record goes after the message it came after (one after them all, or after a message gone: at the end);
   // those of messages not drawn are not drawn either.
-  const recordsAfter = (after: number) => recordsAt(state, after)
-    .map((record) => part(`record:${record.reportId}`, [record], () => reportRecord(record, handlers)))
+  const totalMessages = offset + state.messages.length
+  const recordsByAfter = new Map<number, ReportRecord[]>()
+  for (const record of state.records) {
+    if (record.after < hidden) continue
+    const key = Math.min(record.after, totalMessages)
+    const group = recordsByAfter.get(key)
+    if (group) group.push(record)
+    else recordsByAfter.set(key, [record])
+  }
+  const recordsAfter = (after: number) => {
+    const group = recordsByAfter.get(after)
+    return group ? group.map((record) => part(`record:${record.reportId}`, [record], () => reportRecord(record, handlers))) : []
+  }
   // A schedule's card goes at the end of the turn it came in (proposal-state.ts proposalHost); one of a message not
   // drawn, at the top of what is.
   const hosts = (state.proposals as ProposalCard[]).map((card) => ({ card, at: proposalHost(state.messages, card.after ?? state.messages.length) }))

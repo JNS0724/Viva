@@ -1,6 +1,6 @@
 import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
-import { reportRecordOf } from '../../shared/task-report.ts'
+import { reportRecordOf, scheduleIdOfTask } from '../../shared/task-report.ts'
 import { h } from './dom.ts'
 import { statusMark } from './task-card.ts'
 
@@ -19,9 +19,14 @@ let COLLAPSE = t('thread.report.collapse')
 const pad = (n: number) => String(n).padStart(2, '0')
 const clock = (at: number) => { const d = new Date(at); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
 
-function setOpen(record: HTMLElement, body: HTMLElement, toggle: HTMLButtonElement, open: boolean) {
+function setOpen(record: HTMLElement, body: HTMLElement, pre: HTMLElement, toggle: HTMLButtonElement, open: boolean, text: string) {
   record.dataset.open = String(open)
   body.hidden = !open
+  if (open) {
+    if (pre.textContent !== text) pre.textContent = text
+  } else if (pre.textContent) {
+    pre.textContent = ''
+  }
   toggle.setAttribute('aria-expanded', String(open))
   toggle.textContent = open ? COLLAPSE : EXPAND
 }
@@ -29,13 +34,19 @@ function setOpen(record: HTMLElement, body: HTMLElement, toggle: HTMLButtonEleme
 export function reportRecord(kept: ReportRecord, handlers: Handlers): HTMLElement {
   const record = reportRecordOf(kept.text)
   const first = record?.tasks[0] ?? null
+  const scheduleId = first ? scheduleIdOfTask(first.taskId) : null
   const key = kept.reportId
   const more = record && record.tasks.length > 1 ? t('thread.report.more', { count: record.tasks.length - 1 }) : ''
+  const pre = h('pre', { class: 'delivered-text' })
   const body = h('div', { class: 'delivered-body' },
     h('span', { class: 'label', text: t('thread.report.original') }),
-    h('pre', { class: 'delivered-text', text: kept.text }),
+    pre,
     first ? h('div', { class: 'delivered-actions' },
-      h('button', { class: 'fold-act', type: 'button', text: t('thread.report.open.task'), onClick: () => handlers.openTasks(first.taskId) })) : null)
+      h('button', { class: 'fold-act', type: 'button',
+        text: t(scheduleId ? 'thread.report.open.schedule' : 'thread.report.open.task'),
+        onClick: () => (scheduleId
+          ? handlers.openSchedules(scheduleId)
+          : handlers.openTasks(first.taskId)) })) : null)
   const toggle = h('button', { class: 'fold-act delivered-toggle', type: 'button' }) as HTMLButtonElement
   const view = h('section', { class: 'msg-delivered', 'aria-label': t('thread.report.label') },
     h('div', { class: 'delivered-row' },
@@ -50,9 +61,9 @@ export function reportRecord(kept: ReportRecord, handlers: Handlers): HTMLElemen
     const open = view.dataset.open !== 'true'
     if (open) opened.add(key)
     else opened.delete(key)
-    setOpen(view, body, toggle, open)
+    setOpen(view, body, pre, toggle, open, kept.text)
   })
-  setOpen(view, body, toggle, opened.has(key))
+  setOpen(view, body, pre, toggle, opened.has(key), kept.text)
   return view
 }
 

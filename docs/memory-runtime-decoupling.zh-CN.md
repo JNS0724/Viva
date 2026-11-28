@@ -97,7 +97,7 @@ export type AutomaticRecallResult =
 
 ### 2.6 涉及模块与验收清单
 
-- **涉及文件：** [memory-context.ts](../src/memory/core/memory-context.ts)、[memory-runtime.ts](../src/memory/core/memory-runtime.ts)、[memory-file-retrieval.ts](../src/memory/core/memory-file-retrieval.ts)、[acp-bridge.ts](../src/backend/acp-bridge.ts)、[compose.ts](../src/backend/compose.ts)、[feed-continuation.ts](../src/backend/feed-continuation.ts)、[adapter.ts](../plugins/memory/lib/adapter.ts)，以及 `main` 分支的 `src/memory/node/owner-worker.ts`、`src/backend/desktop-memory-owner.ts`、`src/memory/contracts/memory-daily-defaults.ts`。
+- **涉及文件：** [memory-context.ts](../src/memory/core/memory-context.ts)、[memory-runtime.ts](../src/memory/core/memory-runtime.ts)、[memory-file-retrieval.ts](../src/memory/core/memory-file-retrieval.ts)、[acp-bridge.ts](../src/backend/acp-bridge.ts)、[compose.ts](../src/backend/compose.ts)、`src/backend/feed-continuation.ts`（已移除）、[adapter.ts](../plugins/memory/lib/adapter.ts)，以及 `main` 分支的 `src/memory/node/owner-worker.ts`、`src/backend/desktop-memory-owner.ts`、`src/memory/contracts/memory-daily-defaults.ts`。
 - **必补单测与实测验收：**
   1. 真实 DSH 连跑首轮 `hit` → 工具续步 → 下一轮 `empty`：续步沿用命中，下一轮无重复画像、无清空提醒、无旧节点改写；
   2. 旧 session 预取结果晚于重绑到达时新 session 不消费；多来源重放可正确关联或回退；

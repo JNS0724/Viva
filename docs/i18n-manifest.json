@@ -1,30 +1,30 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-24",
+  "reviewedOn": "2026-11-28",
   "pairs": [
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "b6b6756c7205960bdc79438c5a3d46bb1b572dfff74beb5c8e42bb7aa54ca2cf",
-      "zhHash": "9da2c293b880a5a951839ac1f6ff5bcc7dc97917ede346b151d18257d5a842ef"
+      "enHash": "8b298e9825b6144d059c4eaf78068e2bea2c28995b52176ae08c82fa48485df2",
+      "zhHash": "e5689d50bdc7aaf40eadf6eeffd7a05b1ab662321831e88cc5916e7a6983927f"
     },
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "efd48d84bb243f0e003b62734726a58dc4a93d2ceca3dcf935390d1dbc403007",
-      "zhHash": "4de6a41bb08f4f2eb00b35b1927f2c5aa63e4c29659820bab45184b347fae9df"
+      "enHash": "8918521614e35a612cb60e280fa7c470585f70c57074aa9f458b784d4d072bfd",
+      "zhHash": "15cacc29b87631d65b2d3172c24a10c3999b24705b879e311885c19707ba8ab7"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "d0a7e24ac9175f6ee01ac187eb9e6c19effb9d606651d4cd2f6c93693dbc4b18",
-      "zhHash": "9e0ddbb0ce5ad5e7dd8df286a39fe7c0f02332ce66ee0bb617742a2e7d7114c1"
+      "enHash": "4f4debd26ffad8dff19ea2b9f38b7c724dc0314fd23fbde8bd5dfc091a54a7ff",
+      "zhHash": "6c63ea8d09a30ff82bf2b9674e2ceaf3e3eea2f69bd85da222d51051ccc62a1d"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "c1466619a7405453a1aa5e0acbca711f1775ef4e897145977af89976c8bb282a",
-      "zhHash": "0058170ff5cde294e75062c7dd11bebd21696b1a9b102e8fc87b5d6f5e7d15d8"
+      "enHash": "b8f9ba2aa3a0d8f3f29053df292e3d283cb0bef02463b5d964d28df4584ee133",
+      "zhHash": "ab25cc5ea205e1ea283ee6ed3d7fbea5b269072efa92a69e27d42a43d0123de0"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -65,14 +65,14 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "6f1b32574f830f3b3abc5e53b01313c622b8eb00f134d8adc43e638cbe0af5dd",
-      "zhHash": "41c151ba8d7cf42966a9afb25d6cf21f8820946145e3b23fe828762f99080358"
+      "enHash": "09afbee53f98ff8b0d20ccc3816e218cf18a0f4630119ba88820583190b707c8",
+      "zhHash": "018067a787a946d88df29ece2a922bccd599f52655856661f4cb171e0ad9da5c"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "611c9f2d3d69614043cfc56a7c8a4237d698680247cd716d93e28ea192a986d4",
-      "zhHash": "08afb3e5c30ffaeba7d8086eed7af347eb864d2ef286d19cc5f75798410d7165"
+      "enHash": "deefa9073eb82ca8b13dc9fecbdd92c58ac91ca708e75b669427558e26d90ffb",
+      "zhHash": "ac9066eddf8f3e9caa7b237093df9355b9e5d57f7fdd048a3ea020d8d6e3e8e2"
     },
     {
       "en": "docs/agent-routing-design.md",
@@ -101,8 +101,8 @@
     {
       "en": "docs/memory-runtime-decoupling.md",
       "zh": "docs/memory-runtime-decoupling.zh-CN.md",
-      "enHash": "c9eae8e2f3f74624e623dc5260c09115181dc49655e99cf755128c75d909a7c0",
-      "zhHash": "e05457fc646d637ebe94e24929a0b5bd13d1572663ee58fdd88a2307971633ed"
+      "enHash": "bb7f9c1473faaf155fd9b2bf11d4cc80c1a6d868a84af7587875bb642f7ec801",
+      "zhHash": "1368e10dc40ce3ce5fe1b1df9b66ba19e6522882357217d7fb4820172c52aed5"
     }
   ],
   "bilingual": [

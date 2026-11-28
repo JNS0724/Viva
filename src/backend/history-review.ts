@@ -102,7 +102,7 @@ function topicOf(id: string, rows: readonly Row[]): ReviewTopic {
     stars: rows.reduce((sum, row) => sum + row.stars, 0),
     cwds: directoriesOf(talk),
     segments: talk.map((row) => row.id),
-    head: talk.at(-1)?.id ?? null,
+    head: id === 'legacy-feed-archive' ? null : talk.at(-1)?.id ?? null,
     tasks: tasks.map((row) => ({ id: row.id, createdAt: row.created_at, title: titleOf(row), turns: row.turns, hasFiles: row.files > 0, stars: row.stars })),
   }
 }

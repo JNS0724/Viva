@@ -29,6 +29,9 @@ const QUESTION_TIMES_LIMIT = 1000
 /** Earlier segments of the timeline read back at a time, and the most at once. */
 const SEGMENT_PAGE = 5
 const MAX_SEGMENT_PAGE = 50
+const DELETED_TOMBSTONES_LIMIT = 10_000
+const TOMBSTONE_MAX_AGE_MS = 30 * 86_400_000
+export const LEGACY_FEED_ARCHIVE_ID = 'legacy-feed-archive'
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS conversations (
@@ -105,6 +108,14 @@ const SCHEMA = `
   -- A conversation not stored yet (a blank topic) may already have a record, so no foreign key: they go with it.
   CREATE TRIGGER IF NOT EXISTS report_records_gone AFTER DELETE ON conversations BEGIN
     DELETE FROM report_records WHERE conversation_id = old.id;
+  END;
+  -- Tombstones of physically purged conversations so late crash-recovery report receipts never resurrect them.
+  CREATE TABLE IF NOT EXISTS deleted_conversations (
+    id TEXT PRIMARY KEY,
+    deleted_at INTEGER NOT NULL
+  );
+  CREATE TRIGGER IF NOT EXISTS conversations_purged AFTER DELETE ON conversations BEGIN
+    INSERT OR REPLACE INTO deleted_conversations (id, deleted_at) VALUES (old.id, COALESCE(old.deleted_at, unixepoch() * 1000));
   END;
 `
 /**
@@ -256,8 +267,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       JOIN conversations c ON c.id = m.conversation_id WHERE m.conversation_id = ? AND m.seq = ?`),
     nearest: db.prepare('SELECT seq FROM messages WHERE conversation_id = ? ORDER BY abs(seq - ?), seq LIMIT 1'),
     segmentRow: db.prepare('SELECT id, deleted_at FROM conversations WHERE id = ?'),
+    purgedConversation: db.prepare('SELECT 1 FROM deleted_conversations WHERE id = ?'),
     position: db.prepare('SELECT created_at, rowid FROM conversations WHERE id = ?'),
-    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
+    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL AND id != 'legacy-feed-archive'
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
     timelineMessages: db.prepare(`SELECT id, seq, role, text, receipt, images, source_key, source_id, created_at,
@@ -293,6 +305,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     shiftSidesUp: db.prepare("UPDATE conversations SET folded_at = folded_at + 1 WHERE folded_into = ? AND fold_kind = 'side' AND folded_at > ?"),
     shiftSidesDown: db.prepare("UPDATE conversations SET folded_at = folded_at - 1 WHERE folded_into = ? AND fold_kind = 'side' AND folded_at > ?"),
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
+    tailRecords: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? AND after_seq >= ? ORDER BY after_seq, at, report_id'),
+    recordTimes: db.prepare('SELECT report_id, at FROM report_records WHERE conversation_id = ?'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, COALESCE((SELECT MIN(seq) FROM messages WHERE conversation_id = ? AND source_id = ?),
         MIN(COALESCE(?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?)), (SELECT COUNT(*) FROM messages WHERE conversation_id = ?))), ?, ?)`),
@@ -316,7 +330,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at, source_key, source_id, foreground_only)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     limitToForeground: db.prepare('UPDATE messages SET foreground_only=1 WHERE conversation_id=? AND seq=?'),
-    latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
+    latest: db.prepare("SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL AND id != 'legacy-feed-archive' ORDER BY updated_at DESC, rowid DESC LIMIT 1"),
     fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
     foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
       FROM conversations c WHERE c.folded_into = ? AND c.deleted_at IS NULL ORDER BY c.created_at, c.rowid`),
@@ -332,7 +346,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     titleHits: db.prepare(`SELECT id, title AS text FROM conversations
       WHERE title LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ${SEARCH_SCAN_LIMIT}`),
     questionTimes: db.prepare(`SELECT m.created_at FROM messages m
-      CROSS JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
+      CROSS JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL AND m.conversation_id != 'legacy-feed-archive'
       ORDER BY m.id DESC LIMIT ?`),
   }
 
@@ -406,6 +420,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   }
 
   const conversationOf = (id: string) => sql.conversation.get(id)
+  const hasConversation = (id: unknown): boolean => Boolean(sql.conversation.get(assertId(id)))
+  const conversationMeta = (id: unknown): Conversation | null => {
+    const row = sql.conversation.get(assertId(id))
+    return row ? toConversation(row) : null
+  }
 
   function get(id: unknown) {
     const row = sql.conversation.get(assertId(id))
@@ -418,6 +437,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     const row = sql.conversation.get(cid)
     if (!row) return null
     const total = Number(sql.messageCount.get(cid)?.count ?? 0)
+    if (limit === 0) {
+      return { conversation: toConversation(row), messages: [], offset: total, total, records: [] }
+    }
     const size = Math.max(1, Math.trunc(limit) || CONVERSATION_WINDOW_MESSAGES)
     const offset = Math.max(0, total - size)
     return {
@@ -425,7 +447,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       messages: sql.tailMessages.all(cid, offset).map(toMessage),
       offset,
       total,
-      records: recordsOf(row.id),
+      records: offset > 0 ? sql.tailRecords.all(row.id, offset).map(toRecord) : recordsOf(row.id),
     }
   }
 
@@ -447,6 +469,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   /** The task records a conversation shows, in their places (report_records). */
   const recordsOf = (id: string): ReportRecord[] => sql.records.all(id).map(toRecord)
+  const messageCount = (id: unknown): number => Number(sql.messageCount.get(assertId(id))?.count ?? 0)
+  const recordTimesOf = (id: unknown): Array<{ reportId: string, at: number }> =>
+    sql.recordTimes.all(assertId(id)).map((row) => ({ reportId: String(row.report_id), at: Number(row.at) }))
 
   /**
    * A task's record, kept once (a report is recorded once, whatever conversation): after the messages stored there
@@ -668,6 +693,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     return row ? get(row.id) : null
   }
 
+  function latestConversation(): Conversation | null {
+    const row = sql.latest.get()
+    const found = row ? sql.conversation.get(row.id) : null
+    return found ? toConversation(found) : null
+  }
+
   function list({ offset = 0, limit = PAGE_SIZE } = {}) {
     const size = Math.min(Math.max(1, Math.trunc(limit) || PAGE_SIZE), MAX_PAGE_SIZE)
     const rows = sql.list.all(size + 1, Math.max(0, Math.trunc(offset) || 0))
@@ -719,16 +750,17 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * Messages that have every one of several words (「报销 模板」): the words of three characters or more through the
    * trigram index, the shorter ones by LIKE, in one query.
    */
-  function allTermsHits(terms: readonly string[], { since, until }: { since: number, until: number }) {
+  function allTermsHits(terms: readonly string[], { since, until, includeArchive = true }: { since: number, until: number, includeArchive?: boolean }) {
     const long = terms.filter((term) => [...term].length >= TRIGRAM_MIN_CHARS)
     const short = terms.filter((term) => [...term].length < TRIGRAM_MIN_CHARS)
     const likes = short.map(() => `m.text LIKE ? ESCAPE '\\'`)
+    const archiveClause = includeArchive ? '' : `AND c.id != '${LEGACY_FEED_ARCHIVE_ID}'`
     const from = long.length
       ? `messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id WHERE messages_fts MATCH ?`
       : `messages m JOIN conversations c ON c.id = m.conversation_id WHERE 1`
     const params = [...(long.length ? [long.map(ftsPhrase).join(' AND ')] : []), ...short.map((term) => `%${escapeLike(term)}%`), since, until]
     return db.prepare(`SELECT m.id AS message_id, m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM ${from}
-      ${likes.map((like) => `AND ${like}`).join(' ')} AND c.deleted_at IS NULL AND c.folded_into IS NULL
+      ${likes.map((like) => `AND ${like}`).join(' ')} AND c.deleted_at IS NULL AND c.folded_into IS NULL ${archiveClause}
       AND m.created_at >= ? AND m.created_at < ?
       ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`).all(...params) as Row[]
   }
@@ -738,12 +770,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * with where each is, its directory, and the messages right before and after it in its segment; `since` and
    * `until` (ms), only those written from the one and before the other.
    */
-  function searchMessages(input: unknown, { since = 0, until = Number.MAX_SAFE_INTEGER }: { since?: number, until?: number } = {}) {
+  function searchMessages(input: unknown, { since = 0, until = Number.MAX_SAFE_INTEGER, includeArchive = true }: { since?: number, until?: number, includeArchive?: boolean } = {}) {
     const query = typeof input === 'string' ? input.trim().slice(0, MAX_QUERY_CHARS) : ''
     if (!query) return []
     const terms = [...new Set(query.split(/\s+/).filter(Boolean))].slice(0, MAX_QUERY_TERMS)
     // One word goes the same way: through the trigram index when it is long enough, else by LIKE.
-    const rows = allTermsHits(terms.length === 1 ? [query] : terms, { since, until })
+    const rows = allTermsHits(terms.length === 1 ? [query] : terms, { since, until, includeArchive })
     return rows.map((row) => ({
       messageId: row.message_id, segmentId: row.segment_id, seq: row.seq, role: row.role, at: row.created_at, cwd: row.cwd ?? null, snippet: snippetOf(row.text, firstTermIn(row.text, terms)),
       before: contextOf(sql.neighbour.get(row.segment_id, row.seq - 1)),
@@ -812,9 +844,67 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const restore = (id: unknown) => changeOne(
     db.prepare('UPDATE conversations SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL'), assertId(id))
 
+  /** Preserves retired feed_items into a dedicated local UI-only historical topic searchable and readable in 回顾. */
+  function archiveLegacyFeed(items: ReadonlyArray<{ key: string, title: string, sourceLabel: string, originRef?: string | null, body: string, at: number }>): string | null {
+    if (!items.length) return null
+    return transaction(() => {
+      const id = LEGACY_FEED_ARCHIVE_ID
+      const existing = sql.anyConversation.get(id)
+      const knownKeys = new Set(
+        (db.prepare('SELECT source_key FROM messages WHERE conversation_id = ? AND source_key IS NOT NULL').all(id) as Array<{ source_key: string }>)
+          .map((row) => row.source_key),
+      )
+      const fresh = items.filter((item) => !knownKeys.has(item.key))
+      if (!fresh.length) return id
+      const times = fresh.map((item) => (Number.isFinite(item.at) && item.at > 0 ? Math.trunc(item.at) : now()))
+      const minAt = Math.min(...times)
+      const maxAt = Math.max(...times)
+      const title = t('main.legacy-feed.archive.title')
+      sql.upsert.run({
+        id,
+        title,
+        createdAt: minAt,
+        updatedAt: maxAt,
+        sessionId: null,
+        mode: null,
+        model: null,
+        cwd: null,
+        parentId: null,
+        topicId: existing ? null : id,
+      })
+      db.prepare('UPDATE conversations SET title = ?, title_custom = 1, updated_at = MAX(updated_at, ?) WHERE id = ?').run(title, maxAt, id)
+      let seq = Number(sql.messageCount.get(id)?.count ?? 0)
+      fresh.forEach((item, index) => {
+        const createdAt = times[index]!
+        const refSuffix = item.originRef ? `（${item.originRef}）` : ''
+        const head = `【${item.sourceLabel}】${item.title}${refSuffix}`
+        sql.insert.run(sql.nextMessageId.get().value, id, seq++, 'user', head, null, null, null, createdAt, null, null, 1)
+        sql.insert.run(sql.nextMessageId.get().value, id, seq++, 'assistant', item.body || '（没有文字）', null, null, null, createdAt, item.key, null, 1)
+      })
+      return id
+    })
+  }
+
   /** Removes conversations deleted at least `olderThanMs` ago, messages and index entries included. */
-  function purgeDeleted({ olderThanMs }: { olderThanMs: number }) {
-    return db.prepare('DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at <= ?').run(now() - olderThanMs).changes
+  function purgeDeleted({ olderThanMs, retainIds, pruneTombstones = true }: {
+    olderThanMs: number
+    retainIds?: Iterable<string>
+    pruneTombstones?: boolean
+  }) {
+    const at = now()
+    const changes = db.prepare('DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at <= ?').run(at - olderThanMs).changes
+    if (pruneTombstones) {
+      const protectedIds = retainIds ? [...retainIds].filter((value) => typeof value === 'string' && value.length > 0) : []
+      db.prepare(`DELETE FROM deleted_conversations
+        WHERE deleted_at <= ?
+          AND rowid NOT IN (SELECT rowid FROM deleted_conversations ORDER BY deleted_at DESC, rowid DESC LIMIT ?)
+          AND id NOT IN (SELECT value FROM json_each(?))`).run(
+        at - TOMBSTONE_MAX_AGE_MS,
+        DELETED_TOMBSTONES_LIMIT,
+        JSON.stringify(protectedIds),
+      )
+    }
+    return changes
   }
 
   const sessionIds = (id: unknown): string[] => sql.sessions.all(assertId(id)).map((row) => row.session_id)
@@ -843,7 +933,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   return {
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery, matchesPromptText,
-    addRecord, hasRecord, moveRecords, recordsOf, bySession, detachNativeSession, rebindMessageSession,
+    addRecord, hasRecord, moveRecords, recordsOf, recordTimesOf, messageCount, hasConversation, conversationMeta, archiveLegacyFeed, bySession, detachNativeSession, rebindMessageSession,
+    hasAnyConversation: (id: unknown) => {
+      const cid = assertId(id)
+      return Boolean(sql.segmentRow.get(cid) || sql.purgedConversation.get(cid))
+    },
     nativeProject(session: string) {
       const scope = db.prepare('SELECT scope FROM native_session_projects WHERE session=?').get(session)?.scope
       return typeof scope === 'string' ? scope : undefined
@@ -854,7 +948,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     create, save, commit, get, getTail, sliceMessages, streamKeysBefore, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null
-    }, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate, sourceLink,
+    }, latest, latestConversation, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate, sourceLink,
     questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
     // The app database is the backend's to close.
     close: () => { if (!given) db.close() },

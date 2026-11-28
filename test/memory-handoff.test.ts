@@ -25,7 +25,6 @@ import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
 import { createBackend } from '../src/backend/compose.ts'
-import type { FeedItem } from '../src/backend/feed-store.ts'
 import type { HostCapabilities, HostEvent } from '../src/backend/host.ts'
 import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
 const MEMORY_EMBEDDING_FINGERPRINT = 'handoff-test-vector-space'
@@ -93,7 +92,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     dialogs: { chooseFolder: async () => null, chooseFiles: async () => null, saveFile: async () => null },
     shell: { openExternal: async () => {}, openPath: async () => '', showItemInFolder: noOp, trash: async () => {} },
     notify: noOp, power: { idleSeconds: () => 0 }, window: { send: event => { events.push(event); onEvent(event) },
-      broadcastLanguage: noOp, inFront: () => true, setPending: noOp, refreshNative: noOp },
+      broadcastLanguage: noOp, inFront: () => true, refreshNative: noOp },
     loginItem: { set: noOp }, shellSettings: () => ({ shortcut: null, openAtLogin: { available: false } }),
   }
   let backend: ReturnType<typeof createBackend> | null = null
@@ -154,7 +153,6 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   }
   const newTopic = () => call<Promise<AgentInfo>>('agent:new-session')
   const tasks = () => call<Task[]>('task:finished')
-  const feed = () => call<FeedItem[]>('feed:list')
   const files = async () => {
     const result: MemoryFileDetail[] = []
     let cursor: MemoryFileListResult['nextCursor'] = null
@@ -196,7 +194,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     assert.equal(edited.status, 'applied')
     assert.ok((await files()).some(item => item.markdown.includes(newValue)))
   }
-  return { ask, call, defer, directory, events, feed, files, model, newTopic, recallOld, replace, restart, schedule, stopBackend, tasks,
+  return { ask, call, defer, directory, events, files, model, newTopic, recallOld, replace, restart, schedule, stopBackend, tasks,
     startBackend: () => openBackend().startBridge(),
     wake: () => backend?.signal({ kind: 'system.woke' }), agentPid: () => backend?.agentPid(), memoryOwnerPid: () => backend?.memoryOwnerPid() ?? null }
 }
@@ -483,50 +481,6 @@ test('cancelling a report rejects its queued human before any native source is d
   const next = app.model.requests.length
   await app.ask('冷启动后的独立请求')
   assert.ok(app.model.requests.slice(next).every(request => !JSON.stringify(request).includes(question)))
-})
-
-test('an early admitted Updates prompt retains the queue until its native turn settles', { timeout: 45_000 }, async t => {
-  const title = '准备一份合成资料', scheduled = '生成一次可续接的合成结果', draft = '合成结果只供这次续接使用'
-  const later = '派生结果之后的人类原话', feedOperation = randomUUID(), laterOperation = randomUUID()
-  let app: Awaited<ReturnType<typeof setup>> | undefined, feedId: string | undefined, feedText = ''
-  let incoming: Promise<IpcResults['agent:prompt']> | undefined, following: Promise<unknown> | undefined
-  let release = () => {}, modelHeld = false
-  const gate = new Promise<void>(resolve => { release = resolve })
-  app = await setup(t, request => {
-    const question = questionOf(request.messages), tool = JSON.stringify(request.messages.at(-1)).includes('tool_result')
-    if (question === title && !tool) return { tool: { name: 'schedule_create', input: {
-      title, prompt: scheduled, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
-    } } }
-    if (question === scheduled && !tool) return { text: draft }
-    if (!modelHeld && question.includes(draft)) {
-      const id = request.messages.flatMap(message => typeof message.content === 'string' ? requestsIn(message.content)
-        : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).find(entry => entry.words.includes(draft))?.id
-      if (id) {
-        modelHeld = true
-        return { tool: { name: 'commit_route', input: { requestId: id, goals: [{ goal: '解释这份资料', disposition: 'answer' }],
-          actions: [{ kind: 'reply', scope: '解释这份资料' }] } }, waitFor: gate }
-      }
-    }
-    return null
-  }, { onEvent(event) {
-    if (!app || !feedId || incoming || event.type !== 'turn_started' || event.by !== 'task') return
-    incoming = app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', feedText, [], feedOperation, feedId)
-    void incoming.catch(() => {})
-    following = app.call<Promise<unknown>>('agent:prompt', later, [], laterOperation)
-    void following.catch(() => {})
-  } })
-  app.defer(release)
-  await app.schedule(title); makeScheduleDue(app.directory); app.wake()
-  const item = await eventually(() => app!.feed().find(item => item.title === title))
-  assert.ok(item)
-  feedText = await app.call<Promise<string>>('feed:continue', item.id)
-  feedId = item.id
-  await app.ask('后台做：启动一份独立报告')
-  assert.ok(await eventually(() => modelHeld))
-  await incoming // The public feed receipt intentionally returns at native onStart.
-  assert.ok(!app.model.requests.some(request => questionOf((request as Request).messages) === later))
-  release(); await following
-  assert.ok(app.model.requests.some(request => questionOf((request as Request).messages) === later))
 })
 
 for (const duringReport of [false, true]) test(`a lost host receipt stays unknown after cancellation (${duringReport ? 'report interjection' : 'human prompt'})`, { timeout: 45_000 }, async t => {
@@ -1192,7 +1146,10 @@ test('Viva chats, reports background results and runs schedules with an incompat
     const input = questionOf((raw as Request).messages)
     return input.startsWith('【后台任务结束】') && input.includes(report)
   })))
-  assert.ok(await eventually(() => app.feed().find(item => item.title === title)))
+  assert.ok(await eventually(() => app.model.requests.some(raw => {
+    const input = questionOf((raw as Request).messages)
+    return input.startsWith('【后台任务结束】') && input.includes(title)
+  })))
   assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === scheduled))
   assert.deepEqual(fs.readFileSync(file), before)
 })
@@ -1331,7 +1288,7 @@ test('an ordinary city clarification stays scoped to the routed background task'
   assert.equal((await app.files()).length, 0)
 })
 
-test('an Updates draft keeps the result identity until dispatch and never becomes a user memory source', { timeout: 30_000 }, async t => {
+test('a due schedule delivers its result directly to the main conversation without automatic L3 recall or becoming a user memory source', { timeout: 30_000 }, async t => {
   const title = '定时整理原始材料'
   const prompt = '核对这份日报'
   const uniqueMemoryMarker = 'SCHED_UNIQUE_MARKER_P27'
@@ -1354,35 +1311,22 @@ test('an Updates draft keeps the result identity until dispatch and never become
   await app.schedule(title)
   await app.newTopic()
   await app.recallOld()
+  const seen = app.events.length
   makeScheduleDue(app.directory)
   app.wake()
-  const item = await eventually(() => app.feed().find(item => item.title === title))
-  assert.ok(item)
+  assert.ok(await eventually(() => app.events.slice(seen).some(event => event.type === 'report_delivered' && String(event.text).includes(draft))))
+  assert.ok(await eventually(() => app.events.slice(seen).some(event => event.type === 'turn_end')))
   const firstPromptRequest = (app.model.requests as Request[]).find(request =>
     questionOf(request.messages) === prompt && !JSON.stringify(request.messages).includes('"tool_result"'))
   assert.ok(firstPromptRequest, 'expected first model request for scheduled prompt before any tool_result')
   const firstPromptText = JSON.stringify(firstPromptRequest.messages)
   assert.doesNotMatch(firstPromptText, /<memory-recall/, 'unattended scheduled prompt must not trigger automatic L3 memory-recall (§5.4)')
   assert.equal(firstPromptText.includes(uniqueMemoryMarker), false, 'unattended scheduled prompt must not inject private memory marker via L3 recall')
-  const text = await app.call<Promise<string>>('feed:continue', item.id)
-  assert.ok(text.endsWith(draft), JSON.stringify({ body: item.body, text }))
-  await app.newTopic()
-  const offset = app.model.requests.length
-  const seen = app.events.length
-  const operation = randomUUID()
-  const send = (words: string, id: string, source = randomUUID()) => app.call<Promise<void>>('agent:prompt', words, [], source, id)
-  await assert.rejects(() => send('与结果无关的旧片段', item.id), /保留.*原文/)
-  await send(`${text}\n\n解释这段结果`, item.id, operation)
-  assert.ok(await eventually(() => app.model.requests.slice(offset).some(raw => JSON.stringify(raw).includes('解释这段结果'))))
-  assert.ok(await eventually(() => app.events.slice(seen).find(event => event.type === 'turn_end')))
   const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'))
   try {
-    assert.equal(memoryDb.prepare('SELECT id FROM memory_sources WHERE id=? OR text IN (?,?)').get(operation, prompt, draft), undefined)
+    assert.equal(memoryDb.prepare('SELECT id FROM memory_sources WHERE text IN (?,?)').get(prompt, draft), undefined)
   }
   finally { memoryDb.close() }
-  await app.replace()
-  assert.equal(await app.call('feed:continue', item.id), text)
-  assert.ok(app.feed().some(row => row.id === item.id && row.body === draft))
 })
 
 test('consecutive identical task prompts run distinct single-hop L3 retrievals with unique refs (P2-7)', { timeout: 30_000 }, async t => {

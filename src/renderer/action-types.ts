@@ -1,7 +1,6 @@
 import type { ConversationPayloads } from './conversation-types.ts'
-import type { KeptTask, MemoryFileDetailView } from '../shared/ipc-results.ts'
+import type { KeptTask, MemoryFileDetailView, ScheduleView } from '../shared/ipc-results.ts'
 import type { MemoryFileCreateRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryManagedFileVersion, MemoryFileForgetRequest } from '../memory/contracts/file-management.ts'
-import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
 import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
 import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView } from './capability-types.ts'
@@ -93,16 +92,6 @@ export interface ActionPayloads extends ConversationPayloads {
   history_results_invalidated: {}
   toast_show: { toast: NonNullable<State['toast']> }
   toast_hide: { key: number }
-  feed_open: { kind?: FeedPick['kind'], id?: string }
-  feed_close: {}
-  feed_select: FeedPick
-  feed_source_new: { pluginName?: string }
-  feed_source_draft: { changes: Partial<import('./feed-types.ts').FeedSourceDraft> }
-  feed_source_running: { id: string | null }
-  feed_source_notice: { message: string | null }
-  feed_loaded: { items?: readonly FeedItemView[], schedules?: readonly ScheduleView[], sources?: readonly import('./feed-types.ts').FeedSourceView[], select?: FeedPick | null, resetDraft?: boolean }
-  feed_busy: {}
-  feed_failed: { message: string | null }
   files_listed: { path: string, entries: State['files']['folders'][string] }
   files_toggled: { path: string }
   files_selected: { path: string }
@@ -201,9 +190,9 @@ export interface ActionPayloads extends ConversationPayloads {
   review_open: { key: string }
   review_focus: { key: string, title: string, at?: number | null, head?: string | null, found?: string | null, notice?: string | null }
   review_unfocus: {}
-  review_read: { key: string, read?: number, whole?: boolean, messages: readonly import('./review-types.ts').ReaderMessage[], from?: number, total?: number }
+  review_read: { key: string, read?: number, whole?: boolean, messages: readonly import('./review-types.ts').ReaderMessage[], records?: readonly import('./review-types.ts').ReaderRecord[], from?: number, total?: number }
   review_read_loading: { read: number, edge: import('./review-types.ts').ReaderEdge }
-  review_read_more: { read: number, edge: import('./review-types.ts').ReaderEdge, part: null | { messages: readonly import('./review-types.ts').ReaderMessage[], from: number, total: number } }
+  review_read_more: { read: number, edge: import('./review-types.ts').ReaderEdge, part: null | { messages: readonly import('./review-types.ts').ReaderMessage[], records?: readonly import('./review-types.ts').ReaderRecord[], from: number, total: number } }
   review_starred: { items: Review['starred'] }
   stars_loaded: { places: readonly { segmentId: string, seq: number }[] }
   star_changed: { segmentId: string, seq: number, starred: boolean, changed?: boolean }
@@ -227,6 +216,13 @@ export interface ActionPayloads extends ConversationPayloads {
   tasks_page_open: { taskId?: string | null }
   tasks_page_close: {}
   tasks_page_select: { taskId: string }
+  schedules_open: { id?: string | null }
+  schedules_close: {}
+  schedules_select: { id: string }
+  schedules_loaded: { schedules: readonly ScheduleView[], clearExplicit?: boolean }
+  schedules_busy: {}
+  schedules_done: {}
+  schedules_failed: { message: string | null }
   tasks_seen_restored: { ids: readonly string[] }
   tasks_page_steps: { open?: boolean }
   tasks_page_all_steps: {}

@@ -53,7 +53,7 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     output,
     execute: async (args, exec) => ({ text: await act({ op: 'answer_background_task', taskId: args.taskId, questionId: args.questionId, answers: args.answers }, exec) }),
   }))
-  // Schedules (system-design §12.2): a time and a prompt, run with read-only tools when due, its answer in 动态.
+  // Schedules (system-design §12.2): a time and a prompt, run unattended at the user's permission level when due, its answer reported to the main conversation.
   // A rule from flat arguments, as dsh-schedule takes it; the app checks it again (tasks-channel.ts).
   const ruleOf = (args: Record<string, unknown>) => {
     const kind = String(args.kind ?? '')
@@ -72,7 +72,7 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
   } as const
   ctx.tools.register(defineTool({
     name: 'schedule_create', timeoutMs: LONG_TOOL_TIMEOUT_MS,
-    description: '用户要你在某个时间或定期做一件事（提醒、起草、汇总、查资料）时，提出一个定时任务：到点时 prompt 会在独立会话里以只读工具运行，回答出现在 Viva 的「动态」并通知用户。'
+    description: '用户要你在某个时间或定期做一件事（提醒、起草、汇总、查资料）时，提出一个定时任务：到点时 prompt 会在独立无人值守会话里按用户当前权限档位运行（需要弹窗确认的操作会自动拒绝），结果直接发回主对话并通知用户。'
       + 'prompt 要自成一体：写清要做什么、用到的文件路径和输出要求，因为运行时看不到这段对话；纯提醒就写「用一句话提醒用户……」。'
       + '这只是提议：卡片出现在对话里，用户同意后才保存。提出后用一句话告诉用户，然后结束这一轮。',
     parameters: { title: { type: 'string', required: true, description: '简短标题，120 字以内' }, prompt: { type: 'string', required: true, description: '到点时运行的完整提示词' }, ...timeParameters },

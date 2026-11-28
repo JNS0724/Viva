@@ -121,7 +121,7 @@ The external Playwright runner in `test/smoke/` owns launch, isolated profiles, 
 | `smoke:walkthrough` / `smoke:relaunch` | One self-contained test: approval, desktop island, layouts, scrolling, files; restart, history, Markdown, topics, images, permissions and IME |
 | `smoke:memory` | Real dsh, local fake model, memory injection/reasons, questions, MCP/skills, provider switching, crash recovery, tasks and their interactions |
 | `smoke:resume` | Independently prepare two completed tasks and one waiting task through the product API, quit and restart, resume the interrupted task and ask a restored task again |
-| `smoke:schedules` | Independently propose, keep, pause/resume and run a schedule on its real one-minute timer, show the result in 动态 and continue in the conversation |
+| `smoke:schedules` | Independently propose, keep, pause/resume and run a schedule on its real one-minute timer, and deliver the result to the main conversation |
 | `smoke:timeline` | Seeded long history, search, review, stars and resume paths |
 | `smoke:language` | English/Chinese, input/focus/selection, IME and open reading state |
 | `smoke:package` | Installed artifact, real embedded dsh, local fake model, memory and restart; requires `VIVA_SMOKE_EXECUTABLE` |
@@ -145,7 +145,7 @@ The design follows [Electron automated testing](https://www.electronjs.org/docs/
 
 ## Captures
 
-npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-showcase.ts to capture Today, chat, the schedule card, Activity, approvals, files, and island. The runner owns a unique temporary profile. Record at 10 fps to docs/images/demo.gif; screenshots are resized to 1600 px. Review captures after UI changes. Current captures use Chinese; localized capture sets must be verified before being represented as English product media.
+npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-showcase.ts to capture home, chat, the schedule card, approvals, files, and island. The runner owns a unique temporary profile. Record at 10 fps to docs/images/demo.gif; screenshots are resized to 1600 px. Review captures after UI changes. Current captures use Chinese; localized capture sets must be verified before being represented as English product media.
 
 ## Known limits
 

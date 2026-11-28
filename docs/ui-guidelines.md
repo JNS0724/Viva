@@ -112,7 +112,7 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 | --- | --- |
 | 1–10 | Inside a region: column grips 6, turn rail 9, dropdowns 10 |
 | 29–30 | Menus over content and their scrims, the drawer on narrow windows |
-| 32 | Hub pages (search · about you · settings · 后台 · 动态; 动态 without the sidebar) |
+| 32 | Hub pages (search · 后台 · 定时任务 · about you · capabilities · settings) |
 | 35 | Title bar |
 | 50 | Modal dialogs, `.overlay` |
 | 60 | Toasts, the working-directory sheet's scrim |
@@ -237,8 +237,8 @@ Ring colors match the interface's state colors: orange waits on you, red is an e
 
 Drawn by `src/renderer/view/maid.ts`:
 
-- **Framing:** `whole` shows the complete half-body canvas at 200px on the home page, 96px on cards, 72px in every desktop-island state and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 46px in the title-bar badge and 48px in conversation, trimming a quiet 8% outer cream margin so her expression stays legible.
-- **Animations** are used by default on the home page, approval and question cards, the desktop island and the current conversation portrait. Feed lists and details remain still. Reduced motion selects the matching still.
+- **Framing:** `whole` shows the complete half-body canvas at 200px on the home page, 96px on cards, 72px in every desktop-island state and 64px on schedule details in Schedules. `face` uses the dedicated centred assets in `avatars/` at 46px in the title-bar badge and 48px in conversation, trimming a quiet 8% outer cream margin so her expression stays legible.
+- **Animations** are used by default on the home page, approval and question cards, the desktop island and the current conversation portrait. Schedule details remain still. Reduced motion selects the matching still.
 - **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
 - **On the desktop island** she moves both folded and open. Updates within the same layout and mood retain the image node. Status is told by the shape of a ring as well as by text and colour (`view/island-dom.ts` `deskSignal`):
   - The portrait's ring: a turning blue arc while working; a solid orange ring with an outward pulse when it needs your approval or answer; a breathing blue ring when done and not yet seen; a solid red ring on an error; a dashed grey ring when not connected, with her in grey; no ring at rest, only the thin outline. Her picture is never scaled or faded, which would blur it.
@@ -248,7 +248,7 @@ Drawn by `src/renderer/view/maid.ts`:
   - With reduced motion the rings rest still. Other cards retain their existing character badges.
 - **On the home page** her disc has an extra faint saucer rim. This is the one bold touch in the whole interface; nothing else gets one.
 - All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc. A new picture replaces the old one only once it is decoded (`view/maid.ts` `showMaid`), so a change of mood never blanks her for a frame or two.
-- After changing assets, check the home page, conversation, approval cards, 动态's details and desktop island, and switch through several states in a row.
+- After changing assets, check the home page, conversation, approval cards, schedule details in Schedules and desktop island, and switch through several states in a row.
 
 ## Accessibility and keyboard
 

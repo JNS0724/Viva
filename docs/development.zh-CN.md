@@ -131,7 +131,7 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 | `smoke:walkthrough` / `smoke:relaunch` | 同一个独立测试：权限、桌面岛、布局、滚动、文件；重启、历史、Markdown、话题、图片、权限和 IME |
 | `smoke:memory` | 真实 dsh、本地假模型、记忆注入与原因、反问、MCP/技能、模型切换、崩溃恢复、后台任务及其交互 |
 | `smoke:resume` | 通过产品 API 独立准备两条已完成任务和一条等待任务，退出并重启，恢复中断任务并追问旧任务 |
-| `smoke:schedules` | 独立提出、保存、暂停/恢复定时任务，真实等待一分钟到期，展示动态结果并继续对话 |
+| `smoke:schedules` | 独立提出、保存、暂停/恢复定时任务，真实等待一分钟到期，并将结果投回主对话 |
 | `smoke:timeline` | 长历史、搜索、回顾、收藏及恢复路径 |
 | `smoke:language` | 中英文、输入/焦点/选区、IME 和展开阅读状态 |
 | `smoke:package` | 安装产物的真实内嵌 dsh、本地假模型、记忆与重启；需指定 `VIVA_SMOKE_EXECUTABLE` |
@@ -161,7 +161,7 @@ README 和这份文档里的截图、动图，都是应用自己拍的，不是�
 npm run showcase    # 需要 ffmpeg
 ```
 
-- 用真实的 dsh 加假模型（`test/fixtures/showcase-llm.js`，回答读起来像真的在用），按 `test/smoke/smoke-showcase.ts` 的剧本走一遍：首页的「今天」、对话、定时卡片、动态、确认卡片、文件、桌面岛。runner 新建唯一临时资料目录，不碰你自己的数据。
+- 用真实的 dsh 加假模型（`test/fixtures/showcase-llm.js`，回答读起来像真的在用），按 `test/smoke/smoke-showcase.ts` 的剧本走一遍：首页、对话、定时卡片、后台页接下来的定时、确认卡片、文件、桌面岛。runner 新建唯一临时资料目录，不碰你自己的数据。
 - 定时任务的全过程按每秒 10 帧录下来，ffmpeg 做成 `docs/images/demo.gif`；截图缩到 1600px 宽放进 `docs/images/`。
 
 改了界面以后重跑一次，再看一遍 `docs/images/` 里的图。

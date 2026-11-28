@@ -3,12 +3,12 @@ import { capture, finishTurn, report, run, submit, UI_WAIT_MS, until, wait, type
 
 /**
  * Schedules in the memory smoke run (smoke.ts), on the real dsh with the fake model (test/fixtures/fake-llm.ts):
- * asked 「…到时候帮我…」, the model proposes a schedule a minute ahead; the card waits for 定时; 动态 lists it in
+ * asked 「…到时候帮我…」, the model proposes a schedule a minute ahead; the card waits for 定时; 定时任务 lists it in
  * 接下来, where it pauses and resumes; when it is due its prompt runs where nobody watches, and its answer comes
- * into 动态 as a new item, counted in the title bar; 在对话里继续 puts it in the input for the user to send.
+ * directly back into the main conversation with its report record.
  */
 const CARD = '#thread .fu-card'
-const PAGE = '#feed-page'
+const PAGE = '#schedules-page'
 /** Due a minute after it was proposed, then a run on the fake model: well within this. */
 const RUN_TIMEOUT_MS = FOLLOWUP_AHEAD_MS + 90_000
 const q = (selector: string) => `document.querySelector(${JSON.stringify(selector)})`
@@ -135,32 +135,26 @@ export async function checkSchedules(win: SmokeWindow, outDir: string): Promise<
   await run(win, clickText(CARD, '定时'))
   await until(win, q(`${CARD}.fu-done`), 'kept: the card says when it runs')
 
-  await run(win, `${q('#open-feed')}.click()`)
-  await until(win, `Boolean(${row('active')})`, 'the schedule in 动态, coming up')
+  await run(win, `if (document.getElementById('hub').dataset.open !== 'true') document.getElementById('open-profile').click(); document.querySelector('.hub-nav[data-page="schedules"]').click()`)
+  await until(win, `!${q(PAGE)}.hidden && Boolean(${row('active')})`, 'the schedule on 定时任务, coming up')
   await run(win, `${row('active')}.click()`)
-  await until(win, `${q(`${PAGE} .fu-main`)}?.textContent.includes(${JSON.stringify(FOLLOWUP.prompt)})`, 'its prompt, shown')
-  await run(win, clickText(`${PAGE} .fu-main`, '暂停'))
+  await until(win, `${q(`${PAGE} .tp-main[data-schedule]`)}?.textContent.includes(${JSON.stringify(FOLLOWUP.prompt)})`, 'its prompt, shown')
+  await run(win, clickText(`${PAGE} .tp-main[data-schedule]`, '暂停'))
   await until(win, `Boolean(${row('paused')})`, 'paused')
-  await run(win, clickText(`${PAGE} .fu-main`, '恢复'))
+  await run(win, clickText(`${PAGE} .tp-main[data-schedule]`, '恢复'))
   await until(win, `Boolean(${row('active')})`, 'resumed')
   await capture(win, outDir, 'schedule-next')
+  await run(win, `document.getElementById('hub-back').click()`)
+  await until(win, `document.getElementById('hub').dataset.open === 'false'`, 'back to the main conversation')
 
   const deliveryDeadline = Date.now() + RUN_TIMEOUT_MS
-  // Opening 动态 reloads its contents. Observe the live notification before any navigation.
-  const count = await until(win, `!${q('#feed-count')}.hidden && ${q('#feed-count')}.textContent`, 'the new schedule result counted in the title bar', RUN_TIMEOUT_MS)
-  if (count !== '1') failures.push(`the title bar should count the one new item: ${JSON.stringify(count)}`)
-  await run(win, `if (${q(PAGE)}.hidden) ${q('#open-feed')}.click()`)
-  await until(win, `!${q(PAGE)}.hidden && Boolean(${row('new')})`, 'due, it ran, and its answer is new in 动态', deliveryDeadline - Date.now())
-  await run(win, `${row('new')}.click()`)
-  await until(win, q(`${PAGE} .fu-draft`), 'its answer')
-  const answer = String(await run(win, `${q(`${PAGE} .fu-draft`)}.textContent`))
-  report(`schedule answer: ${answer.slice(0, 80)}`)
-  if (!answer.includes(FOLLOWUP.prompt)) failures.push(`the answer should be the run of its prompt: ${answer.slice(0, 120)}`)
+  await until(win, `[...document.querySelectorAll('#thread .msg-delivered .task-name')].some((el) => el.textContent.includes(${JSON.stringify(FOLLOWUP.title)}))`, 'due, it ran, and its report record arrived in the conversation', RUN_TIMEOUT_MS)
+  await until(win, `[...document.querySelectorAll('#thread .msg-agent')].some((el) => el.textContent.includes(${JSON.stringify(`已看过后台结果：${FOLLOWUP.title}`)}))`, 'the assistant replied with the scheduled result', Math.max(5_000, deliveryDeadline - Date.now()))
+  await finishTurn(win)
+  await run(win, `[...document.querySelectorAll('#thread .msg-delivered')].at(-1).querySelector('.delivered-toggle').click()`)
+  const deliveredText = String(await until(win, `[...document.querySelectorAll('#thread .msg-delivered')].at(-1).querySelector('.delivered-text')?.textContent`, 'the delivered note text'))
+  report(`schedule delivered: ${deliveredText.slice(0, 80)}`)
+  if (!deliveredText.includes(FOLLOWUP.prompt)) failures.push(`the delivered note should contain the run of its prompt: ${deliveredText.slice(0, 120)}`)
   await capture(win, outDir, 'schedule-ran')
-
-  await run(win, clickText(`${PAGE} .fu-main`, '在对话里继续'))
-  await until(win, `document.getElementById('composer-input').value.startsWith('来自动态的「${FOLLOWUP.title}」')`, '在对话里继续 puts it in the input')
-  await capture(win, outDir, 'schedule-continue')
-  await run(win, `(() => { const input = document.getElementById('composer-input'); input.value = ''; input.dispatchEvent(new Event('input')) })()`)
   return failures
 }

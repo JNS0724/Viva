@@ -29,7 +29,7 @@ export type AgentEvent =
   | ({ type: 'schedule_propose', proposal: ScheduleProposal } & Scoped)
   | { type: 'memory_changed', failure?: string }
   | { type: 'files_changed', path: string }
-  | { type: 'feed_changed' | 'schedules_changed' }
+  | { type: 'schedules_changed' }
   | { type: 'task_closed', taskId: string }
   | { type: 'task_snapshot', snapshot: WindowSnapshot }
   | ({ type: 'task_update' } & Position & Payload<'acp_update'>)

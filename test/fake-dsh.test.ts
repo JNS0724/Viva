@@ -172,7 +172,7 @@ test('the fake stream publishes its committed reply through the production histo
     dialogs: { chooseFolder: async () => null, chooseFiles: async () => null, saveFile: async () => null },
     shell: { openExternal: async () => {}, openPath: async () => '', showItemInFolder: noop, trash: async () => {} },
     notify: noop, power: { idleSeconds: () => 0 },
-    window: { send: event => events.push(event), broadcastLanguage: noop, inFront: () => true, setPending: noop, refreshNative: noop },
+    window: { send: event => events.push(event), broadcastLanguage: noop, inFront: () => true, refreshNative: noop },
     loginItem: { set: noop }, shellSettings: () => ({ shortcut: null, openAtLogin: { available: false } }),
   }
   const backend = createBackend({ host, ipc: { handle: register, on: register }, dailyNotes: false })
