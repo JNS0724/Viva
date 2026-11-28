@@ -126,7 +126,7 @@ test('legacy feed upgrade preserves unread schedule items as main-conversation r
   assert.ok(effects.get(SCHEDULE_NOTICE, 's1:s1@2026-11-06T08:00:00.000Z'), 'pending schedule notice is migrated')
   assert.equal(effects.list().some((effect) => effect.kind === LEGACY_FEED_NOTICE), false, 'legacy feed-notice rows removed through Effects')
 
-  // Seen schedule items and plugin feed items are preserved locally (including origin.ref) as foreground_only=1 without leaking host paths or model recall.
+  // Seen schedule items and plugin feed items are preserved verbatim locally (including origin.ref) as foreground_only=1 without entering model recall.
   const archivedRows = app.db.prepare("SELECT role, text, foreground_only FROM messages WHERE conversation_id = 'legacy-feed-archive' ORDER BY seq").all() as Array<{ role: string, text: string, foreground_only: number }>
   const archivedText = archivedRows.map((r) => r.text).join('\n')
   assert.match(archivedText, /周四周报/)
@@ -134,7 +134,7 @@ test('legacy feed upgrade preserves unread schedule items as main-conversation r
   assert.match(archivedText, /外部邮件/)
   assert.match(archivedText, /https:\/\/mail\.example\.internal\/thread\/42/, 'origin.ref provenance is preserved in archive')
   assert.match(archivedText, /插件源旧条目/)
-  assert.doesNotMatch(archivedText, /\/Users\/secret\/private-dir/, 'legacy missing-folder host path is scrubbed')
+  assert.match(archivedText, /\/Users\/secret\/private-dir/, 'verbatim row.body is preserved in local foreground_only archive')
   assert.ok(archivedRows.every((r) => r.foreground_only === 1), 'archived legacy items are marked foreground_only')
 
   const remainingTables = (app.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
@@ -186,6 +186,8 @@ test('legacy feed upgrade strips host diagnostics from failed schedule reports a
   const failureWithStderr = `This scheduled run did not finish after several tries: ${describeError(new Error('prompt failed'), 'could not load /fixture/local-only/settings.yml')}`
   const oversizedUnread = `${'H'.repeat(95_000)}\nMIDDLE_UNREAD_MARKER\n${'T'.repeat(105_000)}`
   const oversizedSeen = `${'X'.repeat(95_000)}\nMIDDLE_SEEN_MARKER\n${'Y'.repeat(105_000)}`
+  const oversizedUnreadErr = `This scheduled run did not finish after several tries: ${'E'.repeat(95_000)}\nMIDDLE_UNREAD_ERR_MARKER\n${'F'.repeat(105_000)}`
+  const oversizedSeenErr = `这次定时任务试了几次都没做成：${'U'.repeat(95_000)}\nMIDDLE_SEEN_ERR_MARKER\n${'V'.repeat(105_000)}`
   app.db.prepare('INSERT INTO feed_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
     'f-err', 'schedule', 's-err@once', '失败提醒', failureWithStderr, JSON.stringify({ label: '定时', ref: 's-err' }), 1_000, null,
   )
@@ -195,8 +197,23 @@ test('legacy feed upgrade strips host diagnostics from failed schedule reports a
   app.db.prepare('INSERT INTO feed_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
     'f-huge-seen', 'schedule', 's-seen@once', '超长已读', oversizedSeen, JSON.stringify({ label: '定时', ref: 's-seen' }), 1_200, 1_300,
   )
+  app.db.prepare('INSERT INTO feed_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+    'f-huge-unread-err', 'schedule', 's-huge-err@once', '超长未读失败', oversizedUnreadErr, JSON.stringify({ label: '定时', ref: 's-huge-err' }), 1_250, null,
+  )
+  app.db.prepare('INSERT INTO feed_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+    'f-huge-seen-err', 'schedule', 's-seen-err@once', '超长已读失败', oversizedSeenErr, JSON.stringify({ label: '定时', ref: 's-seen-err' }), 1_260, 1_300,
+  )
 
-  migrateLegacyFeed({ db: app.db, apply: core.apply, effects, now: () => 5_000 })
+  const seenRecords: Array<{ conversationId: string, reportId: string, text: string }> = []
+  migrateLegacyFeed({
+    db: app.db,
+    apply: core.apply,
+    effects,
+    scheduleConversationId: (id) => (id === 's-seen' || id === 's-seen-err' ? 'conv-live' : null),
+    hasConversation: (id) => id === 'conv-live',
+    addRecord: (record) => { seenRecords.push(record); return true },
+    now: () => 5_000,
+  })
 
   const errPayload = effects.get(REPORT, reportId('schedule:s-err', 's-err@once'))?.payload as ReportPayload
   assert.ok(errPayload)
@@ -209,10 +226,13 @@ test('legacy feed upgrade strips host diagnostics from failed schedule reports a
   assert.equal(hugePayload.outputTruncated, true)
   assert.ok(hugePayload.output.length <= SCHEDULE_RECORD_MAX_CHARS, 'model/record delivery stays bounded at 180k')
 
+  assert.equal(seenRecords.length, 2, 'surviving-conversation seen items get bounded sanitized report_records')
+  assert.doesNotMatch(seenRecords[1]!.text, /MIDDLE_SEEN_ERR_MARKER/)
+
   const archivedRows = app.db.prepare("SELECT text FROM messages WHERE conversation_id = 'legacy-feed-archive' AND role = 'assistant' ORDER BY seq").all() as Array<{ text: string }>
-  assert.equal(archivedRows.length, 2, 'both oversized unread and oversized seen schedule originals are preserved in local archive')
-  assert.equal(archivedRows[0]?.text, oversizedUnread, 'full 200k+ unread original including middle marker is preserved locally')
-  assert.match(archivedRows[0]!.text, /MIDDLE_UNREAD_MARKER/)
-  assert.equal(archivedRows[1]?.text, oversizedSeen, 'full 200k+ seen original including middle marker is preserved locally')
-  assert.match(archivedRows[1]!.text, /MIDDLE_SEEN_MARKER/)
+  assert.deepEqual(
+    archivedRows.map((r) => r.text),
+    [failureWithStderr, oversizedUnread, oversizedSeen, oversizedUnreadErr, oversizedSeenErr],
+    'all 5 sanitized or truncated legacy schedule originals (short failure + 4 >200k bodies) are preserved verbatim in local archive',
+  )
 })

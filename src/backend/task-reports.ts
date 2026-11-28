@@ -302,10 +302,9 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       return outcomes
     }
     const mineKeys = new Set(mine.map((effect) => effect.key))
-    const unsentMineKeys = new Set(mine.filter((effect) => !effect.payload.deliveredTo).map((effect) => effect.key))
     for (const key of probedEpoch.keys()) if (!mineKeys.has(key)) probedEpoch.delete(key)
     for (const key of priorityKeys) if (!mineKeys.has(key)) priorityKeys.delete(key)
-    for (const key of typingDeferSince.keys()) if (!unsentMineKeys.has(key)) typingDeferSince.delete(key)
+    for (const key of typingDeferSince.keys()) if (!mineKeys.has(key)) typingDeferSince.delete(key)
 
     const state = await conversation()
     const passTurn = state === 'busy' ? activeTurnId() : null
@@ -516,6 +515,12 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
     if (needsFollowUpSlice()) wakeLater(50)
+    else if (typing() && typingDeferSince.size > 0 && state === 'idle') {
+      const at = now()
+      let remaining = Infinity
+      for (const since of typingDeferSince.values()) remaining = Math.min(remaining, TYPING_DEFER_MS - (at - since))
+      wakeLater(Math.max(1, remaining))
+    }
     return finalizeOutcomes()
   }, { stage: 'report', metrics: { count: effects.length } })
 

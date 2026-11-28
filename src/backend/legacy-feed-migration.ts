@@ -128,7 +128,8 @@ export function migrateLegacyFeed({
         const source = String(row.source)
         const key = String(row.key)
         const title = String(row.title)
-        const body = sanitizeLegacyBody(String(row.body))
+        const rawBody = String(row.body)
+        const body = sanitizeLegacyBody(rawBody)
         const createdAt = Number(row.created_at)
         const at = Number.isFinite(createdAt) && createdAt > 0 ? Math.trunc(createdAt) : now()
         const origin = parseOrigin(row.origin, source === 'schedule' ? '定时' : source)
@@ -138,7 +139,7 @@ export function migrateLegacyFeed({
             title,
             sourceLabel: origin.label,
             originRef: origin.ref,
-            body,
+            body: rawBody,
             at,
           })
         }
@@ -174,7 +175,7 @@ export function migrateLegacyFeed({
             effects.queue(SCHEDULE_NOTICE, noticeKey, { title, body: deliveryBody.slice(0, NOTICE_BODY_CHARS) })
             migratedNotices += 1
           }
-          if (bounded.truncated) pushFullArchive()
+          if (bounded.truncated || bounded.text !== rawBody) pushFullArchive()
           continue
         }
         if (source === 'schedule') {
@@ -186,6 +187,7 @@ export function migrateLegacyFeed({
             const status = statusOfLegacyBody(body)
             const recordBody = status === 'error' ? modelSafeScheduleFailure(body) : body
             const bounded = boundScheduleRecordOutput(recordBody)
+            const needsArchive = bounded.truncated || bounded.text !== rawBody
             if (!hasRecord(reportKey)) {
               const payload: ReportPayload = {
                 taskId,
@@ -200,11 +202,11 @@ export function migrateLegacyFeed({
                 startedAt: at,
                 by: 'schedule',
               }
-              if (writeRecord({ conversationId: convId, reportId: reportKey, at, text: recordedNote(payload) }) && !bounded.truncated) {
+              if (writeRecord({ conversationId: convId, reportId: reportKey, at, text: recordedNote(payload) }) && !needsArchive) {
                 archivedItems += 1
               }
             }
-            if (bounded.truncated) pushFullArchive()
+            if (needsArchive) pushFullArchive()
             continue
           }
         }
