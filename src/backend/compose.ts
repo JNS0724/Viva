@@ -46,7 +46,7 @@ import { registerMcpImportIpc } from './mcp-import-ipc.ts'
 import { clientPlaces, loginShellTools, mcpSources } from './mcp-import.ts'
 import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
-import { openHistoryDb, type Conversation } from './history-db.ts'
+import { LEGACY_FEED_ARCHIVE_ID, openHistoryDb, type Conversation } from './history-db.ts'
 import { createForegroundHistory, type ForegroundHistory } from './foreground-history.ts'
 import { checkImages, type ImageRef } from '../shared/images.ts'
 import { createDroppedFileRegistry, inlineAttachedFiles } from './attached-files.ts'
@@ -349,6 +349,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
   function historyForProject(project: string, crossProject = false) {
     return (row: HistoryEvidence) => {
+      if (row.segmentId === LEGACY_FEED_ARCHIVE_ID) return false
       if (!historyDb.promptDeliverable(row.sourceId)) return false
       if (crossProject) return true
       return project !== 'unknown' && historyProject(row.segmentId, row.sessionId) === project

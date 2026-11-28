@@ -55,7 +55,7 @@ function retainReaderRecords(
   }
   const kept = deduped.filter((record) => {
     const win = keptBounds.get(record.segmentId)
-    if (!win) return false
+    if (!win) return !fullBounds.has(record.segmentId)
     const full = fullBounds.get(record.segmentId)!
     const minAfter = win.first === full.first && win.first === 0 ? 0 : (win.first === full.first ? record.after : win.first + 1)
     const maxAfter = win.last === full.last ? Number.MAX_SAFE_INTEGER : win.last + 1

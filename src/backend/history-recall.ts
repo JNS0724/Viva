@@ -1,5 +1,5 @@
 import type { HistoryHit } from './history-channel.ts'
-import type { openHistoryDb } from './history-db.ts'
+import { LEGACY_FEED_ARCHIVE_ID, type openHistoryDb } from './history-db.ts'
 
 /**
  * What the assistant can look up in the timeline (the viva-history plugin, history-channel.ts): messages by their
@@ -36,6 +36,7 @@ export function historyRecall(db: HistoryDb, allowed?: (message: HistoryEvidence
   function search(query: string, range: RecallRange = {}): HistoryHit[] {
     const titles = new Map<string, string>()
     return db.searchMessages(query, range).flatMap<HistoryHit>((hit) => {
+      if (hit.segmentId === LEGACY_FEED_ARCHIVE_ID) return []
       if (allowed) {
         const original = read(hit, 1, true)
         if (original.status !== 'found' || !original.messages.some(message => message.target)) return []
@@ -51,15 +52,16 @@ export function historyRecall(db: HistoryDb, allowed?: (message: HistoryEvidence
    * more: the ones near where it was ('missing'); its record deleted: 'deleted'.
    */
   function read(ref: { segmentId: string, seq: number, messageId?: number }, around = DEFAULT_AROUND, targetOnly = false): Recalled {
+    if (ref.segmentId === LEGACY_FEED_ARCHIVE_ID) return { status: 'deleted' }
     const located = db.locate(ref)
-    if (located.status === 'deleted' || located.seq === null) return { status: 'deleted' }
+    if (located.status === 'deleted' || located.seq === null || located.segmentId === LEGACY_FEED_ARCHIVE_ID) return { status: 'deleted' }
     const reader = db.readerOf(located.segmentId)
     if (!reader) return { status: 'deleted' }
     const side = Math.min(Math.max(1, Math.trunc(around) || DEFAULT_AROUND), MAX_AROUND)
     const part = db.read(reader.key, { around: { segmentId: located.segmentId, seq: located.seq }, count: side * 2 + 1 })
     if (!part) return { status: 'deleted' }
     const title = allowed ? '' : part.topic?.title ?? titleOf(located.segmentId)
-    const messages = part.messages.filter(message => !allowed || allowed(message)).map(message => {
+    const messages = part.messages.filter(message => message.segmentId !== LEGACY_FEED_ARCHIVE_ID && (!allowed || allowed(message))).map(message => {
       const target = located.status === 'found' && message.segmentId === located.segmentId && message.seq === located.seq
       if (target || !targetOnly) used?.(message)
       return { messageId: message.id, segmentId: message.segmentId, seq: message.seq, role: message.role, text: message.text, at: message.at, target }

@@ -96,11 +96,26 @@ function readerBody(key: string, review: State['review'], handlers: Handlers, fo
     if (!bound) segBounds.set(message.segmentId, { first: message.seq, last: message.seq })
     else bound.last = message.seq
   }
+  const topicSegments = key.startsWith('t:') ? review.topics.find((topic) => topic.id === key.slice(2))?.segments : undefined
   const beforeFirst = new Map<string, ReaderRecord[]>()
   const afterSeq = new Map<string, ReaderRecord[]>()
+  const trailingOrphans: ReaderRecord[] = []
   for (const record of records) {
     const bound = segBounds.get(record.segmentId)
-    if (!bound) continue
+    if (!bound) {
+      const recIdx = topicSegments ? topicSegments.indexOf(record.segmentId) : -1
+      const nextMsgSeg = recIdx >= 0
+        ? topicSegments?.slice(recIdx + 1).find((segId) => segBounds.has(segId))
+        : (record.at <= reading.messages[0]!.at ? reading.messages[0]!.segmentId : undefined)
+      if (nextMsgSeg) {
+        const list = beforeFirst.get(nextMsgSeg)
+        if (list) list.push(record)
+        else beforeFirst.set(nextMsgSeg, [record])
+      } else {
+        trailingOrphans.push(record)
+      }
+      continue
+    }
     if (record.after <= bound.first) {
       const list = beforeFirst.get(record.segmentId)
       if (list) list.push(record)
@@ -123,6 +138,7 @@ function readerBody(key: string, review: State['review'], handlers: Handlers, fo
     rows.push(readMessage(message, found, handlers))
     for (const rec of afterSeq.get(`${message.segmentId}:${message.seq}`) ?? []) rows.push(readRecord(rec, handlers))
   }
+  for (const rec of trailingOrphans) rows.push(readRecord(rec, handlers))
   if (after > 0) rows.push(readerEdge('after', after, handlers))
   return rows
 }

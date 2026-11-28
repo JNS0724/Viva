@@ -88,7 +88,7 @@ test('legacy feed upgrade preserves unread schedule items as main-conversation r
     'f-seen', 'schedule', 's1@2026-11-05T08:00:00.000Z', '周四周报', '已读内容', JSON.stringify({ label: '定时', ref: 's1' }), 1_200, 1_300,
   )
   app.db.prepare('INSERT INTO feed_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-    'f-plugin', 'mail:work', 'msg-1', '外部邮件', '插件源旧条目\n这个定时要读的文件夹 /Users/secret/private-dir 已经不在了。', JSON.stringify({ label: '邮件' }), 1_600, null,
+    'f-plugin', 'mail:work', 'msg-1', '外部邮件', '插件源旧条目\n这个定时要读的文件夹 /Users/secret/private-dir 已经不在了。', JSON.stringify({ label: '邮件', ref: 'https://mail.example.internal/thread/42' }), 1_600, null,
   )
   core.apply('legacy.notice', {}, () => {
     effects.queue(LEGACY_FEED_NOTICE, 'f-unread', { title: '周五周报', body: '摘录' })
@@ -125,14 +125,16 @@ test('legacy feed upgrade preserves unread schedule items as main-conversation r
   assert.ok(effects.get(SCHEDULE_NOTICE, 's1:s1@2026-11-06T08:00:00.000Z'), 'pending schedule notice is migrated')
   assert.equal(effects.list().some((effect) => effect.kind === LEGACY_FEED_NOTICE), false, 'legacy feed-notice rows removed through Effects')
 
-  // Seen schedule items and plugin feed items are preserved locally in legacy-feed-archive without leaking host paths or hijacking latest().
-  const archivedRows = app.db.prepare("SELECT role, text FROM messages WHERE conversation_id = 'legacy-feed-archive' ORDER BY seq").all() as Array<{ role: string, text: string }>
+  // Seen schedule items and plugin feed items are preserved locally (including origin.ref) as foreground_only=1 without leaking host paths or model recall.
+  const archivedRows = app.db.prepare("SELECT role, text, foreground_only FROM messages WHERE conversation_id = 'legacy-feed-archive' ORDER BY seq").all() as Array<{ role: string, text: string, foreground_only: number }>
   const archivedText = archivedRows.map((r) => r.text).join('\n')
   assert.match(archivedText, /周四周报/)
   assert.match(archivedText, /已读内容/)
   assert.match(archivedText, /外部邮件/)
+  assert.match(archivedText, /https:\/\/mail\.example\.internal\/thread\/42/, 'origin.ref provenance is preserved in archive')
   assert.match(archivedText, /插件源旧条目/)
   assert.doesNotMatch(archivedText, /\/Users\/secret\/private-dir/, 'legacy missing-folder host path is scrubbed')
+  assert.ok(archivedRows.every((r) => r.foreground_only === 1), 'archived legacy items are marked foreground_only')
 
   const remainingTables = (app.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
   for (const dropped of ['feed_items', 'feed_sources', 'feed_source_runs']) {

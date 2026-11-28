@@ -17,7 +17,10 @@ interface ConversationAgent {
     { ok: true, info: StartedConversation } | { ok: false, reason: string }
   >
 }
-type History = Pick<ReturnType<typeof openHistoryDb>, 'get' | 'create' | 'latest' | 'topicOf'>
+type History = Pick<ReturnType<typeof openHistoryDb>, 'get' | 'create' | 'latest' | 'topicOf'> & {
+  latestConversation?: () => Conversation | null
+  hasConversation?: (id: unknown) => boolean
+}
 
 /** Owns the selected segment, directory, carried records and session transitions, never the dsh process. */
 export function createConversationSession({ history, agent, info, setInfo, isBusy, folderExists, selectedModel, changed }: {
@@ -56,10 +59,17 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
     try { return await work() } finally { changing = false; changed() }
   }
 
+  const hasStored = (id: string): boolean => {
+    const store = history()
+    return store.hasConversation ? store.hasConversation(id) : Boolean(store.get(id))
+  }
+
   function open(defaultCwd: string) {
     selectionToken = {}
     defaultDirectory = defaultCwd
-    selected = history().latest()?.conversation ?? history().create({ cwd: defaultCwd })
+    const store = history()
+    const saved = store.latestConversation ? store.latestConversation() : store.latest()?.conversation ?? null
+    selected = saved ?? store.create({ cwd: defaultCwd })
   }
   /** Stores may replace the object while saving; the identity is still its id/sessionId. */
   function select(next: Conversation) { selected = next; changed() }
@@ -77,7 +87,7 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
   }
   function ready(started: StartedConversation, dir: string) {
     selectionToken = {}
-    const remembersHistory = started.resumed || !history().get(current().id)
+    const remembersHistory = started.resumed || !hasStored(current().id)
     directory = dir
     selected = { ...current(), sessionId: started.sessionId, cwd: dir }
     uncommitted = false
@@ -147,7 +157,7 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
     requireIdle()
     if (uncommitted) throw preparing()
     return transition(async () => {
-      const previous = current(), previousTopic = topicId(), stored = Boolean(history().get(previous.id)), runtime = agent(), token = selectionToken
+      const previous = current(), previousTopic = topicId(), stored = hasStored(previous.id), runtime = agent(), token = selectionToken
       if (!runtime) {
         directory = dir
         selected = history().create({ cwd: dir, parentId: stored ? previous.id : null, topicId: previousTopic })
@@ -197,7 +207,7 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
     const started = await runtime.reloadSession()
     requireCurrent(runtime, token)
     selected = { ...current(), sessionId: started.sessionId }
-    const view = { ...started, conversationId: selected.id, topicId: topicId(), remembersHistory: Boolean(started.resumed || !history().get(selected.id)) }
+    const view = { ...started, conversationId: selected.id, topicId: topicId(), remembersHistory: Boolean(started.resumed || !hasStored(selected.id)) }
     setInfo(view)
     uncommitted = false
     return view

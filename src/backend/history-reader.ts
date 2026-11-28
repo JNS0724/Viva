@@ -37,13 +37,18 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
   const placesOf = (segmentId: string, whole: boolean): Place[] =>
     (sql.places.all({ id: segmentId, whole: whole ? 1 : 0 }) as Row[]).map((row) => ({ segmentId: row.segment_id, seq: row.seq, id: row.id }))
 
-  function recordsForSlice(segmentIds: readonly string[], allPlaces: readonly Place[], windowPlaces: readonly Place[]): ReaderRecord[] {
+  function recordsForSlice(
+    segmentIds: readonly string[],
+    allPlaces: readonly Place[],
+    windowPlaces: readonly Place[],
+    from: number,
+  ): ReaderRecord[] {
+    const allOf = (segmentId: string): ReaderRecord[] =>
+      (sql.recordsInRange.all(segmentId, 0, Number.MAX_SAFE_INTEGER) as Row[]).map((row) => ({
+        segmentId, reportId: String(row.report_id), at: Number(row.at), text: String(row.text), after: Number(row.after_seq),
+      }))
     if (!allPlaces.length) {
-      return segmentIds.flatMap((segmentId) =>
-        (sql.recordsInRange.all(segmentId, 0, Number.MAX_SAFE_INTEGER) as Row[]).map((row) => ({
-          segmentId, reportId: String(row.report_id), at: Number(row.at), text: String(row.text), after: Number(row.after_seq),
-        })),
-      )
+      return segmentIds.flatMap(allOf)
     }
     if (!windowPlaces.length) return []
     const allBounds = new Map<string, { first: number, last: number }>()
@@ -53,24 +58,32 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
       else existing.last = place.seq
     }
     const winBounds = new Map<string, { first: number, last: number }>()
-    const orderedSegments: string[] = []
     for (const place of windowPlaces) {
       const existing = winBounds.get(place.segmentId)
-      if (!existing) {
-        orderedSegments.push(place.segmentId)
-        winBounds.set(place.segmentId, { first: place.seq, last: place.seq })
-      } else {
-        existing.last = place.seq
-      }
+      if (!existing) winBounds.set(place.segmentId, { first: place.seq, last: place.seq })
+      else existing.last = place.seq
     }
-    return orderedSegments.flatMap((segmentId) => {
-      const full = allBounds.get(segmentId)!
-      const win = winBounds.get(segmentId)!
-      const minAfter = win.first === full.first ? full.first : win.first + 1
-      const maxAfter = win.last === full.last ? Number.MAX_SAFE_INTEGER : win.last + 1
-      return (sql.recordsInRange.all(segmentId, minAfter, maxAfter) as Row[]).map((row) => ({
-        segmentId, reportId: String(row.report_id), at: Number(row.at), text: String(row.text), after: Number(row.after_seq),
-      }))
+    const firstWinIdx = segmentIds.indexOf(windowPlaces[0]!.segmentId)
+    const lastWinIdx = segmentIds.lastIndexOf(windowPlaces.at(-1)!.segmentId)
+    const atStart = from === 0
+    const atEnd = from + windowPlaces.length >= allPlaces.length
+    return segmentIds.flatMap((segmentId, index) => {
+      const win = winBounds.get(segmentId)
+      if (win) {
+        const full = allBounds.get(segmentId)!
+        const minAfter = win.first === full.first ? full.first : win.first + 1
+        const maxAfter = win.last === full.last ? Number.MAX_SAFE_INTEGER : win.last + 1
+        return (sql.recordsInRange.all(segmentId, minAfter, maxAfter) as Row[]).map((row) => ({
+          segmentId, reportId: String(row.report_id), at: Number(row.at), text: String(row.text), after: Number(row.after_seq),
+        }))
+      }
+      if (!allBounds.has(segmentId)) {
+        const includeEmpty = (atStart && index < firstWinIdx)
+          || (index > firstWinIdx && index < lastWinIdx)
+          || (atEnd && index > lastWinIdx)
+        if (includeEmpty) return allOf(segmentId)
+      }
+      return []
     })
   }
 
@@ -131,7 +144,7 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
     const wanted = request.around ? indexOf(places, request.around) - Math.floor(count / 2) : Math.trunc(request.from ?? 0)
     const from = clamp(wanted, 0, Math.max(0, places.length - count))
     const windowPlaces = places.slice(from, from + count)
-    const records = recordsForSlice(segmentIds, places, windowPlaces)
+    const records = recordsForSlice(segmentIds, places, windowPlaces, from)
     return {
       topic,
       total: places.length,

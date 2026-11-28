@@ -346,7 +346,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     titleHits: db.prepare(`SELECT id, title AS text FROM conversations
       WHERE title LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ${SEARCH_SCAN_LIMIT}`),
     questionTimes: db.prepare(`SELECT m.created_at FROM messages m
-      CROSS JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
+      CROSS JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL AND m.conversation_id != 'legacy-feed-archive'
       ORDER BY m.id DESC LIMIT ?`),
   }
 
@@ -689,6 +689,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     return row ? get(row.id) : null
   }
 
+  function latestConversation(): Conversation | null {
+    const row = sql.latest.get()
+    const found = row ? sql.conversation.get(row.id) : null
+    return found ? toConversation(found) : null
+  }
+
   function list({ offset = 0, limit = PAGE_SIZE } = {}) {
     const size = Math.min(Math.max(1, Math.trunc(limit) || PAGE_SIZE), MAX_PAGE_SIZE)
     const rows = sql.list.all(size + 1, Math.max(0, Math.trunc(offset) || 0))
@@ -833,8 +839,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const restore = (id: unknown) => changeOne(
     db.prepare('UPDATE conversations SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL'), assertId(id))
 
-  /** Preserves retired feed_items into a dedicated read-only historical topic searchable and readable in 回顾. */
-  function archiveLegacyFeed(items: ReadonlyArray<{ key: string, title: string, sourceLabel: string, body: string, at: number }>): string | null {
+  /** Preserves retired feed_items into a dedicated local UI-only historical topic searchable and readable in 回顾. */
+  function archiveLegacyFeed(items: ReadonlyArray<{ key: string, title: string, sourceLabel: string, originRef?: string | null, body: string, at: number }>): string | null {
     if (!items.length) return null
     return transaction(() => {
       const id = LEGACY_FEED_ARCHIVE_ID
@@ -865,9 +871,10 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       let seq = Number(sql.messageCount.get(id)?.count ?? 0)
       fresh.forEach((item, index) => {
         const createdAt = times[index]!
-        const head = `【${item.sourceLabel}】${item.title}`
-        sql.insert.run(sql.nextMessageId.get().value, id, seq++, 'user', head, null, null, null, createdAt, null, null, 0)
-        sql.insert.run(sql.nextMessageId.get().value, id, seq++, 'assistant', item.body || '（没有文字）', null, null, null, createdAt, item.key, null, 0)
+        const refSuffix = item.originRef ? `（${item.originRef}）` : ''
+        const head = `【${item.sourceLabel}】${item.title}${refSuffix}`
+        sql.insert.run(sql.nextMessageId.get().value, id, seq++, 'user', head, null, null, null, createdAt, null, null, 1)
+        sql.insert.run(sql.nextMessageId.get().value, id, seq++, 'assistant', item.body || '（没有文字）', null, null, null, createdAt, item.key, null, 1)
       })
       return id
     })
@@ -936,7 +943,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     create, save, commit, get, getTail, sliceMessages, streamKeysBefore, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null
-    }, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate, sourceLink,
+    }, latest, latestConversation, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate, sourceLink,
     questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
     // The app database is the backend's to close.
     close: () => { if (!given) db.close() },

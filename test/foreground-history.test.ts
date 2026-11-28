@@ -159,6 +159,16 @@ test('incremental commit handles beforeKey insertion shifting stars and report r
   assert.equal(reviewSliceMiddle.records, undefined, 'middle slice without records omits empty records array')
   const reviewSliceEnd = history.read(`t:${conv.id}`, { from: 5_000, count: 100 })!
   assert.deepEqual(reviewSliceEnd.records?.map(r => [r.reportId, r.after]), [['r-tail', 5_053]], 'trailing slice returns end-of-segment report_records')
+
+  // Multi-segment topic where the first segment has only a report_record and the second segment has messages:
+  const emptySeg = history.save(history.create({ sessionId: 's-empty-seg', cwd: '/w' }), [], { keepEmpty: true }) as Conversation
+  history.addRecord({ conversationId: emptySeg.id, reportId: 'r-empty-seg', at: 60, text: '首段无消息仅回报' })
+  const childSeg = history.save(history.create({ sessionId: 's-child-seg', cwd: '/w', parentId: emptySeg.id, topicId: emptySeg.id }), [
+    { role: 'user', text: '续写问题', receipt: null },
+  ]) as Conversation
+  assert.ok(childSeg.id)
+  const multiRead = history.read(`t:${emptySeg.id}`, { from: 0, count: 10 })!
+  assert.deepEqual(multiRead.records?.map(r => r.reportId), ['r-empty-seg'], 'topic reader includes records from empty sibling segment')
 })
 
 test('renderer sliding window trims long sessions on idle turn_end and preserves absolute seq across rewind, stars, search, records and anchors', () => {

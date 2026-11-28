@@ -23,6 +23,7 @@ export interface LegacyArchiveItem {
   key: string
   title: string
   sourceLabel: string
+  originRef?: string | null
   body: string
   at: number
 }
@@ -38,14 +39,16 @@ function parseScheduleId(key: string, originRaw: unknown): string {
   return prefix || 'legacy'
 }
 
-function parseOriginLabel(originRaw: unknown, fallback: string): string {
+function parseOrigin(originRaw: unknown, fallback: string): { label: string, ref: string | null } {
   if (typeof originRaw === 'string' && originRaw) {
     try {
-      const parsed = JSON.parse(originRaw) as { label?: unknown }
-      if (typeof parsed?.label === 'string' && parsed.label.trim()) return parsed.label.trim()
+      const parsed = JSON.parse(originRaw) as { label?: unknown, ref?: unknown }
+      const label = typeof parsed?.label === 'string' && parsed.label.trim() ? parsed.label.trim() : fallback
+      const ref = typeof parsed?.ref === 'string' && parsed.ref.trim() ? parsed.ref.trim() : null
+      return { label, ref }
     } catch { /* fall back to source */ }
   }
-  return fallback
+  return { label: fallback, ref: null }
 }
 
 function sanitizeLegacyBody(body: string): string {
@@ -189,10 +192,12 @@ export function migrateLegacyFeed({
           }
         }
         const bounded = boundScheduleRecordOutput(body)
+        const origin = parseOrigin(row.origin, source === 'schedule' ? '定时' : source)
         toArchive.push({
           key: `${source}:${key}`,
           title,
-          sourceLabel: parseOriginLabel(row.origin, source === 'schedule' ? '定时' : source),
+          sourceLabel: origin.label,
+          originRef: origin.ref,
           body: bounded.text,
           at,
         })

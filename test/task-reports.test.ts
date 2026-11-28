@@ -689,4 +689,15 @@ test('foreground turn switch during async status check does not steer under stal
   await cappedHarness.outcomes(fiftyReports)
   assert.equal(statusCalls, 10, 'only the first MAX_REPORTS_PER_TURN unsent items probe native status in one idle pass')
   assert.equal(cappedHarness.turns.length, 1)
+
+  // Even when status() returns unavailable (e.g. slow/down channel), unsent backlog probes remain capped at turnCap.
+  let unavailableProbes = 0
+  const downKnown: Record<string, ReportState> = Object.fromEntries(fiftyReports.map((item) => [item.key, 'unavailable' as const]))
+  const downHarness = setup({
+    state: 'idle',
+    known: downKnown,
+    whileAsking: () => { unavailableProbes += 1 },
+  })
+  await downHarness.outcomes(fiftyReports)
+  assert.equal(unavailableProbes, 10, 'unavailable status probes also stop at MAX_REPORTS_PER_TURN')
 })
