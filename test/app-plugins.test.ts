@@ -54,7 +54,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
   assert.match(PERSONA.prefix, /个人工作助手/)
   assert.match(PERSONA.prefix, /ask_user_question/, 'the model is told when to ask instead of guessing')
   assert.match(PERSONA.prefix, /memory_remember/, 'and to keep what the user told it')
-  assert.doesNotMatch(PERSONA.prefix, /commit_route|【插话】|后台任务都归你管/, 'routing, interjections and reports are the main conversation\'s')
+  assert.doesNotMatch(PERSONA.prefix, /commit_route|【插话】|后台任务和到点运行的定时任务结果都由你负责转达/, 'routing, interjections and reports are the main conversation\'s')
   assert.doesNotMatch(PERSONA.prefix, /coding agent/)
   // The main conversation routes each request (viva-routing gives it this persona instead).
   assert.match(ROUTING_PERSONA.prefix, /个人工作助手/)
@@ -65,7 +65,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
   assert.match(ROUTING_PERSONA.prefix, /【插话】/)
   assert.match(ROUTING_PERSONA.prefix, /必须先用 list_background_tasks/)
   assert.match(ROUTING_PERSONA.prefix, /它们为空不能证明 Viva 没有后台任务/)
-  assert.match(ROUTING_PERSONA.prefix, /后台任务都归你管，不论它是在哪个话题里开的/, 'the main conversation owns every task')
+  assert.match(ROUTING_PERSONA.prefix, /用户的后台任务和到点运行的定时任务结果都由你负责转达，不论它是在哪个话题里建的/, 'the main conversation owns every task and due schedule report')
   assert.match(ROUTING_PERSONA.prefix, /直接在主会话 reply 回答/, 'allows direct reply when task output already covers the follow-up')
   assert.match(ROUTING_PERSONA.prefix, /先用 get_background_task 分段读完再决定/, 'reads omitted task output slices before deciding')
   assert.match(ROUTING_PERSONA.prefix, /不论你此刻在聊什么，都要把结果反馈给用户/)

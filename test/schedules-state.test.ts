@@ -89,4 +89,12 @@ test('schedules-state: explicit navigation to an ended or deleted schedule does 
 
   const afterNewTopic = reduce(picked, { type: 'new_session', at: 1_000 })
   assert.equal(afterNewTopic.schedules.schedules.length, 1, 'starting a new topic preserves cached schedules for the Home Today card')
+
+  const coldOpen = reduce(initialState as WindowState, { type: 'schedules_open', id: 's-pending' })
+  assert.equal(coldOpen.schedules.loaded, false)
+  assert.equal(coldOpen.schedules.loading, true, 'opening before initial load marks loading instead of confirmed gone')
+  const coldFailed = reduce(coldOpen, { type: 'schedules_failed', message: 'IPC 断开' })
+  assert.equal(coldFailed.schedules.loaded, false)
+  assert.equal(coldFailed.schedules.loading, false)
+  assert.equal(coldFailed.schedules.error, 'IPC 断开')
 })

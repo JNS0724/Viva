@@ -30,6 +30,8 @@ const QUESTION_TIMES_LIMIT = 1000
 const SEGMENT_PAGE = 5
 const MAX_SEGMENT_PAGE = 50
 const DELETED_TOMBSTONES_LIMIT = 10_000
+const TOMBSTONE_MAX_AGE_MS = 30 * 86_400_000
+export const LEGACY_FEED_ARCHIVE_ID = 'legacy-feed-archive'
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS conversations (
@@ -328,7 +330,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at, source_key, source_id, foreground_only)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     limitToForeground: db.prepare('UPDATE messages SET foreground_only=1 WHERE conversation_id=? AND seq=?'),
-    latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
+    latest: db.prepare("SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL AND id != 'legacy-feed-archive' ORDER BY updated_at DESC, rowid DESC LIMIT 1"),
     fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
     foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
       FROM conversations c WHERE c.folded_into = ? AND c.deleted_at IS NULL ORDER BY c.created_at, c.rowid`),
@@ -418,6 +420,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   }
 
   const conversationOf = (id: string) => sql.conversation.get(id)
+  const hasConversation = (id: unknown): boolean => Boolean(sql.conversation.get(assertId(id)))
 
   function get(id: unknown) {
     const row = sql.conversation.get(assertId(id))
@@ -830,12 +833,65 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const restore = (id: unknown) => changeOne(
     db.prepare('UPDATE conversations SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL'), assertId(id))
 
+  /** Preserves retired feed_items into a dedicated read-only historical topic searchable and readable in 回顾. */
+  function archiveLegacyFeed(items: ReadonlyArray<{ key: string, title: string, sourceLabel: string, body: string, at: number }>): string | null {
+    if (!items.length) return null
+    return transaction(() => {
+      const id = LEGACY_FEED_ARCHIVE_ID
+      const existing = sql.anyConversation.get(id)
+      const knownKeys = new Set(
+        (db.prepare('SELECT source_key FROM messages WHERE conversation_id = ? AND source_key IS NOT NULL').all(id) as Array<{ source_key: string }>)
+          .map((row) => row.source_key),
+      )
+      const fresh = items.filter((item) => !knownKeys.has(item.key))
+      if (!fresh.length) return id
+      const times = fresh.map((item) => (Number.isFinite(item.at) && item.at > 0 ? Math.trunc(item.at) : now()))
+      const minAt = Math.min(...times)
+      const maxAt = Math.max(...times)
+      const title = t('main.legacy-feed.archive.title')
+      sql.upsert.run({
+        id,
+        title,
+        createdAt: minAt,
+        updatedAt: maxAt,
+        sessionId: null,
+        mode: null,
+        model: null,
+        cwd: null,
+        parentId: null,
+        topicId: existing ? null : id,
+      })
+      db.prepare('UPDATE conversations SET title = ?, title_custom = 1, updated_at = MAX(updated_at, ?) WHERE id = ?').run(title, maxAt, id)
+      let seq = Number(sql.messageCount.get(id)?.count ?? 0)
+      fresh.forEach((item, index) => {
+        const createdAt = times[index]!
+        const head = `【${item.sourceLabel}】${item.title}`
+        sql.insert.run(sql.nextMessageId.get().value, id, seq++, 'user', head, null, null, null, createdAt, null, null, 0)
+        sql.insert.run(sql.nextMessageId.get().value, id, seq++, 'assistant', item.body || '（没有文字）', null, null, null, createdAt, item.key, null, 0)
+      })
+      return id
+    })
+  }
+
   /** Removes conversations deleted at least `olderThanMs` ago, messages and index entries included. */
-  function purgeDeleted({ olderThanMs }: { olderThanMs: number }) {
-    const changes = db.prepare('DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at <= ?').run(now() - olderThanMs).changes
-    db.prepare(`DELETE FROM deleted_conversations WHERE rowid NOT IN (
-      SELECT rowid FROM deleted_conversations ORDER BY deleted_at DESC, rowid DESC LIMIT ?
-    )`).run(DELETED_TOMBSTONES_LIMIT)
+  function purgeDeleted({ olderThanMs, retainIds, pruneTombstones = true }: {
+    olderThanMs: number
+    retainIds?: Iterable<string>
+    pruneTombstones?: boolean
+  }) {
+    const at = now()
+    const changes = db.prepare('DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at <= ?').run(at - olderThanMs).changes
+    if (pruneTombstones) {
+      const protectedIds = retainIds ? [...retainIds].filter((value) => typeof value === 'string' && value.length > 0) : []
+      db.prepare(`DELETE FROM deleted_conversations
+        WHERE deleted_at <= ?
+          AND rowid NOT IN (SELECT rowid FROM deleted_conversations ORDER BY deleted_at DESC, rowid DESC LIMIT ?)
+          AND id NOT IN (SELECT value FROM json_each(?))`).run(
+        at - TOMBSTONE_MAX_AGE_MS,
+        DELETED_TOMBSTONES_LIMIT,
+        JSON.stringify(protectedIds),
+      )
+    }
     return changes
   }
 
@@ -865,7 +921,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   return {
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery, matchesPromptText,
-    addRecord, hasRecord, moveRecords, recordsOf, recordTimesOf, messageCount, bySession, detachNativeSession, rebindMessageSession,
+    addRecord, hasRecord, moveRecords, recordsOf, recordTimesOf, messageCount, hasConversation, archiveLegacyFeed, bySession, detachNativeSession, rebindMessageSession,
     hasAnyConversation: (id: unknown) => {
       const cid = assertId(id)
       return Boolean(sql.segmentRow.get(cid) || sql.purgedConversation.get(cid))

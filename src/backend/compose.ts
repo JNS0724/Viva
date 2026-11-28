@@ -110,7 +110,7 @@ type Bridge = ReturnType<typeof createAcpBridge>
 type AgentInfo = import('../shared/agent-info.ts').AgentInfo
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
-const HISTORY_WRITES = Object.freeze(['save', 'commit', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar', 'reservePromptDelivery', 'settlePromptDelivery'] as const)
+const HISTORY_WRITES = Object.freeze(['save', 'commit', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'archiveLegacyFeed', 'fold', 'unfold', 'setStar', 'reservePromptDelivery', 'settlePromptDelivery'] as const)
 
 const isFolder = (dir: string) => {
   try {
@@ -1254,9 +1254,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
   }
 
-  /** A schedule's prompt run in its own folder; one whose folder is gone fails, saying so. */
+  /** A schedule's prompt run in its own folder; one whose folder is gone fails without leaking host paths to the model. */
   async function runSchedule(prompt: string, cwd: string): Promise<RunResult> {
-    if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) }
+    if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone') }
     return unattended.run(prompt, cwd)
   }
 
@@ -1342,7 +1342,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         apply: applyChange,
         effects,
         scheduleCwd: (id) => schedules?.store.get(id)?.cwd ?? null,
+        scheduleConversationId: (id) => schedules?.store.get(id)?.conversationId ?? null,
         hasRecord: (key) => historyDb.hasRecord(key),
+        hasConversation: (id) => historyDb.hasConversation(id),
+        addRecord: (record) => historyDb.addRecord(record),
+        archiveItems: (items) => historyDb.archiveLegacyFeed(items),
       })
     }
   }
@@ -1366,7 +1370,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** Opens the database and drops conversations whose undo window has passed. */
   function openHistory(config: Config) {
     historyDb = journaled(openHistoryDb({ db: appDb.db }), 'history', HISTORY_WRITES, applyChange)
-    historyDb.purgeDeleted({ olderThanMs: 0 })
+    historyDb.purgeDeleted({ olderThanMs: 0, pruneTombstones: false })
     sessions.open(config.cwd)
     foregroundHistory = createForegroundHistory({
       commit: historyDb.commit,
@@ -1413,6 +1417,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       publishCarry,
       folderExists: (dir) => isFolder(dir),
       workDir: () => workDirNow() ?? null,
+      retainTombstones: () => (effects?.listByKind<ReportPayload>(REPORT) ?? [])
+        .map((effect) => effect.payload.deliveredConversation?.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
     })
     registerRewindIpc(ipcMain, {
       db: historyDb,

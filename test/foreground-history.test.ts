@@ -151,6 +151,14 @@ test('incremental commit handles beforeKey insertion shifting stars and report r
   assert.equal(tail.messages[0]?.text, `msg-${5_050 - CONVERSATION_WINDOW_MESSAGES}`)
   assert.equal(tail.messages.at(-1)?.text, 'msg-5049')
   assert.deepEqual(tail.records.map(r => r.reportId), ['r-tail'], 'getTail omits pre-window report_records before offset')
+
+  // Earlier report_records trimmed from getTail remain readable in Review (`history.read`) at their exact message slice.
+  const reviewSliceStart = history.read(`t:${conv.id}`, { from: 0, count: 10 })!
+  assert.deepEqual(reviewSliceStart.records?.map(r => [r.reportId, r.after]), [['r-1', 3]], 'Review reader returns pre-window report_records for earlier slices')
+  const reviewSliceMiddle = history.read(`t:${conv.id}`, { from: 100, count: 50 })!
+  assert.equal(reviewSliceMiddle.records, undefined, 'middle slice without records omits empty records array')
+  const reviewSliceEnd = history.read(`t:${conv.id}`, { from: 5_000, count: 100 })!
+  assert.deepEqual(reviewSliceEnd.records?.map(r => [r.reportId, r.after]), [['r-tail', 5_053]], 'trailing slice returns end-of-segment report_records')
 })
 
 test('renderer sliding window trims long sessions on idle turn_end and preserves absolute seq across rewind, stars, search, records and anchors', () => {

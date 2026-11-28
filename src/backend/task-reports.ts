@@ -311,8 +311,13 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       }
     }
 
+    const turnCap = state === 'busy' ? MAX_STEER_REPORTS_PER_TURN : MAX_REPORTS_PER_TURN
     const unsent: Array<Effect<ReportPayload>> = []
     for (const original of mine) {
+      if (!original.payload.deliveredTo && unsent.length >= turnCap) {
+        outcomes.set(original.key, 'wait')
+        continue
+      }
       // A token before anything else, kept: the same on every try from now on.
       const effect = original.payload.token ? original : kept(original, { ...original.payload, token: randomUUID().replaceAll('-', '') })
       if (!effect) { outcomes.set(original.key, 'wait'); continue }

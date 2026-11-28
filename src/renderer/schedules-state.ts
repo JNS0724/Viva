@@ -10,6 +10,8 @@ export const initialSchedules = Object.freeze({
   schedules: Object.freeze([]) as readonly ScheduleView[],
   selected: null as string | null,
   explicit: false,
+  loaded: false,
+  loading: false,
   busy: false,
   error: null as string | null,
 })
@@ -77,13 +79,14 @@ const withSchedules = (state: State, changes: Partial<State['schedules']>): Stat
 
 export const SCHEDULES_ACTIONS: ActionHandlers = {
   schedules_open: (state, { id = null }) => {
+    const loading = !state.schedules.loaded
     if (typeof id === 'string' && id.length > 0) {
-      return withSchedules({ ...state, island: false }, { open: true, selected: id, explicit: true, error: null })
+      return withSchedules({ ...state, island: false }, { open: true, selected: id, explicit: true, loading, error: null })
     }
     const ordered = orderScheduleList(state.schedules.schedules as readonly ScheduleView[])
     const selected = state.schedules.selected && ordered.some((item) => item.id === state.schedules.selected)
       ? state.schedules.selected : ordered[0]?.id ?? null
-    return withSchedules({ ...state, island: false }, { open: true, selected, explicit: false, error: null })
+    return withSchedules({ ...state, island: false }, { open: true, selected, explicit: false, loading, error: null })
   },
   schedules_close: (state) => (state.schedules.open ? withSchedules(state, { open: false }) : state),
   schedules_select: (state, { id }) => withSchedules(state, { selected: id, explicit: false, error: null }),
@@ -91,12 +94,12 @@ export const SCHEDULES_ACTIONS: ActionHandlers = {
     const ordered = Array.isArray(schedules) ? orderScheduleList(schedules) : orderScheduleList(state.schedules.schedules as readonly ScheduleView[])
     const found = Boolean(state.schedules.selected && ordered.some((item) => item.id === state.schedules.selected))
     if (!clearExplicit && state.schedules.explicit && state.schedules.selected) {
-      return withSchedules(state, { schedules: ordered, error: null })
+      return withSchedules(state, { schedules: ordered, loaded: true, loading: false, error: null })
     }
     const selected = found ? state.schedules.selected : ordered[0]?.id ?? null
-    return withSchedules(state, { schedules: ordered, selected, explicit: false, error: null })
+    return withSchedules(state, { schedules: ordered, selected, explicit: false, loaded: true, loading: false, error: null })
   },
   schedules_busy: (state) => withSchedules(state, { busy: true, error: null }),
   schedules_done: (state) => withSchedules(state, { busy: false }),
-  schedules_failed: (state, { message }) => withSchedules(state, { busy: false, error: typeof message === 'string' ? message : null }),
+  schedules_failed: (state, { message }) => withSchedules(state, { loading: false, busy: false, error: typeof message === 'string' ? message : null }),
 }

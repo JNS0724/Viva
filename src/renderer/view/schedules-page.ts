@@ -79,10 +79,11 @@ function createSchedulesView(handlers: Handlers) {
       active: t('schedules-page.upcoming'),
       paused: t('schedules-page.paused.group'),
     }
+    const initialLoading = !state.schedules.loaded && Boolean(state.schedules.loading)
     const present = new Set<string>()
     const sideChildren: HTMLElement[] = [headEl]
     if (grouped.length === 0) {
-      emptyListEl.textContent = t('schedules-page.list.empty')
+      emptyListEl.textContent = t(initialLoading ? 'earlier.loading' : 'schedules-page.list.empty')
       sideChildren.push(emptyListEl)
     } else {
       for (const { key, items } of grouped) {
@@ -155,9 +156,15 @@ function createSchedulesView(handlers: Handlers) {
       main = detailMain
     } else {
       currentScheduleId = null
-      const gone = Boolean(state.schedules.explicit && state.schedules.selected)
-      emptyMessage.textContent = t(gone ? 'schedules-page.gone' : 'schedules-page.empty')
-      const emptyChildren: HTMLElement[] = [emptyMessage]
+      const emptyChildren: HTMLElement[] = []
+      if (initialLoading) {
+        emptyMessage.textContent = t('earlier.loading')
+        emptyChildren.push(emptyMessage)
+      } else if (state.schedules.loaded || !state.schedules.error) {
+        const gone = Boolean(state.schedules.loaded && state.schedules.explicit && state.schedules.selected)
+        emptyMessage.textContent = t(gone ? 'schedules-page.gone' : 'schedules-page.empty')
+        emptyChildren.push(emptyMessage)
+      }
       if (state.schedules.error) {
         emptyError.textContent = state.schedules.error
         emptyChildren.push(emptyError)

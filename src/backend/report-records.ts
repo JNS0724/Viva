@@ -22,7 +22,9 @@ export interface RecordHistory {
   bySession: (sessionId: string) => Conversation | null
   /** Whether a conversation is stored (a blank topic is not, till its first save). */
   get: (id: string) => unknown
-  /** Whether a conversation row ever existed in `conversations`, including soft-deleted ones. */
+  /** Fast indexed check for an active stored conversation without loading its messages or report records. */
+  hasConversation?: (id: string) => boolean
+  /** Whether a conversation row ever existed in `conversations`, including soft-deleted or purged ones. */
   hasAnyConversation?: (id: string) => boolean
   save: (conversation: Conversation, messages: readonly never[], options: { keepEmpty: boolean }) => unknown
   addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number }) => boolean
@@ -55,6 +57,9 @@ export interface ReportRecordsDeps {
 }
 
 export function createReportRecords({ history, effects, apply, current, show, beforeRecord, now = Date.now }: ReportRecordsDeps) {
+  const isStored = (store: RecordHistory, id: string): boolean =>
+    store.hasConversation ? store.hasConversation(id) : Boolean(store.get(id))
+
   /** The conversation of the session a report went to: the one on screen first, then saved history, then an unsaved blank topic snapshotted before sending. */
   function targetOf(effect: Effect<ReportPayload>): Conversation | null {
     const session = effect.payload.deliveredTo
@@ -62,7 +67,7 @@ export function createReportRecords({ history, effects, apply, current, show, be
     const store = history()
     const here = current()
     if (here.sessionId === session) {
-      if (store && !store.get(here.id) && store.hasAnyConversation?.(here.id)) return null
+      if (store && !isStored(store, here.id) && store.hasAnyConversation?.(here.id)) return null
       return here
     }
     const saved = store?.bySession(session) ?? null
@@ -130,7 +135,7 @@ export function createReportRecords({ history, effects, apply, current, show, be
     const kept = apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
       if (!queue.finishGeneration(effect)) return false
       // A blank topic on screen is stored with it, so the record has a conversation to come back with after a restart.
-      if (!store.get(target.id)) store.save(target, [], { keepEmpty: true })
+      if (!isStored(store, target.id)) store.save(target, [], { keepEmpty: true })
       store.addRecord({
         conversationId: target.id, reportId: effect.key, at, text: recordedNote(effect.payload),
         beforeSource: effect.payload.beforeSource, ...(anchored !== undefined ? { after: anchored } : {}),

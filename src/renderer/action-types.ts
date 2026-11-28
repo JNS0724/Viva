@@ -190,9 +190,9 @@ export interface ActionPayloads extends ConversationPayloads {
   review_open: { key: string }
   review_focus: { key: string, title: string, at?: number | null, head?: string | null, found?: string | null, notice?: string | null }
   review_unfocus: {}
-  review_read: { key: string, read?: number, whole?: boolean, messages: readonly import('./review-types.ts').ReaderMessage[], from?: number, total?: number }
+  review_read: { key: string, read?: number, whole?: boolean, messages: readonly import('./review-types.ts').ReaderMessage[], records?: readonly import('./review-types.ts').ReaderRecord[], from?: number, total?: number }
   review_read_loading: { read: number, edge: import('./review-types.ts').ReaderEdge }
-  review_read_more: { read: number, edge: import('./review-types.ts').ReaderEdge, part: null | { messages: readonly import('./review-types.ts').ReaderMessage[], from: number, total: number } }
+  review_read_more: { read: number, edge: import('./review-types.ts').ReaderEdge, part: null | { messages: readonly import('./review-types.ts').ReaderMessage[], records?: readonly import('./review-types.ts').ReaderRecord[], from: number, total: number } }
   review_starred: { items: Review['starred'] }
   stars_loaded: { places: readonly { segmentId: string, seq: number }[] }
   star_changed: { segmentId: string, seq: number, starred: boolean, changed?: boolean }

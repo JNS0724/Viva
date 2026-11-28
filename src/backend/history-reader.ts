@@ -13,6 +13,7 @@ const MAX_READ_COUNT = 200
 type Row = Record<string, any>
 /** Where a message is in what is read: its segment and place, its id. */
 type Place = { segmentId: string, seq: number, id: number }
+export type ReaderRecord = { segmentId: string, reportId: string, at: number, text: string, after: number }
 /** What to read: from a place in the order (`from`), or around a message (`around`), `count` of them. */
 export type ReadRequest = { from?: number, around?: { segmentId: string, seq: number }, count?: number, whole?: boolean }
 
@@ -29,10 +30,49 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
     places: db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.id FROM messages m JOIN conversations c ON c.id = m.conversation_id
       WHERE m.conversation_id = :id AND ${OWN} ORDER BY m.seq`),
     present: db.prepare('SELECT 1 FROM conversations WHERE id = ? AND deleted_at IS NULL'),
+    recordsInRange: db.prepare(`SELECT report_id, after_seq, at, text FROM report_records
+      WHERE conversation_id = ? AND after_seq >= ? AND after_seq <= ? ORDER BY after_seq, at, report_id`),
   }
 
   const placesOf = (segmentId: string, whole: boolean): Place[] =>
     (sql.places.all({ id: segmentId, whole: whole ? 1 : 0 }) as Row[]).map((row) => ({ segmentId: row.segment_id, seq: row.seq, id: row.id }))
+
+  function recordsForSlice(segmentIds: readonly string[], allPlaces: readonly Place[], windowPlaces: readonly Place[]): ReaderRecord[] {
+    if (!allPlaces.length) {
+      return segmentIds.flatMap((segmentId) =>
+        (sql.recordsInRange.all(segmentId, 0, Number.MAX_SAFE_INTEGER) as Row[]).map((row) => ({
+          segmentId, reportId: String(row.report_id), at: Number(row.at), text: String(row.text), after: Number(row.after_seq),
+        })),
+      )
+    }
+    if (!windowPlaces.length) return []
+    const allBounds = new Map<string, { first: number, last: number }>()
+    for (const place of allPlaces) {
+      const existing = allBounds.get(place.segmentId)
+      if (!existing) allBounds.set(place.segmentId, { first: place.seq, last: place.seq })
+      else existing.last = place.seq
+    }
+    const winBounds = new Map<string, { first: number, last: number }>()
+    const orderedSegments: string[] = []
+    for (const place of windowPlaces) {
+      const existing = winBounds.get(place.segmentId)
+      if (!existing) {
+        orderedSegments.push(place.segmentId)
+        winBounds.set(place.segmentId, { first: place.seq, last: place.seq })
+      } else {
+        existing.last = place.seq
+      }
+    }
+    return orderedSegments.flatMap((segmentId) => {
+      const full = allBounds.get(segmentId)!
+      const win = winBounds.get(segmentId)!
+      const minAfter = win.first === full.first ? full.first : win.first + 1
+      const maxAfter = win.last === full.last ? Number.MAX_SAFE_INTEGER : win.last + 1
+      return (sql.recordsInRange.all(segmentId, minAfter, maxAfter) as Row[]).map((row) => ({
+        segmentId, reportId: String(row.report_id), at: Number(row.at), text: String(row.text), after: Number(row.after_seq),
+      }))
+    })
+  }
 
   function messagesByIds(places: readonly Place[]) {
     if (!places.length) return []
@@ -74,12 +114,15 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
     const id = assertId(text.slice(2))
     let topic: ReviewTopic | null = null
     let places: Place[]
+    let segmentIds: readonly string[]
     if (text.startsWith('t:')) {
       topic = reviewTopic(id)
       if (!topic) return null
+      segmentIds = topic.segments
       places = topic.segments.flatMap((segmentId) => placesOf(segmentId, false))
     } else if (text.startsWith('s:')) {
       if (!sql.present.get(id)) return null
+      segmentIds = [id]
       places = placesOf(id, request.whole === true)
     } else {
       throw new Error('invalid reader key')
@@ -87,7 +130,15 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
     const count = clamp(Math.trunc(request.count ?? READ_COUNT) || READ_COUNT, 1, MAX_READ_COUNT)
     const wanted = request.around ? indexOf(places, request.around) - Math.floor(count / 2) : Math.trunc(request.from ?? 0)
     const from = clamp(wanted, 0, Math.max(0, places.length - count))
-    return { topic, total: places.length, from, messages: messagesByIds(places.slice(from, from + count)) }
+    const windowPlaces = places.slice(from, from + count)
+    const records = recordsForSlice(segmentIds, places, windowPlaces)
+    return {
+      topic,
+      total: places.length,
+      from,
+      messages: messagesByIds(windowPlaces),
+      ...(records.length ? { records } : {}),
+    }
   }
 
   return { read }

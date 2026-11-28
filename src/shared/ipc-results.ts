@@ -119,7 +119,7 @@ export interface ScheduleView {
   prompt: string
   kind: string
   nextAt: string
-  status: string
+  status: 'active' | 'paused'
 }
 
 export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'

@@ -60,6 +60,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   publishCarry?: (target: Conversation, carry: HistoryCarry) => Promise<boolean>,
   recordSession?: (id: string | null) => void | Promise<void>,
   deleteHistory?: (id: string) => Promise<void>,
+  retainTombstones?: () => Iterable<string>,
 }) {
   const { db, dshHome, traceDb, current, agentInfo, chooseExportPath } = deps
   const selectSession = deps.selectSession
@@ -194,7 +195,12 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:rename', (id, title) => db.rename(id, title))
   handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))
   handle('history:delete', (id) => {
-    const purge = () => { schedule(() => db.purgeDeleted({ olderThanMs: UNDO_WINDOW_MS }), UNDO_WINDOW_MS + PURGE_SLACK_MS) }
+    const purge = () => {
+      schedule(
+        () => db.purgeDeleted({ olderThanMs: UNDO_WINDOW_MS, retainIds: deps.retainTombstones?.() }),
+        UNDO_WINDOW_MS + PURGE_SLACK_MS,
+      )
+    }
     if (deps.deleteHistory) return deps.deleteHistory(assertId(id)).then(purge)
     db.softDelete(id)
     purge()

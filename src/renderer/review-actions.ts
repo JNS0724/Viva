@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import type { ReaderEdge, ReaderMessage } from './review-state.ts'
+import type { ReaderEdge, ReaderMessage, ReaderRecord } from './review-state.ts'
 import type { MessagePlace } from './stars.ts'
 
 /**
@@ -17,7 +17,7 @@ const READ_ON = 30
 
 /** A message named by a hit, a link or a star. */
 export type MessageRef = MessagePlace & { messageId?: number }
-type Read = { title: string, at: number | null, head: string | null, total: number, from: number, messages: ReaderMessage[] }
+type Read = { title: string, at: number | null, head: string | null, total: number, from: number, messages: ReaderMessage[], records?: ReaderRecord[] }
 type ReadRequest = { from?: number, around?: { segmentId: string, seq: number }, count?: number, whole?: boolean }
 
 const titleFrom = (messages: readonly ReaderMessage[]) => {
@@ -78,9 +78,10 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     const part = await api.readHistory(key, request)
     if (!part) return null
     const messages = part.messages as ReaderMessage[]
+    const records = Array.isArray(part.records) ? part.records as ReaderRecord[] : undefined
     const named = part.topic ? { title: part.topic.title, at: part.topic.startedAt, head: part.topic.head }
       : { title: titleFrom(messages), at: messages[0]?.at ?? null, head: null }
-    return { ...named, total: part.total, from: part.from, messages }
+    return { ...named, total: part.total, from: part.from, messages, ...(records?.length ? { records } : {}) }
   }
 
   /**
@@ -96,7 +97,7 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
       const read = await fetchRead(key, { from: 0 })
       if (outdated(mine)) return undefined
       if (!read) return showToast(t("review.segment.deleted"))
-      dispatch({ type: 'review_read', key, read: mine, messages: read.messages, from: read.from, total: read.total })
+      dispatch({ type: 'review_read', key, read: mine, messages: read.messages, records: read.records, from: read.from, total: read.total })
     } catch (err) {
       if (!outdated(mine)) report(t("review.segment.unreadable"))(err)
     }
@@ -155,7 +156,7 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
       const msgId = located.seq === null ? null : `${located.segmentId}-${located.seq}`
       const found = located.status === 'found' ? msgId : null
       dispatch({ type: 'review_focus', key, title: read.title, at: read.at, head: read.head, found, notice })
-      dispatch({ type: 'review_read', key, read: mine, whole, messages: read.messages, from: read.from, total: read.total })
+      dispatch({ type: 'review_read', key, read: mine, whole, messages: read.messages, records: read.records, from: read.from, total: read.total })
       if (msgId !== null && !reveal(msgId) && found) showToast(t("review.message.display.failed"))
     } catch (err) {
       if (!outdated(mine)) showToast(t("review.read.failed", { p0: errorMessage(err) }), { action: { label: t("thread.retry"), kind: 'open-ref', payload: ref }, ms: RETRY_MS })

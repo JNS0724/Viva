@@ -669,4 +669,24 @@ test('foreground turn switch during async status check does not steer under stal
   assert.ok(elapsedMs < 200, `200 reportRecordOf calls on 180k record took ${elapsedMs.toFixed(1)}ms (< 200ms)`)
   assert.match(shownNote(`${fullRecordText}\n回报凭据：secret_outside`), /回报凭据：user_output_not_secret/)
   assert.doesNotMatch(shownNote(`${fullRecordText}\n回报凭据：secret_outside`), /secret_outside/)
+
+  // A 50-item unsent backlog queries status() only up to the turn's batch cap rather than serially probing all 50 items.
+  let statusCalls = 0
+  const cappedHarness = setup({
+    state: 'idle',
+    whileAsking: () => { statusCalls += 1 },
+  })
+  const fiftyReports = Array.from({ length: 50 }, (_, i) => effect({
+    taskId: `schedule:b-${i}`,
+    runId: `b-${i}@2026-11-06T08:00:00.000Z`,
+    title: `积压 ${i}`,
+    status: 'done',
+    host: null,
+    output: '简短结果',
+    token: `${String(i + 100).padStart(32, '0')}`,
+    by: 'schedule',
+  }))
+  await cappedHarness.outcomes(fiftyReports)
+  assert.equal(statusCalls, 10, 'only the first MAX_REPORTS_PER_TURN unsent items probe native status in one idle pass')
+  assert.equal(cappedHarness.turns.length, 1)
 })

@@ -1,9 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
+import type { ScheduleView } from '../shared/ipc-results.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
 import { parseScheduleWords, type ScheduleAction } from './tasks-channel.ts'
+
+export type { ScheduleView } from '../shared/ipc-results.ts'
 
 /**
  * Schedules as the model and the user handle them (system-design §12.2), natural language first: the model proposes,
@@ -12,8 +15,6 @@ import { parseScheduleWords, type ScheduleAction } from './tasks-channel.ts'
  * is schedule-runs.ts's.
  */
 export interface ScheduleProposal { proposalId: string, title: string, prompt: string, rule: ScheduleRule, firstAt: string }
-/** A schedule as the model and the window see it. */
-export interface ScheduleView { id: string, title: string, prompt: string, kind: string, nextAt: string, status: string }
 
 /** dsh-schedule's refusal of a time, in the user's words: one gone by, or one it cannot read; anything else as it is. */
 function timeRefused(err: unknown): unknown {
@@ -25,7 +26,7 @@ function timeRefused(err: unknown): unknown {
 
 const viewOf = (schedule: Schedule): ScheduleView => ({
   id: schedule.id, title: schedule.record.title, prompt: schedule.record.prompt, kind: schedule.record.kind,
-  nextAt: schedule.record.scheduledAt, status: schedule.status,
+  nextAt: schedule.record.scheduledAt, status: schedule.status === 'paused' ? 'paused' : 'active',
 })
 
 /** The schedules' writes made by the user or the model, each an event (journal.ts); being run is schedule-runs.ts's. */

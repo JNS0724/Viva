@@ -102,7 +102,7 @@ async function demo(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   else await run(win, `if (document.getElementById('hub').dataset.open !== 'true') document.getElementById('open-profile').click(); document.querySelector('.hub-nav[data-page="schedules"]').click()`)
   await until(win, `[...document.querySelectorAll('#schedules-page .fu-row[data-status="active"] .tp-name')].some((el) => el.textContent === '周报')`, 'the schedule on 定时任务, coming up')
   await run(win, `[...document.querySelectorAll('#schedules-page .fu-row[data-status="active"]')].find((el) => el.textContent.includes('周报')).click()`)
-  await until(win, q('#schedules-page .fu-main'), 'the schedule detail on 定时任务')
+  await until(win, q('#schedules-page .tp-main[data-schedule]'), 'the schedule detail on 定时任务')
   await wait(PAUSE_MS * 2)
   await rec.stop()
 }
