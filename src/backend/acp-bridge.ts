@@ -422,6 +422,7 @@ export function createAcpBridge({
       })
     },
     emit, describeError: error => describeError(error, stderrTail),
+    describeUnattendedError: error => describeError(error),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
   const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions

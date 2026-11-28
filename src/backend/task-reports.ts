@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
 import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { asData, IN_TURN_MARK, REPORT_HEAD, reportId, shownNote, TOKEN_MARK } from '../shared/task-report.ts'
 import type { Effect, Outcome, Runner } from './effects.ts'
 import type { Conversation } from './history-db.ts'
@@ -297,11 +298,14 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
     if (!mine.length) {
       probedEpoch.clear()
       priorityKeys.clear()
+      typingDeferSince.clear()
       return outcomes
     }
     const mineKeys = new Set(mine.map((effect) => effect.key))
+    const unsentMineKeys = new Set(mine.filter((effect) => !effect.payload.deliveredTo).map((effect) => effect.key))
     for (const key of probedEpoch.keys()) if (!mineKeys.has(key)) probedEpoch.delete(key)
     for (const key of priorityKeys) if (!mineKeys.has(key)) priorityKeys.delete(key)
+    for (const key of typingDeferSince.keys()) if (!unsentMineKeys.has(key)) typingDeferSince.delete(key)
 
     const state = await conversation()
     const passTurn = state === 'busy' ? activeTurnId() : null
@@ -351,6 +355,12 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
         probedEpoch.delete(deferredKey)
         priorityKeys.add(deferredKey)
       }
+      typingDeferSince.clear()
+    } else {
+      const currentAt = now()
+      for (const [deferredKey, since] of typingDeferSince) {
+        if (currentAt - since >= TYPING_DEFER_MS) priorityKeys.add(deferredKey)
+      }
     }
     const turnCap = state === 'busy' ? MAX_STEER_REPORTS_PER_TURN : MAX_REPORTS_PER_TURN
     let freshProbes = 0
@@ -396,6 +406,7 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
           settledKeys.add(effect.key)
           if (wasFresh) settledFreshProbes += 1
           probedEpoch.delete(effect.key)
+          typingDeferSince.delete(effect.key)
         }
         outcomes.set(effect.key, outcome)
       }
@@ -430,14 +441,12 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
         { ...fields(sending), stage: 'sending', identities: { ...fields(sending).identities, sessionId: bound } }) : 'unavailable'
       if (sending && (sent === 'steered' || sent === 'pending' || sent === 'read')) {
         creditBudget(bound, activeTurnId(), sending.key, steerNote.length)
+        typingDeferSince.delete(sending.key)
       }
       if (sent === 'read' && sending && await still(sending)) outcomes.set(effect.key, readOutcome(sending))
       else if (sent === 'idle' && sending) forTurn.push(sending)
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
     }
-    // Prune deferral tracking for effects no longer waiting for an idle turn.
-    const activeForTurn = new Set(forTurn.map(effect => effect.key))
-    for (const key of typingDeferSince.keys()) if (!activeForTurn.has(key)) typingDeferSince.delete(key)
 
     const needsFollowUpSlice = () => {
       if (priorityKeys.size > 0) return true
@@ -460,8 +469,9 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
         const at = now()
         let remaining = Infinity
         for (const effect of forTurn) {
-          const since = typingDeferSince.get(effect.key) ?? at
-          typingDeferSince.set(effect.key, since)
+          if (!typingDeferSince.has(effect.key)) typingDeferSince.set(effect.key, at)
+        }
+        for (const since of typingDeferSince.values()) {
           remaining = Math.min(remaining, TYPING_DEFER_MS - (at - since))
         }
         if (remaining > 0) {
@@ -503,8 +513,6 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
           ready.map(({ key: reportId, payload: { taskId, cwd } }) => ({ reportId, taskId, cwd })), () => ready.every(held)),
           { stage: 'sending', identities: { sessionId: bound }, metrics: { count: ready.length } })
       }
-    } else if (!forTurn.length) {
-      typingDeferSince.clear()
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
     if (needsFollowUpSlice()) wakeLater(50)
@@ -532,3 +540,31 @@ export const recordedNote = (payload: ReportPayload): string =>
     [endedOf({ kind: REPORT, key: reportId(payload.taskId, payload.runId), payload: { ...payload, token: undefined }, generation: 0, attempts: 0 })],
     { inTurn: payload.via === 'steer', fullOutput: payload.by === 'schedule' },
   ))
+
+const KNOWN_SAFE_SCHEDULE_REASONS: ReadonlyMap<string, () => string> = new Map([
+  ['这个定时任务对应的原工作目录已经不在了。', () => t('main.schedule-runs.folder.gone')],
+  ['The original working folder for this scheduled task is no longer there.', () => t('main.schedule-runs.folder.gone')],
+  ['运行太久，已经停下。', () => t('main.unattended-runs.timed.out')],
+  ['The run took too long and was stopped.', () => t('main.unattended-runs.timed.out')],
+  ['创建这个定时任务时用到的记忆已变更。请检查任务说明后再运行。', () => t('main.schedule-runs.memory.stale')],
+  ['The memory used to create this schedule changed. Review its instructions before running it again.', () => t('main.schedule-runs.memory.stale')],
+  ['本次执行用到的记忆在保存结果前已变更。', () => t('main.schedule-runs.memory.result.stale')],
+  ['Memory used during this run changed before the result could be saved.', () => t('main.schedule-runs.memory.result.stale')],
+])
+
+/**
+ * Restricts failed schedule bodies entering model-facing `report` payloads to a closed allowlist of safe localized
+ * reasons so raw ACP errors, dsh stderr tails, or local file paths never enter main-conversation context.
+ */
+export function modelSafeScheduleFailure(body: string): string {
+  const trimmed = body.trim()
+  for (const prefix of ['这次定时任务试了几次都没做成：', 'This scheduled run did not finish after several tries: ']) {
+    if (trimmed.startsWith(prefix)) {
+      const detail = trimmed.slice(prefix.length).trim()
+      const safe = KNOWN_SAFE_SCHEDULE_REASONS.get(detail)
+      return safe ? t('main.schedule-runs.failed', { value1: safe() }) : t('main.schedule-runs.failed.generic')
+    }
+  }
+  const direct = KNOWN_SAFE_SCHEDULE_REASONS.get(trimmed)
+  return direct ? t('main.schedule-runs.failed', { value1: direct() }) : t('main.schedule-runs.failed.generic')
+}

@@ -12,7 +12,8 @@ import { openScheduleStore } from '../src/backend/schedule-store.ts'
 import { createEffects } from '../src/backend/effects.ts'
 import { createEventCore } from '../src/backend/event-core.ts'
 import { LEGACY_FEED_NOTICE, migrateLegacyFeed, SCHEDULE_NOTICE } from '../src/backend/legacy-feed-migration.ts'
-import { REPORT, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
+import { noteFor, REPORT, reportId, SCHEDULE_RECORD_MAX_CHARS, type ReportPayload } from '../src/backend/task-reports.ts'
+import { describeError } from '../src/backend/session-info.ts'
 
 /** A fresh folder with the app database open in it; closed before the folder goes (Windows keeps an open file). */
 function appDbIn(t: TestContext) {
@@ -162,4 +163,56 @@ test('legacy feed upgrade preserves unread schedule items as main-conversation r
   })
   assert.deepEqual(noOp, { migratedReports: 0, migratedNotices: 0, archivedItems: 0, droppedTables: [] })
   assert.equal(listCalls, 0, 'startup migration check does not materialize or parse queued payloads')
+})
+
+test('legacy feed upgrade strips host diagnostics from failed schedule reports and preserves oversized >180k originals in local archive', (t) => {
+  const { app } = appDbIn(t)
+  const core = createEventCore({ app, publish: () => {}, now: () => 5_000 })
+  const effects = createEffects({ db: app.db, apply: core.apply, now: () => 5_000 })
+
+  app.db.exec(`
+    CREATE TABLE feed_items (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      seen_at INTEGER,
+      UNIQUE (source, key)
+    );
+  `)
+  const failureWithStderr = `This scheduled run did not finish after several tries: ${describeError(new Error('prompt failed'), 'could not load /fixture/local-only/settings.yml')}`
+  const oversizedUnread = `${'H'.repeat(95_000)}\nMIDDLE_UNREAD_MARKER\n${'T'.repeat(105_000)}`
+  const oversizedSeen = `${'X'.repeat(95_000)}\nMIDDLE_SEEN_MARKER\n${'Y'.repeat(105_000)}`
+  app.db.prepare('INSERT INTO feed_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+    'f-err', 'schedule', 's-err@once', '失败提醒', failureWithStderr, JSON.stringify({ label: '定时', ref: 's-err' }), 1_000, null,
+  )
+  app.db.prepare('INSERT INTO feed_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+    'f-huge-unread', 'schedule', 's-huge@once', '超长未读', oversizedUnread, JSON.stringify({ label: '定时', ref: 's-huge' }), 1_100, null,
+  )
+  app.db.prepare('INSERT INTO feed_items VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+    'f-huge-seen', 'schedule', 's-seen@once', '超长已读', oversizedSeen, JSON.stringify({ label: '定时', ref: 's-seen' }), 1_200, 1_300,
+  )
+
+  migrateLegacyFeed({ db: app.db, apply: core.apply, effects, now: () => 5_000 })
+
+  const errPayload = effects.get(REPORT, reportId('schedule:s-err', 's-err@once'))?.payload as ReportPayload
+  assert.ok(errPayload)
+  assert.equal(errPayload.status, 'error')
+  assert.doesNotMatch(errPayload.output, /\/fixture\/local-only\/settings\.yml|prompt failed|dsh:/)
+  assert.doesNotMatch(noteFor([errPayload]), /\/fixture\/local-only\/settings\.yml|prompt failed|dsh:/)
+
+  const hugePayload = effects.get(REPORT, reportId('schedule:s-huge', 's-huge@once'))?.payload as ReportPayload
+  assert.ok(hugePayload)
+  assert.equal(hugePayload.outputTruncated, true)
+  assert.ok(hugePayload.output.length <= SCHEDULE_RECORD_MAX_CHARS, 'model/record delivery stays bounded at 180k')
+
+  const archivedRows = app.db.prepare("SELECT text FROM messages WHERE conversation_id = 'legacy-feed-archive' AND role = 'assistant' ORDER BY seq").all() as Array<{ text: string }>
+  assert.equal(archivedRows.length, 2, 'both oversized unread and oversized seen schedule originals are preserved in local archive')
+  assert.equal(archivedRows[0]?.text, oversizedUnread, 'full 200k+ unread original including middle marker is preserved locally')
+  assert.match(archivedRows[0]!.text, /MIDDLE_UNREAD_MARKER/)
+  assert.equal(archivedRows[1]?.text, oversizedSeen, 'full 200k+ seen original including middle marker is preserved locally')
+  assert.match(archivedRows[1]!.text, /MIDDLE_SEEN_MARKER/)
 })

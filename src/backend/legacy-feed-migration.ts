@@ -6,7 +6,7 @@ import { transaction } from './app-db.ts'
 import type { Effects } from './effects.ts'
 import { openHistoryDb } from './history-db.ts'
 import type { Apply } from './journal.ts'
-import { boundScheduleRecordOutput, GATHER_MS, recordedNote, REPORT, reportId, type ReportPayload } from './task-reports.ts'
+import { boundScheduleRecordOutput, GATHER_MS, modelSafeScheduleFailure, recordedNote, REPORT, reportId, type ReportPayload } from './task-reports.ts'
 
 /** How much of a scheduled run's answer a notification shows. */
 export const NOTICE_BODY_CHARS = 200
@@ -131,18 +131,31 @@ export function migrateLegacyFeed({
         const body = sanitizeLegacyBody(String(row.body))
         const createdAt = Number(row.created_at)
         const at = Number.isFinite(createdAt) && createdAt > 0 ? Math.trunc(createdAt) : now()
+        const origin = parseOrigin(row.origin, source === 'schedule' ? '定时' : source)
+        const pushFullArchive = () => {
+          toArchive.push({
+            key: `${source}:${key}`,
+            title,
+            sourceLabel: origin.label,
+            originRef: origin.ref,
+            body,
+            at,
+          })
+        }
         const isUnreadSchedule = source === 'schedule' && (row.seen_at === null || row.seen_at === undefined)
         if (isUnreadSchedule) {
           const scheduleId = parseScheduleId(key, row.origin)
           const taskId = scheduleTaskId(scheduleId)
           const reportKey = reportId(taskId, key)
+          const status = statusOfLegacyBody(body)
+          const deliveryBody = status === 'error' ? modelSafeScheduleFailure(body) : body
+          const bounded = boundScheduleRecordOutput(deliveryBody)
           if (!hasRecord(reportKey) && !effects.get(REPORT, reportKey)) {
-            const bounded = boundScheduleRecordOutput(body)
             const payload: ReportPayload = {
               taskId,
               runId: key,
               title,
-              status: statusOfLegacyBody(body),
+              status,
               host: null,
               cwd: scheduleCwd(scheduleId),
               output: bounded.text,
@@ -158,9 +171,10 @@ export function migrateLegacyFeed({
           }
           const noticeKey = `${scheduleId}:${key}`
           if (effects.get(LEGACY_FEED_NOTICE, id) && !effects.get(SCHEDULE_NOTICE, noticeKey)) {
-            effects.queue(SCHEDULE_NOTICE, noticeKey, { title, body: body.slice(0, NOTICE_BODY_CHARS) })
+            effects.queue(SCHEDULE_NOTICE, noticeKey, { title, body: deliveryBody.slice(0, NOTICE_BODY_CHARS) })
             migratedNotices += 1
           }
+          if (bounded.truncated) pushFullArchive()
           continue
         }
         if (source === 'schedule') {
@@ -169,13 +183,15 @@ export function migrateLegacyFeed({
           const reportKey = reportId(taskId, key)
           const convId = scheduleConversationId(scheduleId)
           if (convId && checkConversation(convId)) {
+            const status = statusOfLegacyBody(body)
+            const recordBody = status === 'error' ? modelSafeScheduleFailure(body) : body
+            const bounded = boundScheduleRecordOutput(recordBody)
             if (!hasRecord(reportKey)) {
-              const bounded = boundScheduleRecordOutput(body)
               const payload: ReportPayload = {
                 taskId,
                 runId: key,
                 title,
-                status: statusOfLegacyBody(body),
+                status,
                 host: null,
                 output: bounded.text,
                 ...(bounded.truncated ? { outputTruncated: true } : {}),
@@ -184,23 +200,15 @@ export function migrateLegacyFeed({
                 startedAt: at,
                 by: 'schedule',
               }
-              if (writeRecord({ conversationId: convId, reportId: reportKey, at, text: recordedNote(payload) })) {
+              if (writeRecord({ conversationId: convId, reportId: reportKey, at, text: recordedNote(payload) }) && !bounded.truncated) {
                 archivedItems += 1
               }
             }
+            if (bounded.truncated) pushFullArchive()
             continue
           }
         }
-        const bounded = boundScheduleRecordOutput(body)
-        const origin = parseOrigin(row.origin, source === 'schedule' ? '定时' : source)
-        toArchive.push({
-          key: `${source}:${key}`,
-          title,
-          sourceLabel: origin.label,
-          originRef: origin.ref,
-          body: bounded.text,
-          at,
-        })
+        pushFullArchive()
       }
       if (toArchive.length > 0) {
         writeArchive(toArchive)

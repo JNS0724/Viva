@@ -1289,6 +1289,7 @@ export const zhCN = {
   "main.schedules.time.invalid": "时间没有填对，请检查一下。",
   "main.schedule-runs.folder.gone": "这个定时任务对应的原工作目录已经不在了。",
   "main.schedule-runs.failed": "这次定时任务试了几次都没做成：{value1}",
+  "main.schedule-runs.failed.generic": "这次定时任务试了几次都没做成。",
   "main.legacy-feed.archive.title": "历史动态归档",
   "main.unattended-runs.timed.out": "运行太久，已经停下。",
   "main.tasks-channel.invalid.schedule": "定时任务需要标题（不超过 120 字）和提示词。",

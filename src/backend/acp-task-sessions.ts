@@ -22,7 +22,7 @@ const choices = (options: readonly SessionConfigOption[] | null | undefined): re
 const resultOf = (result: Acquired): Started => result.ok ? { ok: true, taskId: result.taskId } : result
 
 /** Native attachment/request identities only. TaskRuntime owns admission, application runs, status and storage. */
-export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, emit, describeError, goneMessage, stoppedMessage, preparePrompt = async (_id, text) => text }: {
+export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, emit, describeError, describeUnattendedError = describeError, goneMessage, stoppedMessage, preparePrompt = async (_id, text) => text }: {
   preparePrompt?: (id: string, text: string, meta?: TaskDispatchMeta) => Promise<string>
   connection: () => Pick<ClientSideConnection, 'setSessionConfigOption' | 'closeSession'>
   acquire: { resume: (id: string, cwd: string) => Promise<ResumeSessionResponse>, fresh: (cwd: string) => Promise<NewSessionResponse> }
@@ -33,7 +33,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
   questions: { declineTask: (id: string) => void, pendingOf: (id: string) => readonly unknown[] }
   steer: (id: string, text: string, meta?: TaskDispatchMeta) => Promise<SteerResult>
   emit: (event: { type: string, [field: string]: unknown }) => void
-  describeError: (error: unknown) => string, goneMessage: () => string, stoppedMessage: () => string
+  describeError: (error: unknown) => string, describeUnattendedError?: (error: unknown) => string, goneMessage: () => string, stoppedMessage: () => string
 }) {
   const sessions = new Map<string, Attachment>(), retiring = new Map<string, Promise<void>>()
   let disposed = false
@@ -146,7 +146,13 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     const effectiveMeta: TaskDispatchMeta | undefined = attachment.unattended
       ? { origin: 'unattended' }
       : meta
-    try { text = await preparePrompt(taskId, text, effectiveMeta) } catch (error) { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(error) }); return }
+    const formatError = attachment.unattended ? describeUnattendedError : describeError
+    const errorDomain = attachment.unattended ? 'schedule' : 'task'
+    try { text = await preparePrompt(taskId, text, effectiveMeta) } catch (error) {
+      if (!disposed) emitDiagnosticFailure(errorDomain, error, { stage: 'sending', identities: { sessionId: taskId } })
+      if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: formatError(error) })
+      return
+    }
     if (!current(taskId, attachment)) return
     const prompt = images.length
       ? [...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })), ...(text ? [{ type: 'text' as const, text }] : [])]
@@ -154,7 +160,10 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     await operations.run({
       sessionId: taskId, prompt,
       onEnd: response => { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: response.stopReason }) },
-      onError: error => { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(error) }) },
+      onError: error => {
+        if (!disposed) emitDiagnosticFailure(errorDomain, error, { stage: 'sending', identities: { sessionId: taskId } })
+        if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: formatError(error) })
+      },
     })
   }
   return {

@@ -1289,6 +1289,7 @@ export const en = {
   "main.schedules.time.invalid": "The time is not filled in right. Please check it.",
   "main.schedule-runs.folder.gone": "The original working folder for this scheduled task is no longer there.",
   "main.schedule-runs.failed": "This scheduled run did not finish after several tries: {value1}",
+  "main.schedule-runs.failed.generic": "This scheduled run did not finish after several tries.",
   "main.legacy-feed.archive.title": "Legacy feed archive",
   "main.unattended-runs.timed.out": "The run took too long and was stopped.",
   "main.tasks-channel.invalid.schedule": "A schedule needs a title (at most 120 characters) and a prompt.",

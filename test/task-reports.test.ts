@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Effect, Outcome } from '../src/backend/effects.ts'
 import type { ReportState } from '../src/backend/steer-channel.ts'
-import { boundScheduleRecordOutput, createTaskReports, MAX_REPORTS_PER_TURN, MAX_STEER_REPORTS_PER_TURN, MAX_STEER_TURN_CHARS, MAX_TURN_NOTE_CHARS, noteFor, recordedNote, REPORT_OUTPUT_HEAD_CHARS, REPORT_OUTPUT_TAIL_CHARS, reportId, SCHEDULE_RECORD_MAX_CHARS, TYPING_DEFER_MS, windowReportOutput, type ReportPayload } from '../src/backend/task-reports.ts'
+import { boundScheduleRecordOutput, createTaskReports, MAX_REPORTS_PER_TURN, MAX_STEER_REPORTS_PER_TURN, MAX_STEER_TURN_CHARS, MAX_TURN_NOTE_CHARS, modelSafeScheduleFailure, noteFor, recordedNote, REPORT_OUTPUT_HEAD_CHARS, REPORT_OUTPUT_TAIL_CHARS, reportId, SCHEDULE_RECORD_MAX_CHARS, TYPING_DEFER_MS, windowReportOutput, type ReportPayload } from '../src/backend/task-reports.ts'
 import { earlierRows, historyMessages } from '../src/renderer/selectors.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { recordsAt } from '../src/renderer/report-state.ts'
@@ -802,4 +802,37 @@ test('foreground turn switch during async status check does not steer under stal
   await dropHarness.outcomes([fortyDelivered[19]!, fortyDelivered[39]!])
   assert.equal(dropHarness.reads.length, 39, 'pass 3 settles report 39')
   assert.equal(dropHarness.wakes.length, 2, 'pass 3 stops waking once every item has been probed in the current epoch')
+
+  // Continuous typing across multi-slice / repeated external wakes keeps original deferral timestamps so the first
+  // batch still opens at TYPING_DEFER_MS (8s) rather than resetting across slices.
+  const twentyFresh = Array.from({ length: 20 }, (_, i) => effect({
+    taskId: `schedule:ty-${i}`,
+    runId: `ty-${i}@2026-11-06T08:00:00.000Z`,
+    title: `打字延迟 ${i}`,
+    status: 'done',
+    host: null,
+    output: '结果',
+    token: `${String(i + 500).padStart(32, '0')}`,
+    by: 'schedule',
+  }))
+  const typingSliceHarness = setup({ state: 'idle', typing: true, now: 1_000 })
+  await typingSliceHarness.outcomes(twentyFresh)
+  assert.equal(typingSliceHarness.turns.length, 0)
+  typingSliceHarness.world.now = 5_000
+  typingSliceHarness.run.onExternalWake()
+  await typingSliceHarness.outcomes(twentyFresh)
+  assert.equal(typingSliceHarness.turns.length, 0, 'still deferred at 4s elapsed')
+  typingSliceHarness.world.now = 1_000 + TYPING_DEFER_MS
+  await typingSliceHarness.outcomes(twentyFresh)
+  assert.equal(typingSliceHarness.turns.length, 1, 'opens promptly at TYPING_DEFER_MS without resetting earlier slice timestamps')
+
+  // Model-safe schedule failure mapping preserves known safe reasons and scrubs raw ACP/dsh host diagnostics.
+  assert.doesNotMatch(
+    modelSafeScheduleFailure('这次定时任务试了几次都没做成：prompt failed（dsh: could not load /Users/secret/settings.yml）'),
+    /settings\.yml|prompt failed|dsh:/,
+  )
+  assert.match(
+    modelSafeScheduleFailure('这次定时任务试了几次都没做成：运行太久，已经停下。'),
+    /运行太久，已经停下/,
+  )
 })

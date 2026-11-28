@@ -56,7 +56,7 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
-import { boundScheduleRecordOutput, createTaskReports, GATHER_MS, REPORT, reportId, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
+import { boundScheduleRecordOutput, createTaskReports, GATHER_MS, modelSafeScheduleFailure, REPORT, reportId, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
 import { isScheduleTaskId, scheduleTaskId } from '../shared/task-report.ts'
 import { migrateLegacyFeed, NOTICE_BODY_CHARS, SCHEDULE_NOTICE } from './legacy-feed-migration.ts'
 import { createReportRecords } from './report-records.ts'
@@ -1239,7 +1239,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   function queueScheduleDelivery(item: DeliveredScheduleRun) {
     if (!effects) throw new Error('the effects queue is not open yet')
     const taskId = scheduleTaskId(item.scheduleId)
-    const bounded = boundScheduleRecordOutput(item.body)
+    const deliveryBody = item.status === 'error' ? modelSafeScheduleFailure(item.body) : item.body
+    const bounded = boundScheduleRecordOutput(deliveryBody)
     const report: ReportPayload = {
       taskId,
       runId: item.key,
@@ -1258,7 +1259,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     effects.queue(REPORT, reportId(taskId, item.key), report, Date.now() + GATHER_MS)
     effects.queue(SCHEDULE_NOTICE, `${item.scheduleId}:${item.key}`, {
       title: item.title,
-      body: item.body.slice(0, NOTICE_BODY_CHARS),
+      body: deliveryBody.slice(0, NOTICE_BODY_CHARS),
     })
   }
 
