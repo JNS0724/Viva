@@ -35,7 +35,7 @@ export function historyRecall(db: HistoryDb, allowed?: (message: HistoryEvidence
   /** Search hits, newest first, each with the title of its topic. */
   function search(query: string, range: RecallRange = {}): HistoryHit[] {
     const titles = new Map<string, string>()
-    return db.searchMessages(query, range).flatMap<HistoryHit>((hit) => {
+    return db.searchMessages(query, { ...range, includeArchive: false }).flatMap<HistoryHit>((hit) => {
       if (hit.segmentId === LEGACY_FEED_ARCHIVE_ID) return []
       if (allowed) {
         const original = read(hit, 1, true)

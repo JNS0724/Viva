@@ -329,6 +329,24 @@ test('crash recovery after native read on an unsaved blank foreground topic pers
     assert.equal(effects2.get(REPORT, purgedReportId), null)
     assert.equal(history2.get(saved.id), null, 'physically purged conversation is not resurrected')
     assert.equal(history2.hasRecord(purgedReportId), false, 'no orphan record written for purged conversation')
+
+    // Target snapshotted while blank, then saved by a user message and detached from its native session (or sharing a
+    // sessionId with an older segment), still records on the exact snapshotted conversation rather than dropping or misrouting.
+    const olderSameSession = history2.save(history2.create({ sessionId: 's-shared', cwd: '/work' }), [{ role: 'user', text: '旧分段' }]) as Conversation
+    const blankThenSaved = history2.create({ sessionId: 's-shared', cwd: '/work' })
+    const detachedReportId = reportId('schedule:s4', 's4@2026-11-06T11:00:00.000Z')
+    core2.apply('test.queued', {}, () => {
+      effects2.queue(REPORT, detachedReportId, {
+        taskId: 'schedule:s4', runId: 's4@2026-11-06T11:00:00.000Z', title: '解绑后回执', status: 'done', host: null,
+        output: '必须落在目标分段', by: 'schedule', deliveredTo: 's-shared', deliveredConversation: blankThenSaved,
+      })
+    })
+    history2.save(blankThenSaved, [{ role: 'user', text: '用户插话落库' }])
+    history2.detachNativeSession(blankThenSaved.id, 's-shared')
+    records2.read(effects2.get(REPORT, detachedReportId) as Effect<ReportPayload>)
+    assert.equal(effects2.get(REPORT, detachedReportId), null, 'effect settled')
+    assert.deepEqual(history2.recordsOf(blankThenSaved.id).map((r) => [r.reportId, r.after]), [[detachedReportId, 1]], 'record kept on snapshotted conversation even after session_id detached')
+    assert.deepEqual(history2.recordsOf(olderSameSession.id), [], 'not misrouted to older segment sharing native session')
   } finally {
     reopened.close()
   }

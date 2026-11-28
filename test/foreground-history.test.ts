@@ -169,6 +169,20 @@ test('incremental commit handles beforeKey insertion shifting stars and report r
   assert.ok(childSeg.id)
   const multiRead = history.read(`t:${emptySeg.id}`, { from: 0, count: 10 })!
   assert.deepEqual(multiRead.records?.map(r => r.reportId), ['r-empty-seg'], 'topic reader includes records from empty sibling segment')
+
+  // Boundary empty segment: 100 messages -> empty record-only segment -> 30 messages returns the record on page 1 without duplication on page 2.
+  const segA = history.save(history.create({ sessionId: 's-b-a', cwd: '/w' }),
+    Array.from({ length: 100 }, (_, i) => ({ role: 'user' as const, text: `a-${i}`, receipt: null }))) as Conversation
+  const segB = history.save(history.create({ sessionId: 's-b-b', cwd: '/w', parentId: segA.id, topicId: segA.id }), [], { keepEmpty: true }) as Conversation
+  history.addRecord({ conversationId: segB.id, reportId: 'r-mid-empty', at: 70, text: '分页边界空段回报' })
+  history.save(history.create({ sessionId: 's-b-c', cwd: '/w', parentId: segB.id, topicId: segA.id }),
+    Array.from({ length: 30 }, (_, i) => ({ role: 'user' as const, text: `c-${i}`, receipt: null })))
+  const page1 = history.read(`t:${segA.id}`, { from: 0, count: 100 })!
+  const page2 = history.read(`t:${segA.id}`, { from: 100, count: 30 })!
+  const crossBoundary = history.read(`t:${segA.id}`, { from: 99, count: 2 })!
+  assert.deepEqual(page1.records?.map(r => r.reportId), ['r-mid-empty'], 'boundary empty segment returned on page 1')
+  assert.equal(page2.records, undefined, 'not duplicated on page 2 (from=100, count=30)')
+  assert.deepEqual(crossBoundary.records?.map(r => r.reportId), ['r-mid-empty'], 'also returned on cross-boundary slice')
 })
 
 test('renderer sliding window trims long sessions on idle turn_end and preserves absolute seq across rewind, stars, search, records and anchors', () => {

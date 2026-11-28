@@ -92,6 +92,8 @@ export const MAX_REPORTS_PER_TURN = 10
 export const MAX_TURN_NOTE_CHARS = 80_000
 export const MAX_STEER_REPORTS_PER_TURN = 5
 export const MAX_STEER_TURN_CHARS = 45_000
+/** Maximum native status() RPC probes issued in a single effects pass so a large backlog never stalls the channel. */
+export const MAX_STATUS_PROBES_PER_PASS = 20
 /** Maximum time an idle report turn waits while the user is actively typing in the composer. */
 export const TYPING_DEFER_MS = 8_000
 
@@ -313,8 +315,15 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
 
     const turnCap = state === 'busy' ? MAX_STEER_REPORTS_PER_TURN : MAX_REPORTS_PER_TURN
     let freshProbes = 0
+    let totalProbes = 0
+    let deferredProbes = false
     const unsent: Array<Effect<ReportPayload>> = []
     for (const original of mine) {
+      if (totalProbes >= MAX_STATUS_PROBES_PER_PASS) {
+        outcomes.set(original.key, 'wait')
+        deferredProbes = true
+        continue
+      }
       if (!original.payload.deliveredTo) {
         if (freshProbes >= turnCap) {
           outcomes.set(original.key, 'wait')
@@ -322,6 +331,7 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
         }
         freshProbes += 1
       }
+      totalProbes += 1
       // A token before anything else, kept: the same on every try from now on.
       const effect = original.payload.token ? original : kept(original, { ...original.payload, token: randomUUID().replaceAll('-', '') })
       if (!effect) { outcomes.set(original.key, 'wait'); continue }
@@ -432,6 +442,7 @@ export function createTaskReports({ currentConversation, session, unsavedConvers
       typingDeferSince.clear()
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
+    if (deferredProbes) wakeLater(50)
     return outcomes
   }, { stage: 'report', metrics: { count: effects.length } })
 }

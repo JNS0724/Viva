@@ -63,10 +63,8 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
       if (!existing) winBounds.set(place.segmentId, { first: place.seq, last: place.seq })
       else existing.last = place.seq
     }
-    const firstWinIdx = segmentIds.indexOf(windowPlaces[0]!.segmentId)
-    const lastWinIdx = segmentIds.lastIndexOf(windowPlaces.at(-1)!.segmentId)
+    const firstNonEmptyIdx = segmentIds.findIndex((segmentId) => allBounds.has(segmentId))
     const atStart = from === 0
-    const atEnd = from + windowPlaces.length >= allPlaces.length
     return segmentIds.flatMap((segmentId, index) => {
       const win = winBounds.get(segmentId)
       if (win) {
@@ -78,10 +76,13 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
         }))
       }
       if (!allBounds.has(segmentId)) {
-        const includeEmpty = (atStart && index < firstWinIdx)
-          || (index > firstWinIdx && index < lastWinIdx)
-          || (atEnd && index > lastWinIdx)
-        if (includeEmpty) return allOf(segmentId)
+        if (index < firstNonEmptyIdx) return atStart ? allOf(segmentId) : []
+        let prevIdx = index - 1
+        while (prevIdx >= 0 && !allBounds.has(segmentIds[prevIdx]!)) prevIdx -= 1
+        const prevSegId = prevIdx >= 0 ? segmentIds[prevIdx]! : null
+        const prevWin = prevSegId ? winBounds.get(prevSegId) : undefined
+        const prevFull = prevSegId ? allBounds.get(prevSegId) : undefined
+        if (prevWin && prevFull && prevWin.last === prevFull.last) return allOf(segmentId)
       }
       return []
     })

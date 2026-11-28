@@ -24,6 +24,8 @@ export interface RecordHistory {
   get: (id: string) => unknown
   /** Fast indexed check for an active stored conversation without loading its messages or report records. */
   hasConversation?: (id: string) => boolean
+  /** Lightweight metadata lookup for an active stored conversation without loading messages or report records. */
+  conversationMeta?: (id: string) => Conversation | null
   /** Whether a conversation row ever existed in `conversations`, including soft-deleted or purged ones. */
   hasAnyConversation?: (id: string) => boolean
   save: (conversation: Conversation, messages: readonly never[], options: { keepEmpty: boolean }) => unknown
@@ -60,21 +62,27 @@ export function createReportRecords({ history, effects, apply, current, show, be
   const isStored = (store: RecordHistory, id: string): boolean =>
     store.hasConversation ? store.hasConversation(id) : Boolean(store.get(id))
 
-  /** The conversation of the session a report went to: the one on screen first, then saved history, then an unsaved blank topic snapshotted before sending. */
+  /** The conversation of the session a report went to: exact snapshotted target first (alive, unsaved, or deleted), then live session, then saved session lookup. */
   function targetOf(effect: Effect<ReportPayload>): Conversation | null {
     const session = effect.payload.deliveredTo
     if (!session) return null
     const store = history()
     const here = current()
+    const snap = effect.payload.deliveredConversation
+    if (snap && snap.sessionId === session) {
+      if (store && isStored(store, snap.id)) {
+        return here.id === snap.id ? here : (store.conversationMeta?.(snap.id) ?? snap)
+      }
+      if (store?.hasAnyConversation?.(snap.id)) {
+        return null
+      }
+      return here.id === snap.id ? here : snap
+    }
     if (here.sessionId === session) {
       if (store && !isStored(store, here.id) && store.hasAnyConversation?.(here.id)) return null
       return here
     }
-    const saved = store?.bySession(session) ?? null
-    if (saved) return saved
-    const snap = effect.payload.deliveredConversation
-    if (snap && snap.sessionId === session && !store?.hasAnyConversation?.(snap.id)) return snap
-    return null
+    return store?.bySession(session) ?? null
   }
 
   /** The time a report's record says: when it was first drawn, kept with the report so the kept record says the same. */

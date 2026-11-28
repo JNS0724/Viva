@@ -695,8 +695,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     currentConversation: () => sessions.current().id,
     unsavedConversation: (sessionId) => {
       const selected = sessions.current()
-      if (selected.sessionId !== sessionId || historyDb?.hasAnyConversation(selected.id)) return null
-      return { ...selected, topicId: sessions.topicId() }
+      if (selected.sessionId === sessionId) {
+        if (!historyDb?.hasConversation(selected.id) && historyDb?.hasAnyConversation(selected.id)) return null
+        return { ...selected, topicId: sessions.topicId() }
+      }
+      return historyDb?.bySession(sessionId) ?? null
     },
     superseded: (taskId, runId) => isScheduleTaskId(taskId) ? false : (taskRuntime?.reports.superseded(taskId, runId) ?? false),
     report: async (note, reports, held) => {

@@ -269,7 +269,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     segmentRow: db.prepare('SELECT id, deleted_at FROM conversations WHERE id = ?'),
     purgedConversation: db.prepare('SELECT 1 FROM deleted_conversations WHERE id = ?'),
     position: db.prepare('SELECT created_at, rowid FROM conversations WHERE id = ?'),
-    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
+    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL AND id != 'legacy-feed-archive'
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
     timelineMessages: db.prepare(`SELECT id, seq, role, text, receipt, images, source_key, source_id, created_at,
@@ -421,6 +421,10 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   const conversationOf = (id: string) => sql.conversation.get(id)
   const hasConversation = (id: unknown): boolean => Boolean(sql.conversation.get(assertId(id)))
+  const conversationMeta = (id: unknown): Conversation | null => {
+    const row = sql.conversation.get(assertId(id))
+    return row ? toConversation(row) : null
+  }
 
   function get(id: unknown) {
     const row = sql.conversation.get(assertId(id))
@@ -746,16 +750,17 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * Messages that have every one of several words (「报销 模板」): the words of three characters or more through the
    * trigram index, the shorter ones by LIKE, in one query.
    */
-  function allTermsHits(terms: readonly string[], { since, until }: { since: number, until: number }) {
+  function allTermsHits(terms: readonly string[], { since, until, includeArchive = true }: { since: number, until: number, includeArchive?: boolean }) {
     const long = terms.filter((term) => [...term].length >= TRIGRAM_MIN_CHARS)
     const short = terms.filter((term) => [...term].length < TRIGRAM_MIN_CHARS)
     const likes = short.map(() => `m.text LIKE ? ESCAPE '\\'`)
+    const archiveClause = includeArchive ? '' : `AND c.id != '${LEGACY_FEED_ARCHIVE_ID}'`
     const from = long.length
       ? `messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id WHERE messages_fts MATCH ?`
       : `messages m JOIN conversations c ON c.id = m.conversation_id WHERE 1`
     const params = [...(long.length ? [long.map(ftsPhrase).join(' AND ')] : []), ...short.map((term) => `%${escapeLike(term)}%`), since, until]
     return db.prepare(`SELECT m.id AS message_id, m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM ${from}
-      ${likes.map((like) => `AND ${like}`).join(' ')} AND c.deleted_at IS NULL AND c.folded_into IS NULL
+      ${likes.map((like) => `AND ${like}`).join(' ')} AND c.deleted_at IS NULL AND c.folded_into IS NULL ${archiveClause}
       AND m.created_at >= ? AND m.created_at < ?
       ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`).all(...params) as Row[]
   }
@@ -765,12 +770,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * with where each is, its directory, and the messages right before and after it in its segment; `since` and
    * `until` (ms), only those written from the one and before the other.
    */
-  function searchMessages(input: unknown, { since = 0, until = Number.MAX_SAFE_INTEGER }: { since?: number, until?: number } = {}) {
+  function searchMessages(input: unknown, { since = 0, until = Number.MAX_SAFE_INTEGER, includeArchive = true }: { since?: number, until?: number, includeArchive?: boolean } = {}) {
     const query = typeof input === 'string' ? input.trim().slice(0, MAX_QUERY_CHARS) : ''
     if (!query) return []
     const terms = [...new Set(query.split(/\s+/).filter(Boolean))].slice(0, MAX_QUERY_TERMS)
     // One word goes the same way: through the trigram index when it is long enough, else by LIKE.
-    const rows = allTermsHits(terms.length === 1 ? [query] : terms, { since, until })
+    const rows = allTermsHits(terms.length === 1 ? [query] : terms, { since, until, includeArchive })
     return rows.map((row) => ({
       messageId: row.message_id, segmentId: row.segment_id, seq: row.seq, role: row.role, at: row.created_at, cwd: row.cwd ?? null, snippet: snippetOf(row.text, firstTermIn(row.text, terms)),
       before: contextOf(sql.neighbour.get(row.segment_id, row.seq - 1)),
@@ -928,7 +933,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   return {
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery, matchesPromptText,
-    addRecord, hasRecord, moveRecords, recordsOf, recordTimesOf, messageCount, hasConversation, archiveLegacyFeed, bySession, detachNativeSession, rebindMessageSession,
+    addRecord, hasRecord, moveRecords, recordsOf, recordTimesOf, messageCount, hasConversation, conversationMeta, archiveLegacyFeed, bySession, detachNativeSession, rebindMessageSession,
     hasAnyConversation: (id: unknown) => {
       const cid = assertId(id)
       return Boolean(sql.segmentRow.get(cid) || sql.purgedConversation.get(cid))
