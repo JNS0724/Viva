@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, hasPendingRequest, mayShow, register, repairs, settleFast, statusOfPlan } from '../plugins/routing/lib/ledger.ts'
-import { admit, admitFeedSource, grantPlan, INITIAL_TURN_GRANTS, layerOf, MAIN_SCOPE } from '../plugins/routing/lib/policy.ts'
+import { admit, grantPlan, INITIAL_TURN_GRANTS, layerOf, MAIN_SCOPE } from '../plugins/routing/lib/policy.ts'
 
 test('a turn with no request (a task result coming back) speaks; with one, only after leave to speak and none undecided', () => {
   assert.equal(mayShow(EMPTY_LEDGER, 1), true)
@@ -61,9 +61,6 @@ test('the main agent\'s tools: route, context and app queries free; dir-peek onc
   for (const tool of ['read', 'grep', 'read_image']) {
     assert.equal(layerOf(tool), 'peek', tool)
     assert.ok(MAIN_SCOPE.includes(tool), tool)
-  }
-  for (const tool of ['read', 'glob', 'grep', 'read_image']) {
-    assert.equal(admitFeedSource(new Set([tool]), tool).allowed, false, tool)
   }
   assert.equal(layerOf('schedule_list'), 'app-query')
   assert.equal(layerOf('schedule_create'), 'app-change')

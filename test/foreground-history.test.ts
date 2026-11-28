@@ -135,18 +135,22 @@ test('incremental commit handles beforeKey insertion shifting stars and report r
   assert.deepEqual(history.starsIn([conv.id]), [{ segmentId: conv.id, seq: 2 }], 'star moved with k-second')
   assert.equal(history.recordsOf(conv.id)[0]?.after, 3, 'report anchor shifted after insertion')
 
-  // Verify no 5000-message cliff and O(window) tail read
+  // Verify no 5000-message cliff and O(window) tail read (including windowed report_records)
   const batch = Array.from({ length: 5_050 }, (_, index) => ({
     kind: 'append_user' as const,
     message: { role: 'user' as const, text: `msg-${index}`, receipt: null },
   }))
   conv = history.commit(conv, batch)
+  history.addRecord({ conversationId: conv.id, reportId: 'r-tail', at: 50, text: '窗口内回报' })
+  assert.equal(history.messageCount(conv.id), 5_053)
+  assert.deepEqual(history.recordTimesOf(conv.id).map(r => r.reportId).sort(), ['r-1', 'r-tail'])
   const tail = history.getTail(conv.id, CONVERSATION_WINDOW_MESSAGES)!
   assert.equal(tail.total, 5_053)
   assert.equal(tail.offset, 5_053 - CONVERSATION_WINDOW_MESSAGES)
   assert.equal(tail.messages.length, CONVERSATION_WINDOW_MESSAGES)
   assert.equal(tail.messages[0]?.text, `msg-${5_050 - CONVERSATION_WINDOW_MESSAGES}`)
   assert.equal(tail.messages.at(-1)?.text, 'msg-5049')
+  assert.deepEqual(tail.records.map(r => r.reportId), ['r-tail'], 'getTail omits pre-window report_records before offset')
 })
 
 test('renderer sliding window trims long sessions on idle turn_end and preserves absolute seq across rewind, stars, search, records and anchors', () => {
@@ -215,11 +219,15 @@ test('renderer sliding window trims long sessions on idle turn_end and preserves
   for (let i = 0; i < CONVERSATION_WINDOW_LIMIT; i += 2) {
     grown = reduce(grown, { type: 'user_prompt', text: `q-${i}`, at: 100 + i })
     grown = reduce(grown, { type: 'acp_update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `a-${i}` } }, at: 101 + i })
+    if (i === CONVERSATION_WINDOW_LIMIT - 2) {
+      grown = reduce(grown, { type: 'report_delivered', conversationId: 'seg-long', sessionId: 's-1', reportId: 'r-in-window', text: '窗口内新汇报', at: 999 })
+    }
     grown = reduce(grown, { type: 'turn_end', stopReason: 'end_turn', at: 102 + i })
   }
   assert.ok(grown.messages.length <= CONVERSATION_WINDOW_LIMIT)
   assert.ok(grown.historyOffset > 400, 'historyOffset advanced when older messages were trimmed')
   assert.equal(grown.messages.length + grown.historyOffset, 402 + Math.ceil(CONVERSATION_WINDOW_LIMIT / 2) * 2)
+  assert.deepEqual(grown.records.map(r => r.reportId), ['r-in-window'], 'pre-window report_records are trimmed with older messages')
 })
 
 test('foreground history keeps replay checkpoint intact on write failures and retries pending writes in order', t => {

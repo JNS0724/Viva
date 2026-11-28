@@ -29,6 +29,7 @@ const QUESTION_TIMES_LIMIT = 1000
 /** Earlier segments of the timeline read back at a time, and the most at once. */
 const SEGMENT_PAGE = 5
 const MAX_SEGMENT_PAGE = 50
+const DELETED_TOMBSTONES_LIMIT = 10_000
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS conversations (
@@ -105,6 +106,14 @@ const SCHEMA = `
   -- A conversation not stored yet (a blank topic) may already have a record, so no foreign key: they go with it.
   CREATE TRIGGER IF NOT EXISTS report_records_gone AFTER DELETE ON conversations BEGIN
     DELETE FROM report_records WHERE conversation_id = old.id;
+  END;
+  -- Tombstones of physically purged conversations so late crash-recovery report receipts never resurrect them.
+  CREATE TABLE IF NOT EXISTS deleted_conversations (
+    id TEXT PRIMARY KEY,
+    deleted_at INTEGER NOT NULL
+  );
+  CREATE TRIGGER IF NOT EXISTS conversations_purged AFTER DELETE ON conversations BEGIN
+    INSERT OR REPLACE INTO deleted_conversations (id, deleted_at) VALUES (old.id, COALESCE(old.deleted_at, unixepoch() * 1000));
   END;
 `
 /**
@@ -256,6 +265,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       JOIN conversations c ON c.id = m.conversation_id WHERE m.conversation_id = ? AND m.seq = ?`),
     nearest: db.prepare('SELECT seq FROM messages WHERE conversation_id = ? ORDER BY abs(seq - ?), seq LIMIT 1'),
     segmentRow: db.prepare('SELECT id, deleted_at FROM conversations WHERE id = ?'),
+    purgedConversation: db.prepare('SELECT 1 FROM deleted_conversations WHERE id = ?'),
     position: db.prepare('SELECT created_at, rowid FROM conversations WHERE id = ?'),
     segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
@@ -293,6 +303,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     shiftSidesUp: db.prepare("UPDATE conversations SET folded_at = folded_at + 1 WHERE folded_into = ? AND fold_kind = 'side' AND folded_at > ?"),
     shiftSidesDown: db.prepare("UPDATE conversations SET folded_at = folded_at - 1 WHERE folded_into = ? AND fold_kind = 'side' AND folded_at > ?"),
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
+    tailRecords: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? AND after_seq >= ? ORDER BY after_seq, at, report_id'),
+    recordTimes: db.prepare('SELECT report_id, at FROM report_records WHERE conversation_id = ?'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, COALESCE((SELECT MIN(seq) FROM messages WHERE conversation_id = ? AND source_id = ?),
         MIN(COALESCE(?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?)), (SELECT COUNT(*) FROM messages WHERE conversation_id = ?))), ?, ?)`),
@@ -418,6 +430,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     const row = sql.conversation.get(cid)
     if (!row) return null
     const total = Number(sql.messageCount.get(cid)?.count ?? 0)
+    if (limit === 0) {
+      return { conversation: toConversation(row), messages: [], offset: total, total, records: [] }
+    }
     const size = Math.max(1, Math.trunc(limit) || CONVERSATION_WINDOW_MESSAGES)
     const offset = Math.max(0, total - size)
     return {
@@ -425,7 +440,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       messages: sql.tailMessages.all(cid, offset).map(toMessage),
       offset,
       total,
-      records: recordsOf(row.id),
+      records: offset > 0 ? sql.tailRecords.all(row.id, offset).map(toRecord) : recordsOf(row.id),
     }
   }
 
@@ -447,6 +462,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   /** The task records a conversation shows, in their places (report_records). */
   const recordsOf = (id: string): ReportRecord[] => sql.records.all(id).map(toRecord)
+  const messageCount = (id: unknown): number => Number(sql.messageCount.get(assertId(id))?.count ?? 0)
+  const recordTimesOf = (id: unknown): Array<{ reportId: string, at: number }> =>
+    sql.recordTimes.all(assertId(id)).map((row) => ({ reportId: String(row.report_id), at: Number(row.at) }))
 
   /**
    * A task's record, kept once (a report is recorded once, whatever conversation): after the messages stored there
@@ -814,7 +832,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   /** Removes conversations deleted at least `olderThanMs` ago, messages and index entries included. */
   function purgeDeleted({ olderThanMs }: { olderThanMs: number }) {
-    return db.prepare('DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at <= ?').run(now() - olderThanMs).changes
+    const changes = db.prepare('DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at <= ?').run(now() - olderThanMs).changes
+    db.prepare(`DELETE FROM deleted_conversations WHERE rowid NOT IN (
+      SELECT rowid FROM deleted_conversations ORDER BY deleted_at DESC, rowid DESC LIMIT ?
+    )`).run(DELETED_TOMBSTONES_LIMIT)
+    return changes
   }
 
   const sessionIds = (id: unknown): string[] => sql.sessions.all(assertId(id)).map((row) => row.session_id)
@@ -843,7 +865,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   return {
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery, matchesPromptText,
-    addRecord, hasRecord, moveRecords, recordsOf, bySession, detachNativeSession, rebindMessageSession,
+    addRecord, hasRecord, moveRecords, recordsOf, recordTimesOf, messageCount, bySession, detachNativeSession, rebindMessageSession,
+    hasAnyConversation: (id: unknown) => {
+      const cid = assertId(id)
+      return Boolean(sql.segmentRow.get(cid) || sql.purgedConversation.get(cid))
+    },
     nativeProject(session: string) {
       const scope = db.prepare('SELECT scope FROM native_session_projects WHERE session=?').get(session)?.scope
       return typeof scope === 'string' ? scope : undefined

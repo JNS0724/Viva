@@ -13,9 +13,8 @@ import { renderHistoryPanel, renderToast } from './history-panel.ts'
 import { renderHome } from './home.ts'
 import { renderHub } from './hub.ts'
 import { hubPage } from '../hub-state.ts'
+import { renderSchedulesPage } from './schedules-page.ts'
 import { renderTasksPage } from './tasks-page.ts'
-import { renderFeedPage } from './feed-page.ts'
-import { feedCount } from '../feed-state.ts'
 import { icon } from './icons.ts'
 import { renderIsland } from './island.ts'
 import { renderModelPicker } from './model-picker.ts'
@@ -145,18 +144,7 @@ function renderHistoryIfChanged(dom: Dom, state: State, handlers: Handlers) {
 }
 
 let renderedTasksPage: unknown[] = []
-let renderedFeedPage: unknown[] = []
-
-/** 动态 and its count in the title bar depend on it alone. */
-function renderFeedIfChanged(dom: Dom, state: State, handlers: Handlers, now: number) {
-  const inputs = [localeRevision(), state.feed]
-  if (inputs.every((value, i) => value === renderedFeedPage[i])) return
-  renderedFeedPage = inputs
-  const count = feedCount(state)
-  dom.feedCount.hidden = count === 0
-  dom.feedCount.textContent = String(count)
-  if (state.feed.open) renderFeedPage(dom.feedPage, state, handlers, now)
-}
+let renderedSchedulesPage: unknown[] = []
 
 /** The 后台 page depends on the tasks and on itself; a task at work changes it as it goes. */
 function renderTasksPageIfChanged(container: HTMLElement, state: State, handlers: Handlers, now: number) {
@@ -164,6 +152,13 @@ function renderTasksPageIfChanged(container: HTMLElement, state: State, handlers
   if (inputs.every((value, i) => value === renderedTasksPage[i])) return
   renderedTasksPage = inputs
   renderTasksPage(container, state, handlers, now)
+}
+
+function renderSchedulesPageIfChanged(container: HTMLElement, state: State, handlers: Handlers, now: number) {
+  const inputs = [localeRevision(), state.schedules, state.schedules.open ? Math.floor(now / 60_000) : 0]
+  if (inputs.every((value, i) => value === renderedSchedulesPage[i])) return
+  renderedSchedulesPage = inputs
+  renderSchedulesPage(container, state, handlers, now)
 }
 
 function renderToastIfChanged(container: HTMLElement, toast: State['toast'], handlers: Handlers) {
@@ -212,7 +207,7 @@ function renderComposer(dom: Dom, state: State, handlers: Handlers) {
 }
 
 /** Cards are conversation content even when no foreground user bubble was created. */
-export const showsHome = (state: State) => state.messages.length === 0 && state.earlier.segments.length === 0
+export const showsHome = (state: State) => state.messages.length === 0 && state.records.length === 0 && state.earlier.segments.length === 0
   && cardedTasks(state).length === 0 && waitingTaskPrompts(state).length === 0
   && !state.newTopicPending && !state.stopUnconfirmed && state.phase !== 'stopping' && state.phase !== 'error'
 
@@ -233,7 +228,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderProfileIfChanged(dom.profile, state.memory, handlers)
   renderHub(dom, state)
   renderTasksPageIfChanged(dom.tasksPage, state, handlers, now)
-  renderFeedIfChanged(dom, state, handlers, now)
+  renderSchedulesPageIfChanged(dom.schedulesPage, state, handlers, now)
   renderCapabilitiesIfChanged(dom, state, handlers)
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)

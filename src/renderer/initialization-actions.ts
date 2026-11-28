@@ -6,7 +6,7 @@ import type { DiagnosticEvent } from '../diagnostics/contracts.ts'
 export type InitializationFailure = 'timeout' | 'capacity' | 'age' | 'boundary' | 'gap' | 'unavailable'
 const foreground = (value: ContextEvent) => isConversationEvent(value) || value.type === 'ready' || value.type === 'workdir'
 
-/** Owns required startup state only. Optional memory, settings and feed reads never gate this handoff. */
+/** Owns required startup state only. Optional memory, settings and schedule reads never gate this handoff. */
 export function createInitializationActions({ snapshot, install, deliver, restoreTurn, pause, initialized, failed, loading, observe = () => {},
   budgetMs = INITIALIZATION_BUDGET_MS, maxEvents = 1024, maxBytes = 2 * 1024 * 1024, maxAgeMs = 15_000,
 }: {

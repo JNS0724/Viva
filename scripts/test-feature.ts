@@ -12,7 +12,7 @@ const CONTRACTS = /^(?:ipc-contract|window-api|module-boundaries)\.test\.(?:js|t
 const FEATURES = {
   conversation: /^(?:renderer-initialization\.|conversation-|composer-draft\.|foreground-history\.|new-topic-|topic-|history(?:[.-])|resume-|rewind-|work-?dir(?:[.-])|workdir-|waits-|handoff-|text-submit-|assistant-stream|report-records|state\.|secret-state\.|agent-events\.|topics\.)/,
   runtime: /^(?:diagnostics[.-]|session-timing|acp-|dsh-|fresh-sessions|stream-runtime|stop-in-time|tool-call-budget|prewarm-runtime|mcp-bridge|mcp-manager|images-bridge|steer-channel|config-channel|questions(?:[.-])|(?:permission|questions|fork|stream|steer)-plugin|tasks-bridge|backend-wire|backend-keeper|question-desk|mcp-import|codex-mcp|fake-dsh|trace-model-calls|(?:config|policy|trace)-plugin)/,
-  tasks: /^(?:tasks?(?:[.-])|schedule(?:s|[.-])|unattended-|report-records|steer-reports|waits-|handoff-|feed-|event-core|effects|side-effects|agent-events|proposal-state|proposal-draft|source-report-registration)/,
+  tasks: /^(?:tasks?(?:[.-])|schedule(?:s|[.-])|unattended-|report-records|steer-reports|waits-|handoff-|event-core|effects|side-effects|agent-events|proposal-state|proposal-draft|source-report-registration)/,
   architecture: /^(?:module-boundaries|backend-boundary|backend-wire(?:-timing)?|main-modules|ipc-contract|window-api|smoke-isolation|smoke-diagnostics|smoke-fixtures|smoke-layout|ci-check|test-feature)\.test\.(?:js|ts)$/,
   models: /^(?:models?[.-])/,
   skills: /^(?:skills?[.-])/,
@@ -20,7 +20,7 @@ const FEATURES = {
   files: /^(?:file(?:s[.-]|-access)|workspace-files[.-]|attachments[.-]|image-(?:ipc|store)[.-]|paste[.-]|csv[.-]|remove-tree[.-])/,
   memory: /^(?:remote-)?memory[.-]/,
   rendering: /^(?:column-resize|earlier-(?:row|state)|frame|full-screen|hub-state|island-(?:desk-card|dom|view)|done-notice|long-answer|markdown|prompt-card|reader-control|reconcile|renderer-(?:css|hotpaths)|review-(?:actions|state)|scroll-follow|selectors|stars|theme|timeline-search|turn-rail|ui-polish|user-error)\.test\.(?:js|ts)$/,
-  storage: /^(?:app-db|envelope|journal|preferences|settings|history-db|feed-store|feed-source-store|task-store)\.test\.(?:js|ts)$/,
+  storage: /^(?:app-db|envelope|journal|preferences|settings|history-db|task-store)\.test\.(?:js|ts)$/,
   i18n: /^i18n[.-]/,
   shell: /^(?:desk-(?:island|place)|island-main|theme|tray|window-options)\.test\.(?:js|ts)$/,
   tooling: /^(?:asar-integrity|build-page-libraries|pnpm-launcher|live(?:-approval)?|maid|smoke-(?:diagnostics|kit|timeline-time|layout|fixtures)|ci-check|test-feature)\.test\.(?:js|ts)$/,

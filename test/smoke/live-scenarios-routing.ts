@@ -335,7 +335,7 @@ const PROJECTS = ['北辰', '启明', '远帆', '青禾', '长庚', '星河', '�
 
 const routeSchedule: LiveScenario = {
   id: 'route-schedule',
-  title: '「每周五下午五点提醒我写某项目周报」：经授权调用定时工具，卡片出来，没点也能接着问，点了之后在动态里',
+  title: '「每周五下午五点提醒我写某项目周报」：经授权调用定时工具，卡片出来，没点也能接着问，点了之后在「定时任务」里',
   feature: '定时任务',
   async run(ctx) {
     const { win, expect } = ctx
@@ -354,11 +354,14 @@ const routeSchedule: LiveScenario = {
     expect(next.answer.length > 5 && !next.waiting, 'a new question should be answered while the card waits', clip(next.answer))
     await run(win, `[...(${SCHEDULE_CARD}).querySelectorAll('button')].find((b) => b.textContent === '定时')?.click()`)
     await wait(UI_WAIT_MS * 2)
-    if (await run(win, `document.getElementById('feed-page').hidden`)) await run(win, `document.getElementById('open-feed').click()`)
-    await until(win, `!document.getElementById('feed-page').hidden`, 'the 动态 page')
+    if (await run(win, `document.getElementById('hub').dataset.open !== 'true'`)) {
+      await run(win, `document.getElementById('open-profile').click()`)
+    }
+    await run(win, `document.querySelector('.hub-nav[data-page="schedules"]').click()`)
+    await until(win, `!document.getElementById('schedules-page').hidden`, 'the 定时任务 page')
     await wait(UI_WAIT_MS)
-    const rows: string[] = await run(win, `[...document.querySelectorAll('#feed-page .fu-row[data-status="active"]')].map((row) => row.textContent)`)
-    expect(rows.some((row) => row.includes(project)), 'kept, the schedule should be in 接下来', rows)
+    const rows: string[] = await run(win, `[...document.querySelectorAll('#schedules-page .fu-row[data-status="active"]')].map((row) => row.textContent)`)
+    expect(rows.some((row) => row.includes(project)), 'kept, the schedule should be on 定时任务', rows)
     keep(ctx, 'numbers', { turnMs: out.ms, followUpMs: next.ms, ...change, ...brief(numbers) })
     await ctx.shot('route-schedule')
     await escape(win)

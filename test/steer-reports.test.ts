@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { createSteerChannel } from '../plugins/steer/lib/channel.ts'
 import { createReportDesk, REPORT_SOURCE, TOKEN_MARK, type ReportAgent, type ReportMessage } from '../plugins/steer/lib/reports.ts'
 import { interjection, createSteerDesk, NO_PLUGIN } from '../src/backend/steer-channel.ts'
+import { noteFor, SCHEDULE_RECORD_MAX_CHARS } from '../src/backend/task-reports.ts'
 
 /**
  * Background tasks' results through viva-steer (plugins/steer/lib/reports.ts, system-design §11.5): known only by
@@ -132,6 +133,28 @@ test('the channel answers report requests, one at a time; a request without what
     { type: 'report_result', id: 'r4', status: 'none' },
     { type: 'report_result', id: 'r5', status: 'failed' },
   ])
+})
+
+test('a 180k-char schedule report note fits viva-steer wire validation and steers cleanly into a busy foreground turn', async () => {
+  const sent: Array<Record<string, unknown>> = []
+  let onMessage: (message: unknown) => void = () => {}
+  const { reports, state } = desk()
+  createSteerChannel({ send: (message) => { sent.push(message as Record<string, unknown>) }, on: (_: string, fn: (message: unknown) => void) => { onMessage = fn }, off: () => {} },
+    () => null, () => {}, reports)
+  const note = noteFor([{
+    taskId: 'schedule:s1',
+    title: '超长周报汇总',
+    status: 'done',
+    host: null,
+    output: '长'.repeat(SCHEDULE_RECORD_MAX_CHARS),
+    request: '要'.repeat(1_000),
+    token: T1,
+    by: 'schedule',
+  }], { inTurn: true })
+  onMessage({ type: 'report', id: 'r-long', sessionId: 's1', reportId: 'schedule:s1:s1@2026-11-06T08:00:00.000Z', token: T1, text: note })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(sent, [{ type: 'report_result', id: 'r-long', status: 'steered' }])
+  assert.deepEqual(state.steers, ['schedule:s1:s1@2026-11-06T08:00:00.000Z'])
 })
 
 test('the app\'s side: each report request goes to its session, answered by the plugin or a timeout; notices carry their session', async () => {

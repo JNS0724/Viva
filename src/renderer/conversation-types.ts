@@ -9,10 +9,8 @@ export interface ConversationMessage extends StreamText {
   role: string
   sourceId?: string
   delivery?: 'pending' | 'not-sent'
-  pending?: boolean
   /** True once backend confirmed this prompt entered the foreground history writer (cannot be retracted on later errors). */
   persisted?: boolean
-  feedItemId?: string
   shown?: number
   receipt?: TurnReceipt | null
   restored?: boolean
@@ -96,8 +94,7 @@ export interface ForegroundWaits {
 
 /** Only conversation payloads. Task identity and stream order belong to separate task actions. */
 export interface ConversationPayloads {
-  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean, feedItemId?: string, turnId?: string }
-  prompt_admitted: { sourceId: string, accepted: boolean }
+  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], turnId?: string }
   prompt_persisted: { sourceId: string }
   prompt_retracted: { sourceId: string }
   user_steer: { text: string, sourceId?: string, streamKey?: string, via?: string | null }

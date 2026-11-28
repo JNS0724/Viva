@@ -4,20 +4,18 @@ import { t } from '../shared/i18n/translate.ts'
 import { transaction } from './app-db.ts'
 import { RETRY_MS as HOLD_MS } from './effects.ts'
 import type { Apply } from './journal.ts'
-import type { FeedItem, FeedStore } from './feed-store.ts'
 import type { Occurrence, ScheduleStore } from './schedule-store.ts'
 import type { RunResult } from './unattended-runs.ts'
 
 /**
  * Schedules run when due (system-design §12.2). One timer, set for the soonest thing to do; when it fires, what is
  * due is taken from the schedules and kept as runs in the same transaction, so quitting between loses nothing and a
- * run not finished is run again on the next launch. Runs go one at a time, each prompt with read-only tools in the
- * folder its schedule was made in (unattended-runs.ts); its answer becomes one item in 动态 (keyed by the occurrence,
- * so never two), its notice queued with it. A run whose schedule was paused or deleted since it was taken is let go.
- * One that keeps failing becomes an item saying so. Each step is a change with its event (event-core.ts apply):
+ * run not finished is run again on the next launch. Runs go one at a time, each prompt in an unattended session in the
+ * folder its schedule was made in (unattended-runs.ts); its answer is queued for the main conversation and notified
+ * (keyed by the occurrence, so never two). A run whose schedule was paused or deleted since it was taken is let go.
+ * One that keeps failing reports so. Each step is a change with its event (event-core.ts apply):
  * `schedule.taken`, `schedule.ran`, `schedule.retry`, `schedule.dropped`.
  */
-export const SCHEDULE_SOURCE = 'schedule'
 export const MAX_ATTEMPTS = 3
 /** After a failed try, this long times the tries so far. */
 export const RETRY_MS = 60 * 1000
@@ -38,8 +36,18 @@ const SCHEMA = `
   );
 `
 
-/** What a run came to, to be kept: an item in 动态 (its answer, or that it kept failing), or another try later. */
-type Delivery = { kind: 'deliver', body: string }
+export interface DeliveredScheduleRun {
+  key: string
+  scheduleId: string
+  title: string
+  prompt: string
+  cwd: string
+  status: 'done' | 'error'
+  body: string
+}
+
+/** What a run came to, to be kept: delivered (its answer, or that it kept failing), or another try later. */
+type Delivery = { kind: 'deliver', status: 'done' | 'error', body: string }
 type Outcome = Delivery | { kind: 'retry', attempts: number }
 
 interface Run { key: string, scheduleId: string, at: string, title: string, prompt: string, cwd: string, attempts: number, dueAt: number, scheduleRevision: number }
@@ -55,12 +63,11 @@ export interface ScheduleRunsDeps {
   /** The event core's apply; without it (tests), a plain transaction. */
   apply?: Apply
   store: ScheduleStore
-  feed: FeedStore
   /** Runs one prompt where nobody watches, in `cwd`. */
   run: (prompt: string, cwd: string) => Promise<RunResult>
-  /** A new item in 动态, inside the change that made it: its notice queued there, so it is not lost. */
-  keep: (item: FeedItem) => void
-  /** That change kept: the window, and the notice, may go now. */
+  /** Queues the completed run's report and notification inside the same transaction that removes `schedule_runs`. */
+  keep: (item: DeliveredScheduleRun) => void
+  /** That change kept: the effects queue may wake now. */
   delivered: () => void
   /** Schedules changed by being run (one that runs once has ended). */
   changed?: () => void
@@ -70,7 +77,7 @@ export interface ScheduleRunsDeps {
   onError?: (err: unknown) => void
 }
 
-export function createScheduleRuns({ db, apply, store, feed, run, keep, delivered, changed = () => {}, now = Date.now, later = setTimeout, cancel = clearTimeout, onError = () => {} }: ScheduleRunsDeps) {
+export function createScheduleRuns({ db, apply, store, run, keep, delivered, changed = () => {}, now = Date.now, later = setTimeout, cancel = clearTimeout, onError = () => {} }: ScheduleRunsDeps) {
   db.exec(SCHEMA)
   const fields = db.prepare('PRAGMA table_info(schedule_runs)').all()
   if (!fields.some(row => row.name === 'schedule_revision')) db.exec('ALTER TABLE schedule_runs ADD COLUMN schedule_revision INTEGER NOT NULL DEFAULT 0')
@@ -145,24 +152,23 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     void pump()
   }
 
-  /** Done with a run: its item made (or the one made before) and its notice queued, the run gone, together. */
-  function deliver(item: Run, { body }: Delivery): void {
+  /** Done with a run: its report and notice queued and the run removed together. */
+  function deliver(item: Run, { status, body }: Delivery): void {
     const made = change('schedule.ran', { key: item.key }, () => {
-      const added = feed.add({ source: SCHEDULE_SOURCE, key: item.key, title: item.title, body, origin: { label: t('main.schedule-runs.origin'), ref: item.scheduleId } })
-      db.prepare('DELETE FROM schedule_runs WHERE key = ?').run(item.key)
-      if (added.made) keep(added.item)
-      return added.made
+      const deleted = Number(db.prepare('DELETE FROM schedule_runs WHERE key = ?').run(item.key).changes) > 0
+      if (deleted) keep({ key: item.key, scheduleId: item.scheduleId, title: item.title, prompt: item.prompt, cwd: item.cwd, status, body })
+      return deleted
     }).value
     emitDiagnostic({ event: 'state.changed', operation: 'schedule', stage: 'applied', reason: made ? 'normal' : 'idempotent',
       identities: { jobId: item.key, resourceId: item.scheduleId, generation: item.scheduleRevision }, metrics: { attempt: item.attempts } })
     if (made) delivered()
   }
 
-  /** What a run came to: no dsh (nothing to keep), or what to keep: its item, or another try later. */
+  /** What a run came to: no dsh (nothing to keep), or what to keep: its delivery, or another try later. */
   function retry(item: Run, problem: string): Outcome {
     const attempts = item.attempts + 1
     return attempts < MAX_ATTEMPTS ? { kind: 'retry', attempts }
-      : { kind: 'deliver', body: t('main.schedule-runs.failed', { value1: problem }) }
+      : { kind: 'deliver', status: 'error', body: t('main.schedule-runs.failed', { value1: problem }) }
   }
 
   async function outcomeOf(item: Run): Promise<Outcome | 'unavailable' | 'superseded'> {
@@ -172,7 +178,7 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     const result = await run(item.prompt, item.cwd)
     if (closed || !runCurrent(item)) return 'superseded'
     if (!result.ok && result.unavailable) return 'unavailable'
-    const outcome: Outcome = result.ok ? { kind: 'deliver', body: result.text } : retry(item, result.problem)
+    const outcome: Outcome = result.ok ? { kind: 'deliver', status: 'done', body: result.text } : retry(item, result.problem)
     outcomes.set(item.key, { revision: item.scheduleRevision, outcome })
     return outcome
   }

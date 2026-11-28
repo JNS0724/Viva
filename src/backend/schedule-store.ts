@@ -31,7 +31,7 @@ export interface Schedule {
   revision: number
 }
 
-/** One occurrence taken: its key (one item per key in 动态) and the schedule as it was. */
+/** One occurrence taken: its key (one delivery per key) and the schedule as it was. */
 export interface Occurrence { key: string, at: string, schedule: Schedule }
 
 // dsh stores scheduledAt as a canonical UTC ISO instant, so text order is chronological.

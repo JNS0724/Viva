@@ -66,7 +66,7 @@ export interface FailedMessage { type: 'failed', message: string }
 
 /** What the backend may ask of the desktop; each is a member of HostCapabilities (host.ts). */
 export const HOST_METHODS = [
-  'window.send', 'window.broadcastLanguage', 'window.setPending', 'window.refreshNative',
+  'window.send', 'window.broadcastLanguage', 'window.refreshNative',
   'dialogs.chooseFolder', 'dialogs.chooseFiles', 'dialogs.saveFile',
   'shell.openExternal', 'shell.openPath', 'shell.showItemInFolder', 'shell.trash',
   'notify', 'loginItem.set',

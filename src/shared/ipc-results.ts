@@ -87,15 +87,11 @@ export interface IpcResults {
   'agent:permission': boolean
   'agent:answer': boolean
   'agent:secrets': boolean
-  'schedules:accept': { title: string, nextAt: string }
+  'schedules:list': ScheduleView[]
+  'schedules:accept': ScheduleView
   'schedules:decline': void
-  'feed:continue': string
-  'feed-sources:list': import('./feed-source.ts').FeedSourceView[]
-  'feed-sources:create': import('./feed-source.ts').FeedSourceView
-  'feed-sources:update': import('./feed-source.ts').FeedSourceView
-  'feed-sources:pause': import('./feed-source.ts').FeedSourceView
-  'feed-sources:delete': { deleted: boolean }
-  'feed-sources:run-now': import('./feed-source.ts').FeedSourceRunResult
+  'schedules:pause': ScheduleView
+  'schedules:delete': { deleted: boolean }
   'task:finished': KeptTask[]
   /** Said on the live channel (`waits`, a SessionWaits), in its place among the pushes. */
   'agent:waits': true
@@ -115,6 +111,15 @@ export interface IpcResults {
   'memory:edit-file': MemoryFileWriteResult
   'memory:forget-file': MemoryFileForgetResult
   'memory:rebuild-indexes': { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }
+}
+
+export interface ScheduleView {
+  id: string
+  title: string
+  prompt: string
+  kind: string
+  nextAt: string
+  status: string
 }
 
 export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'

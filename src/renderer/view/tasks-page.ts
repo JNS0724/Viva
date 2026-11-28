@@ -12,11 +12,8 @@ import { traceNode } from './drawer.ts'
 import { renderTraceDetail, type TraceItem, type DetailHandlers } from './trace-detail.ts'
 
 /**
- * The 后台 page: every background task on the left, grouped by where it stands, with the follow-ups among them
- * (待你看的 first: drafts prepared in the background; then what is being prepared, then what is scheduled); on
- * the right the one picked, its whole conversation as the thread shows one, its steps folded under it, and its
- * own input: words into its turn while it works, its next question once it has ended. A follow-up shows its
- * draft and what can be done with it. One of the hub's pages, beside 回顾 · 关于你 · 设置.
+ * The 后台 page: every background task on the left, grouped by where it stands; on the right the one picked, its whole
+ * conversation as the thread shows one, its steps folded under it. One of the hub's pages, beside 回顾 · 定时任务 · 关于你 · 设置.
  */
 const groupNames = (): Readonly<Record<string, string>> => ({
   waiting: t("task.status.waiting"),

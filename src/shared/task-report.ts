@@ -20,20 +20,74 @@ export const IN_TURN_MARK = '它在你这一轮工作时到达'
 export const TOKEN_MARK = '回报凭据：'
 /** The report of one run of a task (backend/task-reports.ts, effects key) and the record kept of it (report-records.ts). */
 export const reportId = (taskId: string, runId: string): string => `${taskId}:${runId}`
+/** Synthetic taskId namespace used when reporting a completed unattended schedule run back to the main conversation. */
+export const SCHEDULE_TASK_PREFIX = 'schedule:'
+export const scheduleTaskId = (scheduleId: string): string => `${SCHEDULE_TASK_PREFIX}${scheduleId}`
+export const scheduleIdOfTask = (taskId: string): string | null =>
+  taskId.startsWith(SCHEDULE_TASK_PREFIX) ? taskId.slice(SCHEDULE_TASK_PREFIX.length) || null : null
+export const isScheduleTaskId = (taskId: string): boolean => scheduleIdOfTask(taskId) !== null
 
 /** A task's line in a note: its title and id. */
-const TASK_LINE = /任务：「([^」\n]*)」（([^）\n]+)）/g
+const TASK_LINE = /^任务：「([^\n]+)」\（([^）\n]+)）$/gm
 /**
  * What a task asked and said goes in a note between these tags, as data: whatever is inside is the task's, never the
  * note's own lines. A tag inside the data is broken with a zero-width space (asData), so it cannot end its block early.
  */
-const DATA_BLOCK = /<(task-request|task-output)>[\s\S]*?<\/\1>/g
 export const asData = (text: string): string => text.replace(/<(\/?)(task-request|task-output)>/g, '<\u200B$1$2>')
-/** The note's own lines: its task lines and marks, without what the tasks asked and said. */
-const ownLines = (note: string): string => note.replace(DATA_BLOCK, '')
 
-/** The note as the conversation keeps and shows it: without its token lines. */
-export const shownNote = (note: string): string => note.split('\n').filter((line) => !line.startsWith(TOKEN_MARK)).join('\n')
+function findNextDataBlock(note: string, from: number): { start: number, end: number } | null {
+  let search = from
+  while (search < note.length) {
+    const idx = note.indexOf('<task-', search)
+    if (idx < 0) return null
+    const openTag = note.startsWith('<task-output>', idx)
+      ? '<task-output>'
+      : note.startsWith('<task-request>', idx)
+        ? '<task-request>'
+        : null
+    if (!openTag) {
+      search = idx + 6
+      continue
+    }
+    const closeTag = `</${openTag.slice(1)}`
+    const closeIdx = note.indexOf(closeTag, idx + openTag.length)
+    if (closeIdx < 0) {
+      search = idx + openTag.length
+      continue
+    }
+    return { start: idx, end: closeIdx + closeTag.length }
+  }
+  return null
+}
+
+/** The note's own lines: its task lines and marks, without what the tasks asked and said. */
+function ownLines(note: string): string {
+  let pos = 0
+  let out = ''
+  while (pos < note.length) {
+    const block = findNextDataBlock(note, pos)
+    if (!block) return pos === 0 ? note : out + note.slice(pos)
+    out += note.slice(pos, block.start)
+    pos = block.end
+  }
+  return out
+}
+
+const stripOwnTokenLines = (chunk: string): string => chunk.split('\n').filter((line) => !line.startsWith(TOKEN_MARK)).join('\n')
+
+/** The note as the conversation keeps and shows it: without its own token lines, leaving `<task-request>` and `<task-output>` untouched. */
+export function shownNote(note: string): string {
+  if (!note.includes(TOKEN_MARK)) return note
+  let last = 0
+  let out = ''
+  while (last < note.length) {
+    const block = findNextDataBlock(note, last)
+    if (!block) return out + stripOwnTokenLines(note.slice(last))
+    out += stripOwnTokenLines(note.slice(last, block.start)) + note.slice(block.start, block.end)
+    last = block.end
+  }
+  return out
+}
 
 /** What the record of a delivered note says on its line: the tasks it tells of, and whether it came into a turn. */
 export interface ReportRecord { tasks: Array<{ title: string, taskId: string }>, inTurn: boolean }

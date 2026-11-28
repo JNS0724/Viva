@@ -20,7 +20,6 @@ import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
 import { createProposalActions } from './proposal-actions.ts'
 import { createDoneNotice } from './done-notice-actions.ts'
-import { createFeedActions } from './feed-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
 import { mountHistorySearchFrame } from './history-search-frame.ts'
@@ -41,6 +40,7 @@ import { hubPage } from './hub-state.ts'
 import { setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
 import { createRewindActions } from './rewind-actions.ts'
+import { createScheduleActions } from './schedules-actions.ts'
 import { createTaskActions } from './task-actions.ts'
 import { liveTasks } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
@@ -62,7 +62,7 @@ import { attachColumnResize } from './view/column-resize.ts'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when backend-persisted conversation history changed and an open search should refresh. */
-const REFRESH_SEARCH_AFTER = new Set(['user_prompt', 'prompt_admitted', 'prompt_retracted', 'user_steer', 'question_answered', 'turn_end', 'error'])
+const REFRESH_SEARCH_AFTER = new Set(['user_prompt', 'prompt_retracted', 'user_steer', 'question_answered', 'turn_end', 'error'])
 const api = window.agent
 const platform = api?.platform ?? 'darwin'
 const dom = createPageElements(document, platform)
@@ -218,8 +218,6 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   /** The count at the island's tail: the 后台 page. */
   tasks: () => handlers.openTasks(),
   settings: () => handlers.openSettings(),
-  /** A notification of something new, or the tray's count: the 动态 page (system-design §12.2). */
-  feed: () => handlers.openFeed(),
   /** The desktop island's card on 已完成, read and closed (desk-island.ts): looked at. */
   seen: () => doneNotice?.seen(),
   /** 停下 on a task's line in the island's 后台 list. */
@@ -240,18 +238,18 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
     return task ? handlers.skipTaskQuestion(task.id, questionId) : undefined
   },
   /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
-  ask: ({ text, files, images = [], targetKey, receiptId, expiresAt, feedItemId }) => {
+  ask: ({ text, files, images = [], targetKey, receiptId, expiresAt }) => {
     const receipt = (ok: boolean, error = t('desk.interaction.draft.not.sent')) => api.islandAskResult(receiptId, { ok, ...(ok ? {} : { error }) })
     const restoreRejected = () => {
       if (draftTarget(state).key !== targetKey) return
       if (dom.input.value.trim() || draftImages.list().length || composerFiles.length) return
-      applyDraftFields({ text: withFiles(text, files), files: [], images, error: null, feedItemId: undefined })
+      applyDraftFields({ text: withFiles(text, files), files: [], images, error: null })
       composerDraft?.changed()
     }
     const ok = targetKey === draftTarget(state).key && Date.now() <= expiresAt
-      && ask(withFiles(text, files), { via: 'island', images, feedItemId, admitted: receipt, onRejected: restoreRejected })
+      && ask(withFiles(text, files), { via: 'island', images, onRejected: restoreRejected })
     if (ok) dom.follower.resetForPrompt({ anchor: false })
-    if (!ok || !feedItemId) receipt(Boolean(ok))
+    receipt(Boolean(ok))
   },
 }
 
@@ -386,10 +384,8 @@ const draftImages = createDraftImages({
 })
 const sharedFiles = h('div', { class: 'isl-files composer-shared-files', hidden: true })
 dom.draftPics.after(sharedFiles)
-let composerFeedItem: string | undefined
-function applyDraftFields(draft: { text: string, files: DraftFile[], images: Array<{ id: string }>, error: string | null, feedItemId?: string }) {
+function applyDraftFields(draft: { text: string, files: DraftFile[], images: Array<{ id: string }>, error: string | null }) {
   if (dom.input.value !== draft.text) dom.input.value = draft.text
-  composerFeedItem = draft.feedItemId
   composerFiles = draft.files; composerError = draft.error
   draftImages.replace(draft.images)
   sharedFiles.hidden = !draft.files.length && !draft.error
@@ -407,8 +403,7 @@ function applyDraftFields(draft: { text: string, files: DraftFile[], images: Arr
   renderSendButton(dom, state)
 }
 composerDraft = createComposerDraftActions({ api, host: 'main',
-  read: () => ({ text: dom.input.value, files: composerFiles, images: draftImages.list(), error: composerError,
-    feedItemId: dom.input.value.trim() ? composerFeedItem : undefined }),
+  read: () => ({ text: dom.input.value, files: composerFiles, images: draftImages.list(), error: composerError }),
   write: draft => {
     dom.input.readOnly = draft.owner !== 'main'
     applyDraftFields(draft)
@@ -449,6 +444,7 @@ const rewindActions = createRewindActions({ api, getState: () => state, dispatch
 const taskActions = createTaskActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, deliver: handleEvent,
 })
+const scheduleActions = createScheduleActions({ api, dispatch, errorMessage })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
 const resumeActions = createResumeActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, busy: () => isBusy(state),
@@ -459,22 +455,12 @@ const resumeActions = createResumeActions({
 })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
-/** Words into the input, the conversation in front; the user reads them and sends them. */
-function fillComposer(text: string, feedItemId: string) {
-  if (!composerDraft?.ready()) return
-  dispatch({ type: 'hub_close' })
-  composerFeedItem = feedItemId
-  dom.input.value = text
-  dom.input.dispatchEvent(new Event('input'))
-  dom.input.focus()
-}
 const proposalActions = createProposalActions({ api, getState: () => state, dispatch, errorMessage })
 /** 已完成 until looked at (done-notice-actions.ts): the window in front and on screen is the user on it. */
 doneNotice = createDoneNotice({
   getState: () => state, dispatch,
   looking: () => document.visibilityState === 'visible' && document.hasFocus(),
 })
-const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer, loadPlugins: () => pluginActions.loadPlugins() })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const diagnosticActions = createDiagnosticsActions({ api, getState: () => state, dispatch })
 const themeActions = createThemeActions({
@@ -578,22 +564,11 @@ const handlers = {
     if (setupView(state.info)) return handlers.openSettings()
     if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     const text = dom.input.value.trim()
-    if (composerFeedItem && text && (state.question || isBusy(state))) return historyActions.showToast(t('feed.continue.wait'))
     const sentDraft = composerDraft?.snapshot()
     const clearDraft = () => {
       dom.input.value = ''
-      composerFeedItem = undefined
       draftImages.clear()
       composerFiles = []; composerError = null; sharedFiles.hidden = true
-    }
-    if (composerFeedItem && text) {
-      ask(withFiles(text, composerFiles.map(file => file.path)), { images: draftImages.list(), feedItemId: composerFeedItem, admitted: accepted => {
-        const latest = composerDraft?.snapshot()
-        if (!accepted || !composerDraft?.ready() || !sentDraft || latest?.key !== sentDraft.key || latest.version !== sentDraft.version) return
-        clearDraft()
-        composerDraft.changed()
-      } })
-      return
     }
     if (state.question) {
       if (!text) return
@@ -606,7 +581,7 @@ const handlers = {
       const restoreDraft = () => {
         if (sentDraft && (!composerDraft?.ready() || composerDraft.snapshot()?.key !== sentDraft.key)) return
         if (dom.input.value.trim() || draftImages.list().length || composerFiles.length) return
-        applyDraftFields({ text: sentText, files: sentFiles, images: sentImages, error: null, feedItemId: undefined })
+        applyDraftFields({ text: sentText, files: sentFiles, images: sentImages, error: null })
         composerDraft?.changed()
       }
       if (ask(withFiles(text, composerFiles.map(file => file.path)), { images: sentImages, onRejected: restoreDraft })) clearDraft()
@@ -752,29 +727,10 @@ const handlers = {
     })
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
-  selectFeed: (kind: 'item' | 'schedule' | 'source', id: string) => dispatch({ type: 'feed_select', kind, id }),
-  openFeed: () => {
-    dispatch({ type: 'feed_open' })
-    feedActions.loadFeed()
-  },
-  toggleFeed: () => (state.feed.open ? handlers.closeHub() : handlers.openFeed()),
-  continueFeedItem: (id: string) => feedActions.continueItem(id),
-  dismissFeedItem: (id: string) => feedActions.dismissItem(id),
-  pauseSchedule: (id: string, paused: boolean) => feedActions.pauseSchedule(id, paused),
-  deleteSchedule: (id: string) => feedActions.deleteSchedule(id),
-  openNewFeedSource: () => feedActions.openNewSource(),
-  cancelNewFeedSource: () => {
-    const first = state.feed.sources[0]
-    if (first) dispatch({ type: 'feed_select', kind: 'source', id: first.id })
-    else dispatch({ type: 'feed_select', kind: 'item', id: state.feed.items[0]?.id ?? '' })
-  },
-  updateFeedSourceDraft: (changes: Partial<import('./feed-types.ts').FeedSourceDraft>) => dispatch({ type: 'feed_source_draft', changes }),
-  createFeedSource: (input: import('../shared/feed-source.ts').FeedSourceCreateInput) => feedActions.createSource(input),
-  updateFeedSource: (id: string, changes: import('../shared/feed-source.ts').FeedSourceUpdateInput) => feedActions.updateSource(id, changes),
-  pauseFeedSource: (id: string, paused: boolean) => feedActions.pauseSource(id, paused),
-  deleteFeedSource: (id: string) => feedActions.deleteSource(id),
-  runFeedSourceNow: (id: string) => feedActions.runSourceNow(id),
-  openPluginsForFeed: () => capabilityActions.openCapabilities('plugins'),
+  openSchedules: (id: string | null = null) => scheduleActions.openSchedules(id),
+  selectSchedule: (id: string) => dispatch({ type: 'schedules_select', id }),
+  pauseSchedule: (id: string, paused: boolean) => scheduleActions.pauseSchedule(id, paused),
+  deleteSchedule: (id: string) => scheduleActions.deleteSchedule(id),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   openTaskSteps: () => dispatch({ type: 'tasks_page_steps', open: true }),
   showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),
@@ -840,6 +796,7 @@ const HUB_OPENERS: Readonly<Record<string, () => unknown>> = {
   search: () => handlers.openSearch(),
   // Background tasks: a page of its own in the same place (view/tasks-page.ts).
   tasks: () => handlers.openTasks(),
+  schedules: () => handlers.openSchedules(),
   profile: () => handlers.openProfile(),
   capabilities: () => capabilityActions.openCapabilities(),
   settings: () => handlers.openSettings(),
@@ -876,7 +833,6 @@ function wireComposer() {
     else handlers.send()
   })
   dom.input.addEventListener('input', () => {
-    if (!dom.input.value.trim()) composerFeedItem = undefined
     composerDraft?.changed()
     renderSendButton(dom, state)
   })
@@ -912,7 +868,6 @@ function wireComposer() {
 
 function wireHub() {
   dom.openProfile.addEventListener('click', () => handlers.toggleHub())
-  dom.openFeed.addEventListener('click', () => handlers.toggleFeed())
   dom.hubBack.addEventListener('click', () => handlers.closeHub())
   for (const nav of dom.hubNavs) {
     nav.addEventListener('click', () => {
@@ -1058,7 +1013,7 @@ agentEvents = createAgentEvents({
   refreshFiles: filesActions.filesAfterTurn,
   memoryChanged: memoryActions.onMemoryChanged,
   filesChanged: filesActions.onFilesChanged,
-  refreshFeed: feedActions.loadFeed,
+  refreshSchedules: scheduleActions.loadSchedules,
   rejected: issue => console.warn('[agent:event]', issue.reason, issue.tag),
   overflow: reason => initialization.invalidate(reason),
 })
@@ -1108,7 +1063,7 @@ async function boot() {
   if (state.memory.open) void memoryActions.loadMemory()
   void workDirActions.refresh()
   void loadSettings()
-  void feedActions.loadFeed()
+  void scheduleActions.loadSchedules()
   // The tasks the last launch kept: ended ones, and those it quit on.
   void taskActions.loadKept()
   void initializeConversation()

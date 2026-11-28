@@ -49,9 +49,8 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
    * as a new question (not into a running turn).
    * @returns {boolean} false when the agent can't take it now
    */
-  function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }>, sourceId, newSource = false, feedItemId, admitted, onRejected }: {
-    via?: string | null, images?: Array<{ id: string }>, sourceId?: string, newSource?: boolean, feedItemId?: string,
-    admitted?: (accepted: boolean, problem?: string) => void,
+  function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }>, sourceId, newSource = false, onRejected }: {
+    via?: string | null, images?: Array<{ id: string }>, sourceId?: string, newSource?: boolean,
     onRejected?: () => void,
   } = {}): boolean {
     if (text.length > MAX_MESSAGE_CHARS) {
@@ -60,11 +59,6 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     }
     if ((!text && !images.length) || setupView(getState().info) || selectionPending()) return false
     if (getState().phase === 'stopping' || getState().stopUnconfirmed) return false
-    if (feedItemId && isBusy(getState())) {
-      showToast(t('feed.continue.wait'))
-      return false
-    }
-    if (feedItemId) return sendNewPrompt(text, images, via, { id: feedItemId, admitted })
     if (images.length) return askWithImages(text, images, via, onRejected)
     if (isBusy(getState())) return sourceId && !newSource ? false : steer(text, via, sourceId)
     const origin = context(), epoch = ++sendEpoch
@@ -73,7 +67,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     const turnId = crypto.randomUUID()
     dispatch({ type: 'user_prompt', text, at: now(), via, sourceId: operation, turnId })
     const onError = sourceId ? promptFailed(origin, epoch) : promptRejected(origin, epoch, operation, onRejected)
-    api.prompt(text, undefined, sourceId && !newSource ? [sourceId] : operation, undefined, turnId)
+    api.prompt(text, undefined, sourceId && !newSource ? [sourceId] : operation, turnId)
       .then(promptFinished(origin, epoch, [operation]), onError)
     return true
   }
@@ -84,34 +78,18 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       showToast(t("app.the.assistant.is.working.send.images.after"))
       return false
     }
-    return sendNewPrompt(text, images, via, undefined, onRejected)
+    return sendNewPrompt(text, images, via, onRejected)
   }
 
-  function sendNewPrompt(text: string, images: Array<{ id: string }>, via: string | null,
-    feed?: { id: string, admitted?: (accepted: boolean, problem?: string) => void }, onRejected?: () => void) {
+  function sendNewPrompt(text: string, images: Array<{ id: string }>, via: string | null, onRejected?: () => void) {
     beforePrompt()
     const origin = context(), epoch = ++sendEpoch
     // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
     for (const { id } of images) keepPicture(id)
     const operation = globalThis.crypto.randomUUID()
     const turnId = crypto.randomUUID()
-    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, turnId, pending: Boolean(feed), ...(feed ? { feedItemId: feed.id } : {}) })
-    if (feed) {
-      // The same conversation can replace its DSH session before a send. Resolve the message by its operation.
-      const pendingHere = () => getState().messages.some(message => message.pending && message.sourceId === operation)
-      const refused = (message: string) => {
-        if (pendingHere()) {
-          dispatch({ type: 'prompt_admitted', sourceId: operation, accepted: false })
-          if (epoch === sendEpoch && !selectionPending()) dispatch({ type: 'error', message })
-        }
-        feed.admitted?.(false, message)
-      }
-      api.prompt(text, images, operation, feed.id, turnId).then(result => {
-        if (result?.accepted === false) { refused(result.message); return }
-        if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted: true })
-        feed.admitted?.(true)
-      }, error => refused(errorMessage(error)))
-    } else api.prompt(text, images, operation, undefined, turnId)
+    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, turnId })
+    api.prompt(text, images, operation, turnId)
       .then(promptFinished(origin, epoch, [operation]), promptRejected(origin, epoch, operation, onRejected))
     return true
   }
@@ -162,7 +140,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     const turnId = crypto.randomUUID()
     dispatch({ type: 'steer_resent', at: now(), turnId })
     if (typeof operation === 'string') dispatch({ type: 'steer_delivery', sourceId: operation, delivery: 'pending' })
-    api.prompt(text, undefined, operation, undefined, turnId)
+    api.prompt(text, undefined, operation, turnId)
       .then(result => {
         const sources = typeof operation === 'string' ? [operation] : operation
         promptFinished(origin, epoch, sources)(result)

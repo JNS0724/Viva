@@ -7,7 +7,6 @@ import { writeFileSync } from 'node:fs'
 import { boot } from '@deepseek-ai/dsh-app-boot'
 import { createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { continueText, extractFeedContinuationSupplement } from '../src/shared/feed-continuation.ts'
 import { requestsIn, withRequestSource } from '../src/shared/request-routing/header.ts'
 import { leadingTaskRequestId, taskRequestsIn, withoutTaskHeaders, withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
 import { withProvenanceHeader } from '../src/shared/request-routing/provenance.ts'
@@ -40,14 +39,6 @@ test('task correlation header round-trips identical consecutive messages and esc
   assert.deepEqual(taskRequestsIn(secondWire.text), [{ id: secondId, words: raw }])
   assert.equal(withoutTaskHeaders(firstWire.text), raw)
   assert.equal(withoutTaskHeaders(secondWire.text), raw)
-})
-
-test('feed continuation supplement extractor separates pure draft from user supplement', () => {
-  const item = { title: '本周总结', body: '内容如下' }
-  const base = continueText(item, 'zh-CN').trim()
-  assert.equal(extractFeedContinuationSupplement(item, base), '')
-  assert.equal(extractFeedContinuationSupplement(item, `${base}\n\n请重点分析第三条`), '请重点分析第三条')
-  assert.equal(extractFeedContinuationSupplement(item, '无关文本'), null)
 })
 
 test('automaticRecall enforces 55ms vector fast/slow cap and excludes resident profile from L3 slots while keeping active read', async t => {

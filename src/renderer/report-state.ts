@@ -8,7 +8,7 @@ import { closeStreams } from './streams.ts'
  * nor a message's place in the history. Pure and immutable like the rest of `state.ts`, which merges these handlers.
  */
 
-const MAX_TEXT_CHARS = 20_000
+const MAX_TEXT_CHARS = 200_000
 const MAX_ID_CHARS = 200
 
 /** A record as the backend gives it (history-db.ts ReportRecord), checked; one that is not right is left out. */

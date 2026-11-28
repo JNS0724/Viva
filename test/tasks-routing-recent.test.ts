@@ -107,3 +107,14 @@ test('a task line in what a task said names no task', () => {
 
   assert.deepEqual(recentTasks(said).map(task => task.taskId), ['task-island'])
 })
+
+test('schedule reports are never offered as continuable background tasks, including in mixed report batches', () => {
+  const scheduleOnly = noteFor([{ taskId: 'schedule:s1', title: '周五周报', status: 'done', host: null, output: '周报草稿', by: 'schedule' }])
+  assert.deepEqual(recentTasks([scheduleOnly]), [])
+
+  const mixed = noteFor([
+    { taskId: 'schedule:s1', title: '周五周报', status: 'done', host: null, output: '周报草稿', by: 'schedule' },
+    { taskId: 'task-audit', title: '核对账单', status: 'done', host: null, output: '核对完成', by: 'agent' },
+  ])
+  assert.deepEqual(recentTasks([mixed]), [{ taskId: 'task-audit', title: '核对账单', ago: 0 }])
+})

@@ -6,15 +6,9 @@ import { sameContext, type ConversationContext } from '../shared/conversation-co
 import { objectOf } from '../shared/unknown-value.ts'
 import type { IpcResults } from '../shared/ipc-results.ts'
 import { createConfigActions } from './config-actions.ts'
-import { createSchedules, type Schedules } from './schedules.ts'
-import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
+import { createSchedules, registerSchedulesIpc, type Schedules } from './schedules.ts'
+import { createScheduleRuns, type DeliveredScheduleRun, type ScheduleRuns } from './schedule-runs.ts'
 import { createUnattendedRuns, type RunResult, type TaskEvent } from './unattended-runs.ts'
-import { FEED_WRITES, openFeedStore, type FeedItem, type FeedStore } from './feed-store.ts'
-import { FEED_SOURCE_WRITES, openFeedSourceStore, type FeedSourceStore } from './feed-source-store.ts'
-import { createFeedSourceRuns, type FeedSourceRuns, type PluginCheckResult, type SourceExecutionPolicy } from './feed-source-runs.ts'
-import { registerFeedSourceIpc } from './feed-source-ipc.ts'
-import { continueText } from '../shared/feed-continuation.ts'
-import { admitFeedContinuation } from './feed-continuation.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
@@ -50,7 +44,7 @@ import { registerSkillImportIpc } from './skill-import-ipc.ts'
 import { skillSources } from './skill-import.ts'
 import { registerMcpImportIpc } from './mcp-import-ipc.ts'
 import { clientPlaces, loginShellTools, mcpSources } from './mcp-import.ts'
-import { pluginsView, readOnlyToolsOf, registerPluginsIpc } from './plugins-ipc.ts'
+import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb, type Conversation } from './history-db.ts'
 import { createForegroundHistory, type ForegroundHistory } from './foreground-history.ts'
@@ -62,7 +56,9 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
-import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts'
+import { boundScheduleRecordOutput, createTaskReports, GATHER_MS, REPORT, reportId, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
+import { isScheduleTaskId, scheduleTaskId } from '../shared/task-report.ts'
+import { migrateLegacyFeed, NOTICE_BODY_CHARS, SCHEDULE_NOTICE } from './legacy-feed-migration.ts'
 import { createReportRecords } from './report-records.ts'
 import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
@@ -108,12 +104,6 @@ import type { HostCapabilities, HostEvent, Notice } from './host.ts'
 const MAX_KEY_CHARS = 1_000
 /** dsh's stock ACP profile: used, without memory, when the app's own profile can't be written. */
 const FALLBACK_PROFILE = 'acp'
-/** How much of a 动态 item a notification shows. */
-const NOTICE_BODY_CHARS = 200
-/** The effects queue's kind for a new 动态 item's notification. */
-const FEED_NOTICE = 'feed-notice'
-/** How many 动态 items the window is given, the latest first. */
-const FEED_LISTED = 100
 
 type HistoryDb = ReturnType<typeof openHistoryDb>
 type Bridge = ReturnType<typeof createAcpBridge>
@@ -193,21 +183,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   const historyPurgeTimers = new Set<ReturnType<typeof setTimeout>>()
   /** The main conversation's requests and their decisions (request-runtime.ts); set once the history is open. */
   let requests!: RequestRuntime
-  /** 动态's items (feed-store.ts): what schedules brought; set once the personal stores are open. */
-  let feed: FeedStore | null = null
-  let feedSources: FeedSourceStore | null = null
   let schedules: Schedules | null = null
-  /** Schedules run when due, their answers into 动态 (schedule-runs.ts). */
+  /** Schedules run when due, their answers queued back into the main conversation (schedule-runs.ts). */
   let scheduleRuns: ScheduleRuns | null = null
-  /** Plugin-backed data sources run when due, their results into 动态 (feed-source-runs.ts). */
-  let feedSourceRuns: FeedSourceRuns | null = null
-  /** Shared serializer so scheduled prompts and data sources run unattended one at a time. */
-  let unattendedQueue: Promise<unknown> = Promise.resolve()
-  function serializeUnattended<T>(work: () => Promise<T>): Promise<T> {
-    const next = unattendedQueue.then(work, work)
-    unattendedQueue = next.then(() => undefined, () => undefined)
-    return next
-  }
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
   let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
   /**
@@ -225,7 +203,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   const pendingHumanPrompts = new Map<string, { fingerprint: string, turnId: string, context(): ConversationContext, sources: readonly string[], started(): boolean, promise: Promise<IpcResults['agent:prompt']> }>()
   let closed = false
   const knownUnsentPrompts = new Set<string>()
-  let humanAdmission: { turnId: string, started: boolean, completed: Promise<void>[], delivered(): void, current(): boolean, recovered(): void, topicId?: () => string } | null = null
+  let humanAdmission: { turnId: string, started: boolean, delivered(): void, current(): boolean, recovered(): void, topicId?: () => string } | null = null
   function retireForegroundRequests() {
     try {
       if (!closed) knownUnsentPrompts.clear()
@@ -314,7 +292,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       emitToRenderer({ type: 'ready', info: sameProject ? info : { ...info, conversationId: sessions.current().id, topicId: sessions.topicId(), remembersHistory: false } })
       wakeEffects()
       scheduleRuns?.wake()
-      feedSourceRuns?.wake()
     },
     onGone: () => {
       retireForegroundRequests()
@@ -672,53 +649,36 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     }
   }
 
-  function requireSchedules(): Schedules {
-    if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
-    return schedules
-  }
-
-  function requireFeed(): FeedStore {
-    if (!feed) throw new Error('动态 is not open yet')
-    return feed
-  }
-
-  function requireFeedSources(): FeedSourceStore {
-    if (!feedSources) throw new Error('动态 is not open yet')
-    return feedSources
-  }
-
-  function requireFeedSourceRuns(): FeedSourceRuns {
-    if (!feedSourceRuns) throw new Error('动态 is not open yet')
-    return feedSourceRuns
-  }
-
   function requireTasks(): TaskRuntime {
     if (!taskRuntime) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
     return taskRuntime
   }
 
   /**
-   * Results of background tasks, back in the conversation on screen (task-reports.ts): into the turn running there,
-   * or as a turn of their own once nothing runs. The window is told such a turn began, as it is told nothing else of
-   * it: no words of the user's.
+   * Results of background tasks and due schedules, back in the conversation on screen (task-reports.ts): into the turn
+   * running there, or as a turn of their own once nothing runs. The window is told such a turn began, as it is told
+   * nothing else of it: no words of the user's.
    */
-  function isForeignReport(taskId: string) {
+  function isForeignReport(taskId: string, reportCwd?: string | null) {
     const current = sessions.context().sessionId
-    const task = historyDb.nativeProject(taskId) ?? projectScopeKey(workspaceOfSession(taskId))
+    const task = reportCwd
+      ? projectScopeKey(reportCwd)
+      : (historyDb.nativeProject(taskId) ?? projectScopeKey(workspaceOfSession(taskId)))
     const target = (current && historyDb.nativeProject(current)) || projectScopeKey(workDirNow())
     return task !== target
   }
   const taskReports = createTaskReports({
     conversation: () => (!dsh.current || sessions.isChanging() || dsh.current.isSwitching() || dsh.isQuitting()
       ? 'away' : turn.active ? 'busy' : 'idle'),
+    activeTurnId: () => (turn.active ? turn.id : null),
     typing: () => Boolean(host.window.composerTyping?.()),
     wakeLater: (ms) => scheduleReportWake(ms),
     session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
     opening: id => foregroundRequests.openingReports().includes(id),
     status: (session, reportId, token) => dsh.current?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
-    deliver: (session, reportId, token, text, taskId, held) => {
-      if (isForeignReport(taskId)) foregroundHistory?.keepReplyInForeground(session)
+    deliver: (session, reportId, token, text, taskId, held, cwd) => {
+      if (isForeignReport(taskId, cwd)) foregroundHistory?.keepReplyInForeground(session)
       return dsh.current?.deliverReport(session, reportId, token, text, held) ?? Promise.resolve('unavailable')
     },
     // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
@@ -732,7 +692,12 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
     },
     currentConversation: () => sessions.current().id,
-    superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
+    unsavedConversation: (sessionId) => {
+      const selected = sessions.current()
+      if (selected.sessionId !== sessionId || historyDb?.hasAnyConversation(selected.id)) return null
+      return { ...selected, topicId: sessions.topicId() }
+    },
+    superseded: (taskId, runId) => isScheduleTaskId(taskId) ? false : (taskRuntime?.reports.superseded(taskId, runId) ?? false),
     report: async (note, reports, held) => {
       const agent = dsh.current
       if (!agent) return false
@@ -745,7 +710,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       if (!claim) return false
       turn = { active: true, by: 'task', stopping: false, startedAt: Date.now(), id: randomUUID() }
       emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'task', context })
-      if (reports.some(item => isForeignReport(item.taskId))) foregroundHistory?.keepReplyInForeground(context.sessionId)
+      if (reports.some(item => isForeignReport(item.taskId, item.cwd))) foregroundHistory?.keepReplyInForeground(context.sessionId)
       void agent.prompt(note, [], { request: false, threadId: reportTopicId, held: () => claim.current() && held() }).catch((err: Error) => {
         if (!claim.current() || dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
@@ -909,7 +874,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       emitToRenderer({ type: 'waits', ...(dsh.current?.sessionWaits() ?? { permissions: [], questions: [], secrets: [] }), context })
       return true
     })
-    ipcMain.handle('agent:prompt', (_event, text, images = [], operation, feedItemId, turnId) => {
+    ipcMain.handle('agent:prompt', (_event, text, images = [], operation, turnId) => {
       if (sessions.isChanging()) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
       // With pictures the words may be left out.
       const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
@@ -921,13 +886,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
       if (agent.isSwitching()) throw new Error(switchingMessage())
       const retrying = operation !== undefined && (pendingHumanPrompts.has(JSON.stringify(operation))
-        || typeof operation === 'string' && !feedItemId && !pictures.length && historyDb.promptDelivery(operation) === 'sent')
+        || typeof operation === 'string' && !pictures.length && historyDb.promptDelivery(operation) === 'sent')
       // Following questions already shown while a turn ended register together
       // in FIFO order. A first delivery needs the host's definite not-sent receipt;
       // canonical replay arrays still undergo the owner's exact source checks.
       const following = foregroundRequests.busy() && (Array.isArray(operation) || typeof operation === 'string' && historyDb.promptDelivery(operation) === 'not-sent')
       if ((turn.active || foregroundRequests.busy()) && !foregroundRequests.deferred() && !retrying && !following) throw new Error(t('main.main.wait.for.this.turn.to.finish.before'))
-      return sendHumanPrompt(question, pictures, operation, feedItemId, turnId, imageRefs)
+      return sendHumanPrompt(question, pictures, operation, turnId, imageRefs)
     })
     /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
     ipcMain.handle('agent:steer', async (_event, text, operation) => {
@@ -1049,33 +1014,32 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
 
   /** A retained prompt keeps its original selection and operation through a report turn. */
-  function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string, turnId: string = randomUUID(), imageRefs: readonly ImageRef[] = []): Promise<IpcResults['agent:prompt']> {
+  function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), turnId: string = randomUUID(), imageRefs: readonly ImageRef[] = []): Promise<IpcResults['agent:prompt']> {
     const agent = requireBridge()
     let origin = sessions.context()
     let originTopicId = sessions.topicId()
     const retained = foregroundRequests.deferred()
     const key = JSON.stringify(operation)
-    const fingerprint = createHash('sha256').update(JSON.stringify({ origin, question, pictures, feedItemId })).digest('hex')
+    const fingerprint = createHash('sha256').update(JSON.stringify({ origin, question, pictures })).digest('hex')
     const prior = pendingHumanPrompts.get(key)
     if (prior) return prior.fingerprint === fingerprint ? prior.promise
       : Promise.reject(new Error(t('main.memory.context.stale')))
     if (Array.isArray(operation) && !historyDb.matchesPromptText(operation, question)) {
       return Promise.reject(new Error(t('main.memory.context.stale')))
     }
-    if (!feedItemId && typeof operation === 'string' && historyDb.promptDelivery(operation) === 'not-sent'
+    if (typeof operation === 'string' && historyDb.promptDelivery(operation) === 'not-sent'
       && !historyDb.matchesPromptText([operation], question)) {
       return Promise.reject(new Error(t('main.memory.operation.conflict')))
     }
-    if (!feedItemId && !pictures.length && typeof operation === 'string' && historyDb.promptDelivery(operation) === 'sent') {
+    if (!pictures.length && typeof operation === 'string' && historyDb.promptDelivery(operation) === 'sent') {
       // The native steer may have acknowledged while this report is still running.
       return historyDb.matchesPromptText([operation], question) ? Promise.resolve(undefined)
         : Promise.reject(new Error(t('main.memory.context.stale')))
     }
-    const sources = feedItemId ? [] : typeof operation === 'string' ? [operation] : [...operation]
+    const sources = typeof operation === 'string' ? [operation] : [...operation]
     if (historyDb.promptPending(sources)) return Promise.reject(new Error(t('main.memory.change.pending')))
-    // Pictures are already visible and saved while they wait for a separate turn.
-    // A pending feed continuation is not saved; replay IDs may belong to earlier messages.
-    const userMessage = !feedItemId && typeof operation === 'string'
+    // Pictures are already visible and saved while they wait for a separate turn; replay IDs belong to earlier messages.
+    const userMessage = typeof operation === 'string'
     if (userMessage && foregroundHistory) {
       try {
         foregroundHistory.userPrompt({
@@ -1094,20 +1058,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const interjectable = userMessage && !pictures.length
     historyDb.reservePromptDelivery(sources)
     let nativeStarted = false, deliveryError: unknown
-    let accepted = (_value: IpcResults['agent:prompt']) => {}, refused = (_error: unknown) => {}
-    // Feed IPC acknowledges native admission early; the scheduling lease below
-    // must still hold until that native turn actually settles.
-    const admitted = feedItemId ? new Promise<IpcResults['agent:prompt']>((resolve, reject) => { accepted = resolve; refused = reject }) : null
     const generation = foregroundRequests.lease()
     const selected = () => generation() && dsh.current === agent && !sessions.isChanging() && !agent.isSwitching()
       && !dsh.isQuitting() && sameContext(origin, sessions.context())
-    const lifetime = foregroundRequests.human(selected, async current => {
-      const own = { turnId, started: false, completed: [] as Promise<void>[], delivered() {
+    const promise = foregroundRequests.human(selected, async current => {
+      const own = { turnId, started: false, delivered() {
         own.started = true
         nativeStarted = true
-        if (feedItemId && typeof operation === 'string') {
-          foregroundHistory?.userPrompt({ text: question, images: imageRefs, sourceId: operation })
-        }
         // This callback runs after connection.prompt. A failed receipt must not
         // throw out of native onStart or turn an unknown delivery into not-sent.
         try { historyDb.settlePromptDelivery(sources, true) }
@@ -1124,14 +1081,12 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }, topicId: () => originTopicId }
       humanAdmission = own
       try {
-        await signal({ kind: 'chat.said', text: question, images: pictures, operation, feedItemId })
-        accepted(undefined)
-        await Promise.all(own.completed)
+        await signal({ kind: 'chat.said', text: question, images: pictures, operation })
         if (deliveryError) throw deliveryError
       }
       catch (error) {
         if (!own.started && !closed) historyDb.settlePromptDelivery(sources, false)
-        if (retained && !feedItemId && !own.started) return { accepted: false as const,
+        if (retained && !own.started) return { accepted: false as const,
           sourceIds: closed ? sources.filter(id => knownUnsentPrompts.has(id)) : historyDb.promptUndelivered(sources),
           message: error instanceof Error && error.message ? error.message : t('app.your.message.did.not.reach.the.assistant') }
         throw error
@@ -1148,18 +1103,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       return { result: { accepted: false as const, sourceIds: result.delivery === 'not-sent' ? sources : [],
         message: result.message ?? t(result.delivery === 'pending' ? 'app.message.delivery.unknown' : 'app.your.message.did.not.reach.the.assistant') } }
     } : undefined).catch((error: unknown) => {
-      if (error instanceof ForegroundRequestRetired && !feedItemId && !nativeStarted) {
+      if (error instanceof ForegroundRequestRetired && !nativeStarted) {
         if (!closed) historyDb.settlePromptDelivery(sources, false)
         return { accepted: false as const, sourceIds: closed ? sources.filter(id => knownUnsentPrompts.has(id)) : historyDb.promptUndelivered(sources),
           message: t('app.your.message.did.not.reach.the.assistant') }
       }
       throw error
     })
-    const promise = admitted ?? lifetime
-    if (admitted) void lifetime.then(accepted, refused)
     const pending = { fingerprint, turnId, context: () => origin, sources, started: () => nativeStarted, promise }
     pendingHumanPrompts.set(key, pending)
-    void lifetime.finally(() => {
+    void promise.finally(() => {
       if (pendingHumanPrompts.get(key) === pending) pendingHumanPrompts.delete(key)
       wakeEffects()
     }).catch(() => {})
@@ -1167,34 +1120,18 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
 
   /** chat.said's route: the question goes to the conversation on screen. */
-  async function sayInChat(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string) {
+  async function sayInChat(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID()) {
     const agent = requireBridge()
     const admission = humanAdmission
     const assertAdmitted = () => { if (admission && !admission.current()) throw new ForegroundRequestRetired() }
     assertAdmitted()
-    const feedOrigin = sessions.context()
-    const feedSelected = () => dsh.current === agent && !sessions.isChanging() && Boolean(feedOrigin.sessionId)
-      && agent.currentSession() === feedOrigin.sessionId && sameContext(feedOrigin, sessions.context())
-    const assertFeedSelected = () => { if (feedItemId && !feedSelected()) throw new Error(t('main.feed.memory.unavailable')) }
-    assertFeedSelected()
     const replay = Array.isArray(operation)
-    assertAdmitted()
     const id = agent.currentSession()
-    let feedCurrent: Awaited<ReturnType<typeof admitFeedContinuation>> | undefined
-    if (feedItemId) {
-      if (replay) throw new Error(t('main.memory.context.stale'))
-      feedCurrent = await admitFeedContinuation({ text: question, read: () => feedContinuation(feedItemId),
-        current: feedSelected,
-      })
-      if (!feedCurrent()) throw new Error(t('main.feed.memory.unavailable'))
-    }
-    assertAdmitted()
     turn = { active: true, by: 'user', stopping: false, startedAt: Date.now(), id: admission?.turnId ?? randomUUID() }
     emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'user', context: sessions.context() })
     const carried = sessions.takeCarried()
-    const sourceText = feedItemId ? (feedCurrent?.supplement ?? '') : question
-    const inlined = !replay && sourceText ? inlineAttachedFiles(sourceText, file => droppedFiles.has(file)) : ''
-    const held = feedCurrent || admission ? () => (feedCurrent?.() ?? true) && (admission?.current() ?? true) : undefined
+    const inlined = !replay && question ? inlineAttachedFiles(question, file => droppedFiles.has(file)) : ''
+    const held = admission ? () => admission.current() : undefined
     const words = [carried, inlined, question].filter(Boolean).join('\n\n')
     const failed = (error: unknown) => {
       if (admission && !admission.current()) throw error
@@ -1206,25 +1143,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       throw error
     }
     const snapshottedTopicId = admission?.topicId?.() ?? sessions.topicId()
-    if (!feedItemId) {
-      let started = false
-      await agent.prompt(words, pictures, { userTurn: true, onStart: () => { started = true; admission?.delivered() },
-        sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText, threadId: snapshottedTopicId, held }).catch(failed)
-      if (!started) throw new ForegroundRequestRetired()
-      return
-    }
-    return await new Promise<void>((resolve, reject) => {
-      const complete = agent.prompt(words, pictures, { userTurn: true, onStart: () => { admission?.delivered(); resolve() }, sourceId: undefined, sourceText, threadId: snapshottedTopicId, held }).then(() => {
-        reject(new Error(t('main.memory.context.stale')))
-      }, error => { if (!admission || admission.current()) finishForegroundTurn(); reject(error) })
-      admission?.completed.push(complete)
-    })
+    let started = false
+    await agent.prompt(words, pictures, { userTurn: true, onStart: () => { started = true; admission?.delivered() },
+      sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText: question, threadId: snapshottedTopicId, held }).catch(failed)
+    if (!started) throw new ForegroundRequestRetired()
   }
 
   /** Where each kind of signal goes (event-core.ts Routes): a route for every kind, or the type check fails. */
   function routeSignals(events: EventCore) {
     events.route({
-      'chat.said': ({ text, images, operation, feedItemId }) => sayInChat(text, images as ReturnType<typeof imagesForPrompt>, operation, feedItemId),
+      'chat.said': ({ text, images, operation }) => sayInChat(text, images as ReturnType<typeof imagesForPrompt>, operation),
       // A turn of the user's just ended: clear the turn's source bindings.
       'agent.turn_ended': () => {
         finishForegroundTurn()
@@ -1299,40 +1227,37 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     return null
   }
 
-  /** 动态 changed: the window shows it, the tray counts what is new. */
-  function feedChanged() {
-    host.window.setPending(feed?.list().filter((item) => item.seenAt === null).length ?? 0)
-    emitToRenderer({ type: 'feed_changed' })
-  }
-
-  async function feedContinuation(id: string) {
-    const store = requireFeed()
-    const continuation = store.continuation(id)
-    if (!continuation) throw new Error(t('main.feed.memory.stale'))
-    return { ...continuation, current: () => store.continuationCurrent(continuation) }
-  }
-
-  /** A new item in 动态: its notification queued in the change that made it, so a quit before it goes loses nothing. */
-  function queueFeedNotice(item: FeedItem) {
+  /** A completed schedule run: its full report for the main conversation and its system notice queued in the same change. */
+  function queueScheduleDelivery(item: DeliveredScheduleRun) {
     if (!effects) throw new Error('the effects queue is not open yet')
-    effects.queue(FEED_NOTICE, item.id, { title: item.title, body: item.body.slice(0, NOTICE_BODY_CHARS) })
+    const taskId = scheduleTaskId(item.scheduleId)
+    const bounded = boundScheduleRecordOutput(item.body)
+    const report: ReportPayload = {
+      taskId,
+      runId: item.key,
+      title: item.title,
+      status: item.status,
+      host: null,
+      cwd: item.cwd,
+      output: bounded.text,
+      ...(bounded.truncated ? { outputTruncated: true } : {}),
+      token: randomUUID().replaceAll('-', ''),
+      request: item.prompt.slice(0, REQUEST_CHARS),
+      topic: null,
+      startedAt: null,
+      by: 'schedule',
+    }
+    effects.queue(REPORT, reportId(taskId, item.key), report, Date.now() + GATHER_MS)
+    effects.queue(SCHEDULE_NOTICE, `${item.scheduleId}:${item.key}`, {
+      title: item.title,
+      body: item.body.slice(0, NOTICE_BODY_CHARS),
+    })
   }
 
   /** A schedule's prompt run in its own folder; one whose folder is gone fails, saying so. */
   async function runSchedule(prompt: string, cwd: string): Promise<RunResult> {
     if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) }
-    return serializeUnattended(() => unattended.run(prompt, cwd))
-  }
-
-  async function runFeedSource(prompt: string, cwd: string, policy: SourceExecutionPolicy): Promise<RunResult> {
-    if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) }
-    if (!policy.allowedTools.length) return { ok: false, problem: t('main.feed-sources.policy.unavailable') }
-    return unattended.run(prompt, cwd, async (session, bridge) => {
-      const current = dsh.current
-      if (!current || bridge !== current) return { ok: false, problem: 'unavailable', unavailable: true }
-      const bound = await current.bindFeedSourceSession(session, policy)
-      if (!bound.ok) return { ok: false, problem: bound.reason }
-    })
+    return unattended.run(prompt, cwd)
   }
 
   function registerPersonalIpc(config: Config) {
@@ -1399,81 +1324,27 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const schedulesChanged = () => emitToRenderer({ type: 'schedules_changed' })
     schedules = createSchedules({ db: appDb.db, apply: applyChange, emit: event => emitToRenderer({ ...event, context: sessions.context() }),
       changed: () => { scheduleRuns?.wake(); schedulesChanged() } })
-    // A schedule's run adds its item inside its own change (schedule.ran); the window's writes are events of their own.
-    const items = openFeedStore({ db: appDb.db })
-    feed = journaled(items, 'feed', FEED_WRITES, applyChange)
     scheduleRuns = createScheduleRuns({
       db: appDb.db,
       apply: applyChange,
       store: schedules.store,
-      feed: items,
       run: runSchedule,
-      keep: queueFeedNotice,
-      // Kept: its notice goes (a notification, clicked, opens 动态), and the window shows it.
-      delivered: () => {
-        wakeEffects()
-        feedChanged()
-      },
+      keep: queueScheduleDelivery,
+      // Kept: its report and notice go out through the effects queue.
+      delivered: wakeEffects,
       changed: schedulesChanged,
       onError: (err) => emitDiagnosticFailure('schedule', err),
     })
-    ipcMain.handle('schedules:list', () => schedules?.list() ?? [])
-    ipcMain.handle('schedules:accept', (_event, proposalId, edits) => requireSchedules().accept(String(proposalId), edits ?? undefined))
-    ipcMain.handle('schedules:decline', (_event, proposalId) => { requireSchedules().decline(String(proposalId)) })
-    // 动态's 接下来: pause, resume and delete by hand too (the conversation does the rest).
-    ipcMain.handle('schedules:pause', (_event, id, paused) => requireSchedules().update(String(id), { paused: Boolean(paused) }))
-    ipcMain.handle('schedules:delete', (_event, id) => requireSchedules().remove(String(id)))
-    ipcMain.handle('feed:list', () => items.list(FEED_LISTED))
-    ipcMain.handle('feed:continue', async (_event, id) => continueText((await feedContinuation(id)).item))
-    ipcMain.handle('feed:seen', (_event, id) => {
-      requireFeed().markSeen(String(id))
-      feedChanged()
-      return items.list(FEED_LISTED)
-    })
-    const rawFeedSources = openFeedSourceStore({ db: appDb.db })
-    feedSources = journaled(rawFeedSources, 'feed_source', FEED_SOURCE_WRITES, applyChange)
-    const profileDir = () => path.join(dshHomeOf(config), 'profiles', DSH_PROFILE)
-    const checkFeedSourcePlugin = async (pluginName: string): Promise<PluginCheckResult> => {
-      const bridge = dsh.current
-      if (!bridge) return { ok: false, unavailable: true, reason: t('main.feed-sources.dsh.unavailable') }
-      const listed = await bridge.plugins('list')
-      if (!listed.ok) return { ok: false, unavailable: true, reason: listed.problem }
-      const found = pluginsView(listed.value, profileDir()).find((plugin) => plugin.name === pluginName)
-      if (!found) return { ok: false, reason: t('main.feed-sources.plugin.missing', { name: pluginName }) }
-      if (!found.enabled) return { ok: false, reason: t('main.feed-sources.plugin.disabled', { name: pluginName }) }
-      if (found.error) return { ok: false, reason: t('main.feed-sources.plugin.error', { name: pluginName }) }
-      const allowedTools = readOnlyToolsOf(profileDir(), pluginName)
-      if (!allowedTools.length) return { ok: false, reason: t('main.feed-sources.plugin.no.readonly.tools', { name: pluginName }) }
-      const ownerEntryIds = found.rows.map((row) => row.entryId).filter((entryId): entryId is string => Boolean(entryId))
-      return { ok: true, ownerEntryIds, allowedTools }
+    registerSchedulesIpc(ipcMain, () => schedules)
+    if (effects) {
+      migrateLegacyFeed({
+        db: appDb.db,
+        apply: applyChange,
+        effects,
+        scheduleCwd: (id) => schedules?.store.get(id)?.cwd ?? null,
+        hasRecord: (key) => historyDb.hasRecord(key),
+      })
     }
-    feedSourceRuns = createFeedSourceRuns({
-      db: appDb.db,
-      apply: applyChange,
-      store: rawFeedSources,
-      feed: items,
-      checkPlugin: checkFeedSourcePlugin,
-      run: runFeedSource,
-      serialize: serializeUnattended,
-      keep: queueFeedNotice,
-      delivered: () => {
-        wakeEffects()
-        feedChanged()
-      },
-      changed: feedChanged,
-      onError: (err) => emitDiagnosticFailure('schedule', err),
-    })
-    registerFeedSourceIpc(ipcMain, {
-      store: requireFeedSources,
-      cwd: () => workDirNow() ?? config.cwd,
-      validatePlugin: checkFeedSourcePlugin,
-      runNow: (id) => requireFeedSourceRuns().runNow(id),
-      changed: () => {
-        feedSourceRuns?.wake()
-        feedChanged()
-      },
-    })
-    feedChanged()
   }
 
   /** The agent's side of background tasks. */
@@ -1504,18 +1375,20 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       agentInfo: () => lastInfo,
       sourceSession: () => rendererContext().sessionId,
       streamCursor: () => rendererStream.cursor(),
-      messageCount: id => historyDb.getTail(id, 0)?.total ?? 0,
+      messageCount: id => historyDb.messageCount(id),
       checkpoint: (conversationId, upToCursor) => rendererStream.checkpoint(conversationId, upToCursor),
       markQuestionPersisted: (conversationId, questionId) => rendererStream.markQuestionPersisted(conversationId, questionId),
       markPlainPersisted: (conversationId, upToCursor) => rendererStream.markPlainPersisted(conversationId, upToCursor),
       markStreamPersisted: (conversationId, key, upToCursor) => rendererStream.markStreamPersisted(conversationId, key, upToCursor),
       delegatedDuringTurn: (startedAt, endedAt) => {
-        const list = taskStore?.list() ?? []
-        const recordsList = historyDb.recordsOf(sessions.current().id)
-        return list.some(task => task.status !== 'interrupted' && typeof task.startedAt === 'number'
-          && task.startedAt >= startedAt
-          && (task.status === 'running' || task.status === 'waiting' || task.endedAt === undefined || task.endedAt === null
-            || !recordsList.some(record => record.reportId === `${task.id}:${task.runId}` && record.at <= endedAt)))
+        const list = (taskStore?.list() ?? []).filter(task => task.status !== 'interrupted'
+          && typeof task.startedAt === 'number' && task.startedAt >= startedAt)
+        if (!list.length) return false
+        if (list.some(task => task.status === 'running' || task.status === 'waiting' || task.endedAt === undefined || task.endedAt === null)) {
+          return true
+        }
+        const recordsList = historyDb.recordTimesOf(sessions.current().id)
+        return list.some(task => !recordsList.some(record => record.reportId === `${task.id}:${task.runId}` && record.at <= endedAt))
       },
       onPendingDrained: () => wakeEffects(),
       onError: err => emitDiagnosticFailure('storage', err, { stage: 'checkpoint' }),
@@ -1567,8 +1440,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       onError: (err) => emitDiagnosticFailure('task', err) })
     effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => emitDiagnosticFailure('effects', err) })
     effects.runs(REPORT, taskReports)
-    // A new item's notification (schedule-runs.ts): handed to the desktop, done.
-    effects.runs(FEED_NOTICE, async (queued) => {
+    // A completed schedule run's notification (schedule-runs.ts): handed to the desktop, done.
+    effects.runs(SCHEDULE_NOTICE, async (queued) => {
       for (const effect of queued) if (effects?.holds(effect)) host.notify(effect.payload as Notice)
       return new Map(queued.map((effect) => [effect.key, 'done' as const]))
     })
@@ -1694,7 +1567,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** The computer back from sleep, or unlocked: schedules due meanwhile run. */
   function woke() {
     scheduleRuns?.wake()
-    feedSourceRuns?.wake()
   }
 
   function close() {
@@ -1703,7 +1575,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     for (const timer of historyPurgeTimers) clearTimeout(timer)
     historyPurgeTimers.clear()
     scheduleRuns?.close()
-    feedSourceRuns?.close()
     foregroundHistory?.flush()
     foregroundHistory?.close()
     taskRuntime?.dispose()
@@ -1732,11 +1603,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     settingsView,
     preferences: () => preferences,
     images: () => imageStore,
-    /** An item in 动态, as if a schedule brought it (server.ts seedFeed, automation only). */
-    seedFeed: ({ title, body }: { title: string, body: string }) => {
-      const added = requireFeed().add({ source: 'automation', key: crypto.randomUUID(), title, body, origin: { label: t('main.schedule-runs.origin') } })
-      if (added.made) feedChanged()
-    },
     agentPid: () => dsh.current?.pid() ?? null,
     memoryOwnerPid: () => dsh.current?.memoryOwnerPid() ?? null,
     publishAutomation: (value: unknown) => {

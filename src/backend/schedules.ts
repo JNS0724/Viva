@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
@@ -113,3 +114,17 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
 }
 
 export type Schedules = ReturnType<typeof createSchedules>
+
+export function registerSchedulesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, getSchedules: () => Schedules | null) {
+  const handle = handlerOf(ipcMain)
+  const requireSchedules = (): Schedules => {
+    const current = getSchedules()
+    if (!current) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+    return current
+  }
+  handle('schedules:list', () => getSchedules()?.list() ?? [])
+  handle('schedules:accept', (proposalId, edits) => requireSchedules().accept(proposalId, edits))
+  handle('schedules:decline', (proposalId) => { requireSchedules().decline(proposalId) })
+  handle('schedules:pause', (id, paused) => requireSchedules().update(id, { paused }))
+  handle('schedules:delete', (id) => requireSchedules().remove(id))
+}

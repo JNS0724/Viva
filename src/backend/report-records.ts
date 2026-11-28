@@ -22,6 +22,8 @@ export interface RecordHistory {
   bySession: (sessionId: string) => Conversation | null
   /** Whether a conversation is stored (a blank topic is not, till its first save). */
   get: (id: string) => unknown
+  /** Whether a conversation row ever existed in `conversations`, including soft-deleted ones. */
+  hasAnyConversation?: (id: string) => boolean
   save: (conversation: Conversation, messages: readonly never[], options: { keepEmpty: boolean }) => unknown
   addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number }) => boolean
 }
@@ -53,13 +55,21 @@ export interface ReportRecordsDeps {
 }
 
 export function createReportRecords({ history, effects, apply, current, show, beforeRecord, now = Date.now }: ReportRecordsDeps) {
-  /** The conversation of the session a report went to: the one on screen first (it may not be stored yet). */
+  /** The conversation of the session a report went to: the one on screen first, then saved history, then an unsaved blank topic snapshotted before sending. */
   function targetOf(effect: Effect<ReportPayload>): Conversation | null {
     const session = effect.payload.deliveredTo
     if (!session) return null
+    const store = history()
     const here = current()
-    if (here.sessionId === session) return here
-    return history()?.bySession(session) ?? null
+    if (here.sessionId === session) {
+      if (store && !store.get(here.id) && store.hasAnyConversation?.(here.id)) return null
+      return here
+    }
+    const saved = store?.bySession(session) ?? null
+    if (saved) return saved
+    const snap = effect.payload.deliveredConversation
+    if (snap && snap.sessionId === session && !store?.hasAnyConversation?.(snap.id)) return snap
+    return null
   }
 
   /** The time a report's record says: when it was first drawn, kept with the report so the kept record says the same. */

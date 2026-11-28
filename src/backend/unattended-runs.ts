@@ -60,17 +60,12 @@ export function createUnattendedRuns({ agent, timeoutMs = RUN_TIMEOUT_MS, later 
   }
 
   /** `prompt` run in `cwd`, which the caller has checked is there. */
-  async function run(prompt: string, cwd: string, prepare?: (taskId: string, bridge: UnattendedAgent) => Promise<RunResult | undefined>): Promise<RunResult> {
+  async function run(prompt: string, cwd: string): Promise<RunResult> {
     const now = agent()
     if (!now) return UNAVAILABLE
     const started = await now.startUnattendedTask({ cwd })
     if (!started.ok || !started.taskId) return UNAVAILABLE
     const taskId = started.taskId
-    const refused = await prepare?.(taskId, now)
-    if (refused) {
-      void Promise.resolve(now.closeTask(taskId)).catch(() => {})
-      return refused
-    }
     const result = await new Promise<RunResult>((resolve) => {
       const finish = (value: RunResult) => {
         if (runs.get(taskId)?.finish !== finish) return

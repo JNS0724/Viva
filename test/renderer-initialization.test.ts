@@ -198,7 +198,7 @@ test('optional memory coalesces only live same-page reads and retries independen
 test('required conversation events initialize independently of permanently pending memory reads with a failing logger', async t => {
   let state: State = initialState
   const events = createAgentEvents({ getState: () => state, dispatch: action => { state = reduce(state, action) }, holdTask: () => false,
-    afterTurn() {}, clearAfterTurn() {}, ready() {}, refreshWorkDir() {}, refreshFiles() {}, refreshFeed() {}, memoryChanged() {}, filesChanged() {} })
+    afterTurn() {}, clearAfterTurn() {}, ready() {}, refreshWorkDir() {}, refreshFiles() {}, refreshSchedules() {}, memoryChanged() {}, filesChanged() {} })
   const actions = createInitializationActions({ snapshot: async () => snapshot(), install: view => { state = reduce(state, { type: 'initialization_snapshot', snapshot: view }) },
     deliver: events.receive, pause: events.pause, initialized: events.initialize, failed() { assert.fail('should initialize') }, loading() {}, observe() { throw new Error('broken logger') } })
   t.after(actions.close)

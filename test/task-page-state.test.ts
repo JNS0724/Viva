@@ -5,16 +5,23 @@ import { initialState, reduce } from './fixtures/task-window.ts'
 import { liveTasks, pageGroups, pageTask, taskMessages } from '../src/renderer/tasks-state.ts'
 
 /**
- * The 后台 page (view/tasks-page.js): every background task, grouped by where it stands, and the one picked
- * shown whole. It shares the space under the title bar with 搜索 · 关于你 · 设置 (hub-state.js).
+ * The 后台 page (view/tasks-page.ts): every background task, grouped by where it stands, and the one picked shown whole.
+ * It shares the space under the title bar with 搜索 · 定时任务 · 关于你 · 设置 (hub-state.ts).
  */
 
-const run = (actions, start = initialState) => actions.reduce((state, action) => reduce(state, action), start)
-const restored = (id, title, endedAt) => ({
-  task: { id, segmentId: `c-${id}`, title, words: title }, status: 'done', endedAt,
+type WindowState = Parameters<typeof reduce>[0]
+type TestAction = Parameters<typeof reduce>[1]
+
+const run = (actions: readonly TestAction[], start: WindowState = initialState as WindowState): WindowState =>
+  actions.reduce((state, action) => reduce(state, action), start)
+
+const restored = (id: string, title: string, endedAt: number) => ({
+  task: { id, segmentId: `c-${id}`, title, words: title }, status: 'done' as const, endedAt,
   messages: [{ role: 'user', text: title, receipt: null }, { role: 'assistant', text: '好了。', receipt: null }],
 })
-const started = (id, text, at) => ({ type: 'task_started', task: { id, segmentId: `c-${id}`, title: text, words: text }, text, at })
+const started = (id: string, text: string, at: number): TestAction => ({
+  type: 'task_started', task: { id, segmentId: `c-${id}`, title: text, words: text }, text, at,
+})
 
 test('a task started on its own leaves only its card in the conversation and keeps the request in task details', () => {
   const state = run([started('s7', '把这周的提交整理成发布说明', 10)])
@@ -32,7 +39,7 @@ test('the page groups the tasks: waiting on the user, then at work, then ended, 
     { type: 'tasks_restored', list: [restored('old', '整理 Q3 的发票', 5), restored('new', '把周报发给张三', 9)] },
     started('s7', '把这周的提交整理成发布说明', 10),
     started('s8', '查一下明天上海的天气', 11),
-    { type: 'permission_request', requestId: 'p1', taskId: 's8', toolCall: { toolCallId: 't1', title: '访问 weather.example.com' }, options: [], at: 12 },
+    { type: 'permission_request', requestId: 'p1', taskId: 's8', toolCall: { toolCallId: 't1', title: '访问 weather.example.com' }, options: [], at: 12 } as unknown as TestAction,
   ])
 
   assert.deepEqual(pageGroups(state).map(({ key, tasks }) => [key, tasks.map((t) => t.id)]),
@@ -40,15 +47,15 @@ test('the page groups the tasks: waiting on the user, then at work, then ended, 
 })
 
 test('interrupted tasks appear in their own group right after waiting and never inside ended or liveTasks', () => {
-  const interrupted = (id, title, endedAt) => ({
-    task: { id, segmentId: `c-${id}`, title, words: title }, status: 'interrupted', endedAt,
+  const interrupted = (id: string, title: string, endedAt: number) => ({
+    task: { id, segmentId: `c-${id}`, title, words: title }, status: 'interrupted' as const, endedAt,
     messages: [{ role: 'user', text: title, receipt: null }],
   })
   const state = run([
     { type: 'tasks_restored', list: [restored('done-1', '已完成的任务', 8), interrupted('int-1', '断开的任务', 6)] },
     started('run-1', '运行中的任务', 10),
     started('wait-1', '等待中的任务', 11),
-    { type: 'permission_request', requestId: 'p1', taskId: 'wait-1', toolCall: { toolCallId: 't1', title: '确认' }, options: [], at: 12 },
+    { type: 'permission_request', requestId: 'p1', taskId: 'wait-1', toolCall: { toolCallId: 't1', title: '确认' }, options: [], at: 12 } as unknown as TestAction,
   ])
 
   assert.deepEqual(pageGroups(state).map(({ key, tasks }) => [key, tasks.map((t) => t.id)]),
@@ -81,17 +88,4 @@ test('closing the task on show picks the next one; with none left the page says 
   const next = reduce(state, { type: 'task_closed', taskId: 's8' })
   assert.equal(pageTask(next)?.id, 's7')
   assert.equal(pageTask(reduce(next, { type: 'task_closed', taskId: 's7' })), null)
-})
-
-test('the 后台 page lists tasks only: follow-ups are 动态\'s, and one picked that it does not list gives way to its first task', async () => {
-  const { onPage } = await import('../src/renderer/view/tasks-page.ts')
-  const followup = (id, title, status) => ({ id, title, status, ask: title })
-  const view = (followups) => ({ followups, suggestions: [], state: null, schedule: null })
-  const opened = run([
-    started('s1', '整理发布说明', 10),
-    { type: 'followups_loaded', view: view([followup('f1', '起床', 'scheduled'), followup('f2', '周报', 'ready')]) },
-    { type: 'tasks_page_open', taskId: null },
-    { type: 'tasks_page_select', taskId: 'followup:f2' },
-  ])
-  assert.equal(onPage(opened).tasks.page.selected, 's1', 'not listed here: the first task')
 })

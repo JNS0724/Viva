@@ -26,10 +26,10 @@ export function smokeHooks(runtime: Runtime): SmokeHooks {
       if (await page.locator('#hub').getAttribute('data-open') !== 'true') await page.locator('#open-profile').click()
       await page.locator('.hub-nav[data-page="tasks"]').click()
     },
-    seedShowcase: () => application.evaluate(() => globalThis.vivaAutomation!.seedFeed({
-      title: '设计评审意见',
-      body: '## 设计稿 v3 评审意见\n\n- 首页卡片间距偏大，建议 16px\n- 后台页的分组标题对比度不足\n\n**要你定的**：深色模式是否默认开启。',
-    })),
+    async openSchedulesPage() {
+      if (await page.locator('#hub').getAttribute('data-open') !== 'true') await page.locator('#open-profile').click()
+      await page.locator('.hub-nav[data-page="schedules"]').click()
+    },
     scaleFactor: () => application.evaluate(({ screen }) => screen.getPrimaryDisplay().scaleFactor),
     async renderPanel(html, size) {
       const data = await application.evaluate(async ({ BrowserWindow }, options) => {

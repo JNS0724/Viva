@@ -11,7 +11,7 @@ import { runExternalScenario } from '../test/smoke/run-external.ts'
 const ROOT = path.resolve(import.meta.dirname, '..')
 const OUT = path.join(ROOT, 'smoke', 'showcase')
 const IMAGES = path.join(ROOT, 'docs', 'images')
-const SHOTS = ['home', 'chat', 'schedule-card', 'feed-item', 'approval', 'files', 'desk-island']
+const SHOTS = ['home', 'chat', 'schedule-card', 'approval', 'files', 'desk-island']
 const SHOT_WIDTH = 1600
 const GIF_WIDTH = 1100
 const FPS = 10

@@ -65,11 +65,10 @@
   /* The portrait's state ring and the sign it may wear (view/island-dom.ts deskSignal). */
   --desk-ring: 3px; --desk-sign: 22px; --desk-sign-glyph: 14px;
   --titlebar-gutter: 12px;
-  /* the 动态 button (about 96px) and 2 title bar buttons (36px), with 6px gaps */
-  --titlebar-actions: 180px;
+  /* 2 title bar buttons (36px), with 6px gap */
+  --titlebar-actions: 78px;
   --titlebar-compact-button: 32px;
   --titlebar-compact-gap: 4px;
-  --titlebar-badge-inset: -4px;
   /* macOS: room for the traffic lights */
   --reserve-left: 84px;
   --reserve-right: 0px;
@@ -175,22 +174,11 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .titlebar .icon-btn { width: 36px; height: 36px; border-color: transparent; background: transparent; }
 .titlebar .icon-btn:hover { background: var(--panel); border-color: var(--line); color: var(--ink); }
 .titlebar .icon-btn[aria-pressed="true"] { background: var(--panel); border-color: var(--accent); color: var(--accent); }
-/* 动态's way in (view/feed-page.ts): quiet ghost button aligned with the title bar's icon buttons, showing a count when new. */
-.feed-btn {
-  height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 11px; border-radius: 10px; border: 1px solid transparent;
-  background: transparent; color: var(--ink-2); font-size: 13px; font-weight: 500; cursor: pointer;
-}
-.feed-btn:hover { background: var(--panel); color: var(--ink); border-color: var(--line); }
-.feed-btn[aria-pressed="true"] { background: var(--panel); color: var(--accent); border-color: var(--accent); }
-.feed-btn .feed-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: var(--bg); font: 600 11px/20px var(--font-mono); text-align: center; }
 /* At 150% zoom the minimum window has less title-bar room; keep her portrait clear of the actions. */
 @media (max-width: 720px) {
-  .titlebar { --titlebar-actions: calc(3 * var(--titlebar-compact-button) + 2 * var(--titlebar-compact-gap)); }
+  .titlebar { --titlebar-actions: calc(2 * var(--titlebar-compact-button) + var(--titlebar-compact-gap)); }
   .titlebar-right { gap: var(--titlebar-compact-gap); }
-  .titlebar .icon-btn, .titlebar .feed-btn { width: var(--titlebar-compact-button); flex: none; }
-  .titlebar .feed-btn { position: relative; justify-content: center; padding: 0; }
-  .feed-btn > [data-i18n="feed.title"] { display: none; }
-  .feed-btn .feed-count { position: absolute; top: var(--titlebar-badge-inset); right: var(--titlebar-badge-inset); }
+  .titlebar .icon-btn { width: var(--titlebar-compact-button); flex: none; }
 }
 
 .icon-btn {
@@ -1007,13 +995,11 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 @media (max-width: 960px) {
   .hub-side { width: 180px; }
   .tp-side:not([data-folded="true"]), .cap-side { width: 220px; }
-  .feed-side { width: 260px; }
 }
 @media (max-width: 720px) {
   .hub-side { width: 160px; }
   .hub-foot { display: none; }
   .hub-page { padding: 20px 16px 40px; }
-  .feed-side { width: 220px; }
 }
 
 /* Memory entry actions (view/profile-panel.ts, view/memory-files-panel.ts) */
@@ -1026,45 +1012,9 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 .memory-actions > [data-tone="danger"] { color: var(--error-ink); }
 .memory-actions > .link-btn:disabled { color: var(--ink-3); cursor: default; text-decoration: none; }
 
-/* ---------- 动态 page (view/feed-page.ts): a page of its own, no hub sidebar; her line, the groups, the one picked ---------- */
-.hub[data-page="feed"] .hub-side { display: none; }
-.feed-side { width: 340px; gap: 4px; }
-.feed-title { flex: 1; margin: 0; font-size: 22px; font-weight: 700; line-height: 1.2; }
-.feed-close { height: 34px; display: flex; align-items: center; gap: 6px; }
-.feed-her { display: flex; align-items: center; gap: 12px; padding: 10px 12px 14px; }
-.feed-say { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.3; }
-.feed-empty { align-items: center; justify-content: center; }
-/* Plugin-backed data sources inside 动态 (view/feed-page.ts, view/feed-source-panel.ts). */
-.fs-add .tp-name { color: var(--accent); font-size: 13px; font-weight: 500; }
-.fu-row[data-tone="error"] .tp-meta { color: var(--error-ink); }
+/* Heading inside 能力's left column (view/capabilities.ts). */
+.cap-title { flex: 1; margin: 0; font-size: 22px; font-weight: 700; line-height: 1.2; }
 .tp-status[data-tone="error"] { color: var(--error-ink); }
-.fs-form { max-width: 560px; display: flex; flex-direction: column; gap: 18px; }
-.fs-field { display: flex; flex-direction: column; gap: 6px; }
-.fs-field > .label { color: var(--ink-3); }
-/* .field grows along a row; in this column it would collapse to its padding. */
-.fs-field > .field { flex: none; }
-.fs-text-field { font-family: var(--font-sans); }
-.fs-rule { min-height: 120px; resize: vertical; line-height: 1.6; }
-.fs-hint { margin: 0; }
-.fs-last { margin: 0; font-size: 13px; color: var(--ink-3); }
-.fs-last[data-tone="error"] { color: var(--error-ink); }
-.fs-freq-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.fs-freq-stack { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
-.fs-freq-select, .fs-freq-time, .fs-freq-cron { flex: none; height: 38px; }
-.fs-freq-select { width: auto; min-width: 140px; }
-.fs-freq-time { width: 132px; }
-.fs-freq-cron { width: 200px; }
-.fs-weekly { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.fs-days { display: flex; flex-wrap: wrap; gap: 6px; }
-.fs-day {
-  min-width: 34px; height: 32px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line);
-  background: var(--panel); color: var(--ink-3); font-size: 12px; cursor: pointer;
-}
-.fs-day:hover:not(:disabled) { border-color: var(--line-2); color: var(--ink-2); }
-.fs-day[aria-pressed="true"] { border-color: var(--accent); background: var(--raised); color: var(--accent); font-weight: 600; }
-.fs-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.fs-empty { max-width: 520px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.fs-empty p { margin: 0; }
 
 /* ---------- 后台 page (view/tasks-page.ts): one of the hub's pages, its list and the task picked side by side ---------- */
 .hub-page.hub-tasks { width: 100%; height: 100%; margin: 0; padding: 0; display: flex; min-height: 0; }
@@ -1325,7 +1275,7 @@ body:not(:has(.overlay)) .app:has(.hub[data-open="true"][data-page="profile"]) >
   .drawer-request .btn { flex: none; }
 }
 
-/* A schedule's card (view/proposal-card.ts) and 动态 (view/feed-page.ts): a proposal is a suggestion, not a request waiting on the user, so blue, not orange. */
+/* A schedule's card (view/proposal-card.ts) and scheduled details on 定时任务 (view/schedules-page.ts): a proposal is a suggestion, not a request waiting on the user, so blue, not orange. */
 .fu-card { border-color: var(--accent); display: flex; flex-direction: column; gap: 12px; }
 .fu-card .confirm-head { color: var(--accent); }
 .fu-card .pulse-dot { background: var(--accent); }
@@ -1361,9 +1311,8 @@ body:not(:has(.overlay)) .app:has(.hub[data-open="true"][data-page="profile"]) >
 .fu-day:has(input:focus-visible) > span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fu-day:has(input:disabled) > span { opacity: .5; cursor: not-allowed; }
 .fu-scroll { display: flex; flex-direction: column; gap: 12px; padding: 16px 32px 32px; }
-.fu-draft { padding: 16px 18px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--panel); }
 .fu-actions { margin-top: 4px; }
-.fu-row[data-status="new"] .tp-meta { color: var(--accent); }
+.fu-row[data-status="active"] .tp-meta { color: var(--accent); }
 .fu-row[data-status="paused"] .tp-meta { color: var(--ink-3); }
 @media (prefers-reduced-motion: reduce) { .fu-card .pulse-dot { animation: none; } }
 .home-today { border-color: var(--accent); }

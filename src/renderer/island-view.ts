@@ -143,7 +143,6 @@ function backgroundOf(state: State): IslandBackground | null {
 }
 
 export function islandView(state: State): IslandView {
-  // The island speaks of what the user asked for only: follow-ups are 动态's (system-design §12.2).
   const background = backgroundOf(state)
   const view = mainView(state, background)
   if (!background) return view

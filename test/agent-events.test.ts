@@ -26,7 +26,7 @@ function harness() {
     getState: () => state, dispatch, holdTask: event => hold(event), now: () => 100,
     afterTurn: () => { effects.push('after-turn') }, clearAfterTurn: () => { effects.push('clear') },
     ready: () => { effects.push('ready') }, refreshWorkDir: () => { effects.push('directory') }, refreshFiles: () => { effects.push('files') },
-    refreshFeed: () => { effects.push('feed') }, memoryChanged: () => { effects.push('memory') }, filesChanged: () => { effects.push('file-changed') },
+    refreshSchedules: () => { effects.push('schedules') }, memoryChanged: () => { effects.push('memory') }, filesChanged: () => { effects.push('file-changed') },
     rejected: issue => { issues.push(issue) },
   })
   return { events, actions, effects, issues, dispatch, state: () => state, hold: (next: typeof hold) => { hold = next } }
@@ -134,7 +134,7 @@ const examples = {
   report_delivered: { type: 'report_delivered', context, ...context, reportId: 'r', text: 'result', at: 1 }, prompt_persisted: { type: 'prompt_persisted', context, sourceId: 'op-1' }, error: { type: 'error', message: 'fixture' },
   schedule_propose: { type: 'schedule_propose', context, proposal: { proposalId: 'p', title: 'job', prompt: 'do', firstAt: '2026-11-09', rule: { kind: 'at' } } },
   mcp_status: { type: 'mcp_status', mcp: { active: ['mail'], connecting: [{ name: 'docs', reason: 'timed out' }], dropped: [] } },
-  memory_changed: { type: 'memory_changed' }, files_changed: { type: 'files_changed', path: 'notes.md' }, feed_changed: { type: 'feed_changed' }, schedules_changed: { type: 'schedules_changed' },
+  memory_changed: { type: 'memory_changed' }, files_changed: { type: 'files_changed', path: 'notes.md' }, schedules_changed: { type: 'schedules_changed' },
   task_closed: { type: 'task_closed', taskId: 'task' },
   task_snapshot: { type: 'task_snapshot', snapshot }, task_update: { type: 'task_update', ...position, update: chunk('answer') }, task_permission_closed: { type: 'task_permission_closed', ...position, requestId: 'p' },
   task_question: { type: 'task_question', ...position, ...question }, task_question_closed: { type: 'task_question_closed', ...position, questionId: 'q' }, task_steered: { type: 'task_steered', ...position, text: 'more' }, task_steer_retracted: { type: 'task_steer_retracted', ...position, key: 'k1' }, task_end: { type: 'task_end', ...position, stopReason: 'end_turn' },
@@ -146,6 +146,6 @@ test('every supported wire tag has a valid production decode and exhaustive acti
   for (const [tag, input] of Object.entries(examples)) {
     const event = decodeAgentEvent(input); assert.ok(event, tag)
     const action = map(event, 20)
-    assert.equal(Boolean(action), !['memory_changed', 'files_changed', 'feed_changed', 'schedules_changed'].includes(tag), tag)
+    assert.equal(Boolean(action), !['memory_changed', 'files_changed', 'schedules_changed'].includes(tag), tag)
   }
 })

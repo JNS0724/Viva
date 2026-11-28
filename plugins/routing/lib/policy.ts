@@ -146,25 +146,3 @@ export function admit(state: TurnGrants, tool: string, { hasPending = false }: {
     state: Object.freeze({ ...state, app: Object.freeze([...state.app.slice(0, index), ...state.app.slice(index + 1)]) }),
   }
 }
-
-/** Built-in, write-capable, shell, or app-management tools that a data source session may never invoke. */
-export const FORBIDDEN_SOURCE_TOOLS: ReadonlySet<string> = new Set([
-  ROUTE_TOOL,
-  ...CONTEXT_TOOLS,
-  ...DIR_PEEK_TOOLS,
-  ...PEEK_TOOLS,
-  ...APP_QUERY_TOOLS,
-  ...APP_OPERATIONS,
-  'bash', 'shell', 'exec', 'command', 'edit', 'write', 'multi_edit', 'notebook_edit', 'delete', 'remove',
-  'patch', 'apply_patch', 'subagent', 'subagent_fork', 'ask_user_question',
-  'memory_remember', 'memory_forget', 'memory_clarify', 'memory_write',
-  'web_fetch', 'web_search',
-])
-
-/** Enforces that a plugin data source session only executes explicitly allowlisted read-only tools. */
-export function admitFeedSource(allowed: ReadonlySet<string>, tool: string): { allowed: boolean, reason?: string } {
-  if (FORBIDDEN_SOURCE_TOOLS.has(tool) || !allowed.has(tool)) {
-    return { allowed: false, reason: `数据源会话仅允许调用所选插件明确声明的只读工具；已拒绝 ${tool}` }
-  }
-  return { allowed: true }
-}

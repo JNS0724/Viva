@@ -10,16 +10,15 @@ import { currentAction } from './selectors.ts'
 
 /**
  * Background tasks in the window: work that goes on in sessions of its own (backend/task-ipc.ts) beside the
- * conversation on screen. Each keeps a conversation of its own (`view`, conversation-state.ts ConversationView),
- * reduced by the same pure reducer as the one on screen, so what it is doing, what it said and what it asks are worked
- * out the same way, and nothing of the window's gets into it. Pure and immutable like `state.ts`, which merges these in.
+ * conversation on screen. Each task keeps a conversation of its own (`view`, conversation-state.ts ConversationView),
+ * reduced by the same pure reducer as the one on screen. Pure and immutable like `state.ts`, which merges these in.
  */
 export const initialTasks = Object.freeze({
   /** { id, segmentId, title, words, status, now, startedAt, endedAt, view } in the order they started */
   list: [] as BackgroundTask[],
   /**
-   * The 后台 page (view/tasks-page.js): open or not, the task shown whole, whether its steps are unfolded, and whether
-   * all of them are drawn or only the latest (tasks-page.ts STEPS_SHOWN).
+   * The 后台 page (view/tasks-page.js): open or not, the task shown whole, whether its steps are unfolded, and
+   * whether all of them are drawn or only the latest (tasks-page.ts STEPS_SHOWN).
    */
   page: Object.freeze({ open: false, selected: null as string | null, steps: false, allSteps: false }),
   /** The 后台 page's list folded to a narrow strip by the user (view/tasks-page.ts), kept for the next launch. */
@@ -157,18 +156,12 @@ export function pageGroups(state: State): Array<{ key: string, tasks: Background
 
 /** The task the 后台 page shows whole, or null. */
 export const pageTask = (state: State): BackgroundTask | null => state.tasks.list.find((task) => task.id === state.tasks.page.selected) ?? null
-const firstOnPage = (state: State): string | null => pageGroups(state)[0]?.tasks[0]?.id ?? null
 
-/** The keys on the page's list, in its order: the tasks by group. */
-function listedKeys(state: State): string[] {
-  return pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
-}
+const firstOnPage = (state: State): string | null => pageGroups(state)[0]?.tasks[0]?.id ?? null
 
 /** What the 后台 page shows: the one picked while it is still listed, else the first listed (view/tasks-page.ts onPage). */
 export function shownOnPage(state: State): string | null {
-  const keys = listedKeys(state)
-  const selected = state.tasks.page.selected
-  return selected && keys.includes(selected) ? selected : keys[0] ?? null
+  return pageTask(state)?.id ?? firstOnPage(state)
 }
 
 export const taskMessages = (task: BackgroundTask) => task.view.messages.map(({ role, text }: ThreadMessage) => ({ role, text }))
@@ -343,8 +336,8 @@ export function taskActions() {
 
     /** The 后台 page, on the task asked for, else the one it was on, else the first in its list. */
     tasks_page_open: (state, { taskId = null }) => {
-      const known = (id: string | null) => state.tasks.list.some((task) => task.id === id)
-      const selected = [taskId, state.tasks.page.selected].find((id) => id && known(id)) ?? firstOnPage(state)
+      const ids = new Set(state.tasks.list.map((task) => task.id))
+      const selected = [taskId, state.tasks.page.selected].find((id) => id && ids.has(id)) ?? firstOnPage(state)
       // Opened again, its steps start folded; the task shown, if ended, is seen.
       return markSeen(withTasks({ ...state, island: false, traceDetail: null }, { page: { open: true, selected, steps: false, allSteps: false } }), selected)
     },

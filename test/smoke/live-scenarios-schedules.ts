@@ -6,7 +6,7 @@ import { run, until, UI_WAIT_MS, wait, type SmokeWindow } from './smoke-kit.ts'
  * says when and what it will do, 定时 keeps it; then it is changed and deleted by asking, as it would be by anyone.
  */
 const LAST_CARD = `[...document.querySelectorAll('#thread .fu-card[aria-label="要我定时做吗？"]')].at(-1)`
-const PAGE = '#feed-page'
+const PAGE = '#schedules-page'
 const CARD_WAIT_MS = 30_000
 
 /** Says `words`, and returns the proposal card's text, or null when no card came. */
@@ -22,10 +22,13 @@ async function accept(win: SmokeWindow) {
   await wait(UI_WAIT_MS * 2)
 }
 
-/** Opens 动态 and returns its rows in 接下来 (the schedules), as shown. */
+/** Opens 定时任务 and returns its rows, as shown. */
 async function scheduleRows(ctx: LiveContext): Promise<string[]> {
-  if (await run(ctx.win, `document.getElementById('feed-page').hidden`)) await run(ctx.win, `document.getElementById('open-feed').click()`)
-  await until(ctx.win, `!document.getElementById('feed-page').hidden`, 'the 动态 page')
+  if (await run(ctx.win, `document.getElementById('hub').dataset.open !== 'true'`)) {
+    await run(ctx.win, `document.getElementById('open-profile').click()`)
+  }
+  await run(ctx.win, `document.querySelector('.hub-nav[data-page="schedules"]').click()`)
+  await until(ctx.win, `!document.getElementById('schedules-page').hidden`, 'the 定时任务 page')
   await wait(UI_WAIT_MS)
   return run(ctx.win, `[...document.querySelectorAll('${PAGE} .fu-row[data-status="active"], ${PAGE} .fu-row[data-status="paused"]')].map((row) => row.textContent)`)
 }
@@ -42,7 +45,7 @@ function wednesdays(now = new Date()): string[] {
 
 const schedulePropose: LiveScenario = {
   id: 'schedule-propose',
-  title: '「到时候帮我…」出现定时卡片，时间对；点「定时」后在动态的「接下来」里',
+  title: '「到时候帮我…」出现定时卡片，时间对；点「定时」后在「定时任务」里',
   feature: '定时任务',
   core: true,
   async run(ctx) {

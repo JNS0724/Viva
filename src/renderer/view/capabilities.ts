@@ -9,7 +9,7 @@ import { skillMain, skillsSide } from './capability-skills.ts'
 
 /**
  * 能力 (capabilities-state.ts): a page of the hub beside 关于你 and 设置. Skills, MCP and plugins as tabs; each lists on
- * the left and shows the one picked on the right, as 后台 and 动态 do.
+ * the left and shows the one picked on the right, as 后台 does.
  */
 let TAB_NAMES: Readonly<Record<CapabilityTab, string>> = tabNames()
 function tabNames() {
@@ -53,7 +53,7 @@ export function renderCapabilitiesPage(container: HTMLElement, state: State, han
   const tab = openTab(state)
   const loaded = tab === 'plugins' ? state.plugins.loaded : state.extensions.loaded
   const side = h('nav', { class: 'tp-side cap-side', 'aria-label': t('capabilities.title') },
-    h('div', { class: 'tp-side-head' }, h('h1', { class: 'feed-title', text: t('capabilities.title') })),
+    h('div', { class: 'tp-side-head' }, h('h1', { class: 'cap-title', text: t('capabilities.title') })),
     tabs(state, handlers),
     memoryLine(state.extensions.status as ExtensionStatus, connected && state.extensions.loaded),
     ...feedback(state),

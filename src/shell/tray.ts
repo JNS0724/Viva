@@ -5,9 +5,7 @@ import type { Menu as ElectronMenu, NativeImage, Tray as ElectronTray } from 'el
 /**
  * The tray icon (the menu bar on macOS, the notification area on Windows): there from the first time the
  * window is closed (or from launch on Windows and when Viva starts with the computer), since closing the window keeps Viva
- * running there. Clicking it, or 打开 Viva in its menu, brings the window back; 退出 Viva quits. When follow-ups
- * are ready, the tray says how many (beside the icon on macOS, in the tooltip on Windows), and the menu leads to
- * them.
+ * running there. Clicking it, or 打开 Viva in its menu, brings the window back; 退出 Viva quits.
  */
 const TOOLTIP = 'Viva'
 
@@ -23,29 +21,24 @@ interface TrayDeps {
   platform: string
   onOpen: () => void
   onQuit: () => void
-  /** 「N 件等你看」: the 后台 page. */
-  onPending?: () => void
   onDiagnosticsExport?: () => void
   onDiagnosticsOpen?: () => void
   onDiagnosticsClear?: () => void
   onDiagnosticsDebug?: () => void
   onDiagnosticsDebugStop?: () => void
-  /** How many follow-ups are ready, at the start. */
-  pending?: number
 }
 
-export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit, onPending = onOpen, pending = 0, onDiagnosticsExport, onDiagnosticsOpen, onDiagnosticsClear, onDiagnosticsDebug, onDiagnosticsDebugStop }: TrayDeps): {
-  destroy: () => void, setPending: (count: number) => void,
+export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit, onDiagnosticsExport, onDiagnosticsOpen, onDiagnosticsClear, onDiagnosticsDebug, onDiagnosticsDebugStop }: TrayDeps): {
+  destroy: () => void, refresh: () => void,
 } {
   const image = nativeImage.createFromPath(path.join(iconDir, iconFile(platform)))
   if (platform === 'darwin') image.setTemplateImage(true)
   const tray = new Tray(image as NativeImage)
 
-  function setPending(count: number) {
-    tray.setToolTip(count ? `${TOOLTIP} · ${t('native.pending', { count })}` : TOOLTIP)
-    if (platform === 'darwin') tray.setTitle?.(count ? String(count) : '')
+  function refresh() {
+    tray.setToolTip(TOOLTIP)
+    if (platform === 'darwin') tray.setTitle?.('')
     tray.setContextMenu(Menu.buildFromTemplate([
-      ...(count ? [{ label: t('native.pending', { count }), click: onPending }, { type: 'separator' as const }] : []),
       { label: t('native.open'), click: onOpen },
       ...(onDiagnosticsExport ? [{ id: 'viva-diagnostics-export', label: t('diagnostics.export'), click: onDiagnosticsExport }] : []),
       ...(onDiagnosticsOpen ? [{ id: 'viva-diagnostics-open', label: t('diagnostics.open'), click: onDiagnosticsOpen }] : []),
@@ -57,8 +50,8 @@ export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen,
     ]))
   }
 
-  setPending(pending)
+  refresh()
   // On Windows a click opens the window and the menu is on the right button; on macOS a click shows the menu.
   if (platform !== 'darwin') tray.on('click', onOpen)
-  return { destroy: () => tray.destroy(), setPending }
+  return { destroy: () => tray.destroy(), refresh }
 }

@@ -20,6 +20,18 @@
 - 键盘与无障碍：处理按键先跳过输入法组合（`event.isComposing || event.keyCode === 229`）；纯图标按钮带 `aria-label`；不关闭或削弱 AX。
 - 验证：state 和 actions 的逻辑补单元测试。本地运行 `npm run typecheck`、`npm test`，改了文档再运行 `npm run check:i18n`。视觉改动在 PR 里附截图；涉及标题栏、岛或窗口尺寸的改动，macOS 和 Windows 都要看过。
 
+## 评审维度
+
+改动自查与代码评审按以下维度逐项审视，优先收敛阻塞问题，不为低频边缘场景过度设计：
+
+- **阻塞分级**：优先解决会导致数据丢失、重复执行或重复投递、权限与信任边界失守、崩溃恢复失真、死锁或界面卡死的问题；低风险边缘细节不阻塞主线。
+- **数据归属与防旁路**：每类持久化状态和副作用队列保持单一写入入口与事务边界（经各自 store、`Effects`、`apply` 写入），跨模块不直接裸写他方 SQLite 表，不绕过 IPC 契约，也不跨云端就绪边界泄露本机路径等宿主私有状态。
+- **架构整洁与防腐化**：跨进程或跨插件共享的协议格式、标识命名空间与解析逻辑收口到 `src/shared` 单一真源；下线旧能力时同步清理死代码、废弃契约、样式与文案，并通过幂等原子迁移处理历史表与未决队列，不留半拆状态。
+- **生命周期、恢复与竞态**：跨异步或跨进程边界（IPC、dsh 会话切换、原生写入与回执）要审视中断重启后的幂等恢复、已删除或已替代实体的防复活（代数校验或墓碑），以及慢响应晚到不覆盖新状态（单调序号或 generation）。
+- **容量与上下文边界**：区分模型上下文预算、实时通道上限与本地归档上限；送入模型或实时通道的内容按预算截断（必要时保留头尾关键上下文）并对积压分批限流，用户可展开查看的本地记录单独界定合理上限。
+- **性能与资源增长**：审视启动路径、每轮持久化、流式重绘帧与长会话滑动窗口的复杂度和驻留规模；启动与高频路径走索引或轻量元数据查询，避免全表扫描和大字段反序列化；滑动窗口裁剪时同步释放窗口外关联状态，辅助持久化表保持有界；折叠态大文本按需挂载 DOM，不在隐藏态常驻重节点拖慢布局与 AX 树。
+- **交互与状态闭环**：核对加载中、空态、错误态及目标已结束/已删除时的明确反馈（显式打开的目标消失时说明原因，不静默跳到无关项），并在列表刷新或删除后保持或合理回退键盘焦点。
+
 ## 冒烟测试
 
 - PR 在 macOS、Windows 上各运行一个 check，执行类型检查、基础对话用例并构建安装包。完整源码、桌面冒烟与安装后验收由每日和发布工作流运行。
@@ -49,6 +61,18 @@ The Chinese and English sections describe the same rules.
 - Copy: interface text, including `aria-label`, `title`, placeholders, empty states and errors, goes into both `src/shared/i18n/messages/en.ts` and `zh-CN.ts` and is read with `t()`. Static HTML uses `data-i18n` / `data-i18n-*`. Refresh module-level cached strings in `onLocaleChange`. Don't put text in CSS `content`.
 - Keyboard and accessibility: skip key handling during IME composition (`event.isComposing || event.keyCode === 229`). Icon-only buttons have an `aria-label`. Never turn off or weaken AX.
 - Verification: add unit tests for state and actions logic. Run `npm run typecheck` and `npm test` locally, and `npm run check:i18n` after documentation changes. Attach screenshots to PRs with visual changes, and check changes to the title bar, island or window sizing on both macOS and Windows.
+
+### Review dimensions
+
+Self-audits and code reviews evaluate changes across the dimensions below, converging on blocking issues first without over-engineering rare edge cases:
+
+- **Blocking triage**: prioritize issues that can cause data loss, duplicate execution or delivery, broken permission or trust boundaries, corrupted crash recovery, deadlocks, or stuck UI states; don't block on low-impact edge cases.
+- **Data ownership and no bypasses**: keep a single owning store and transactional write path for each persisted table and effect queue (through its store, `Effects`, and `apply`). Don't write raw SQL into another module's tables, bypass IPC contracts, or leak host-local paths across cloud-ready boundaries.
+- **Architectural hygiene and anti-decay**: consolidate wire formats, identifier namespaces, and parsers shared across processes or plugins into a single `src/shared` source of truth. When retiring a capability, remove dead code, contracts, styles, and copy together, and migrate or drop legacy tables and queued effects atomically and idempotently rather than leaving half-removed remnants.
+- **Lifecycle, recovery, and concurrency**: across async and cross-process boundaries (IPC, dsh session switches, native writes and receipts), check idempotent restart recovery, prevent deleted or superseded entities from being resurrected (via generations or tombstones), and guard against stale async replies overwriting newer state (monotonic sequence numbers or generations).
+- **Context, wire, and storage bounds**: separate model-context budgets, live-channel wire limits, and local archive bounds. Window and batch backlogs entering model turns or live channels (keeping head and tail context when truncating), while bounding fuller user-inspectable records separately.
+- **Performance and bounded growth**: check complexity and memory residency across startup, per-turn persistence, streaming frames, and long-session sliding windows. Keep startup and hot paths on indexed or metadata-only queries instead of full-table scans or large-payload deserialization; trim out-of-window companion state alongside messages and cap auxiliary tables; mount large collapsed text lazily so hidden heavy nodes do not bloat layout or the AX tree.
+- **Interaction and state completeness**: verify loading, empty, error, and gone/deleted target states (when an explicitly requested item is gone, say so instead of silently selecting another), and preserve or cleanly recover keyboard focus across list refreshes and deletions.
 
 ### Smoke tests
 

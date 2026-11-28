@@ -4,15 +4,17 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { transaction } from '../src/backend/app-db.ts'
 import { RETRY_MS as HOLD_MS } from '../src/backend/effects.ts'
-import { openFeedStore, type FeedItem } from '../src/backend/feed-store.ts'
 import type { Apply } from '../src/backend/journal.ts'
-import { MAX_ATTEMPTS, MAX_WAIT_MS, RETRY_MS, createScheduleRuns } from '../src/backend/schedule-runs.ts'
+import { MAX_ATTEMPTS, MAX_WAIT_MS, RETRY_MS, createScheduleRuns, type DeliveredScheduleRun } from '../src/backend/schedule-runs.ts'
 import { openScheduleStore } from '../src/backend/schedule-store.ts'
+import { noteFor, recordedNote, REPORT_OUTPUT_MAX_CHARS, SCHEDULE_REPORT_MAX_CHARS, type ReportPayload } from '../src/backend/task-reports.ts'
+import { recordsFrom } from '../src/renderer/report-state.ts'
+import { reportRecordOf } from '../src/shared/task-report.ts'
 import type { RunResult } from '../src/backend/unattended-runs.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
-/** Schedules run when due (schedule-runs.ts): one timer, runs kept with what was taken, each answer one item in 动态. */
+/** Schedules run when due (schedule-runs.ts): one timer, runs kept with what was taken, each answer delivered once. */
 
 const at = (iso: string) => Date.parse(iso)
 type Timer = { run: () => void, ms: number }
@@ -39,7 +41,7 @@ test('schedule retry diagnostics are published only after the durable retry and 
   runner.close(); runner = app.make()
   app.go('2026-11-06T11:02:00+08:00')
   runner.wake(); await app.settle()
-  assert.equal(app.feed.list()[0]?.body, 'SECRET_SCHEDULE_RESULT')
+  assert.equal(app.kept[0]?.body, 'SECRET_SCHEDULE_RESULT')
   assert.ok(events.some(event => event.operation === 'schedule' && event.event === 'operation.start' && event.stage === 'recovering'
     && event.identities?.jobId === retry.identities?.jobId && event.identities?.generation === retry.identities?.generation))
   const starts = events.filter(event => event.operation === 'schedule' && event.event === 'operation.start')
@@ -54,9 +56,8 @@ function setup(answers: Array<RunResult | Promise<RunResult>> = []) {
   let now = at('2026-11-06T10:00:00+08:00')
   const db = new DatabaseSync(':memory:')
   const store = openScheduleStore({ db, now: () => now, newId: () => 's1' })
-  const feed = openFeedStore({ db, now: () => now })
   const asked: Array<{ prompt: string, cwd: string }> = []
-  const kept: FeedItem[] = []
+  const kept: DeliveredScheduleRun[] = []
   let delivered = 0
   let timers: Timer[] = []
   let changes = 0
@@ -71,7 +72,7 @@ function setup(answers: Array<RunResult | Promise<RunResult>> = []) {
     return { value: transaction(db, write) }
   }
   const make = () => createScheduleRuns({
-    db, apply, store, feed,
+    db, apply, store,
     run: async (prompt, cwd) => {
       asked.push({ prompt, cwd })
       const [next, ...rest] = queue
@@ -90,7 +91,7 @@ function setup(answers: Array<RunResult | Promise<RunResult>> = []) {
     cancel: (timer) => { timers = timers.filter((item) => item !== (timer as unknown as Timer)) },
   })
   return {
-    db, store, feed, asked, kept, make,
+    db, store, asked, kept, make,
     delivered: () => delivered,
     timers: () => timers,
     /** Fires the one timer set. */
@@ -127,10 +128,10 @@ test('a parked occurrence cannot replay or pause a rewritten recurring schedule 
   assert.deepEqual(app.asked.map(run => run.prompt), ['旧指令'])
   assert.equal(app.runs(), 0)
   assert.equal(app.store.get(id)?.status, 'active')
-  assert.equal(app.feed.list().length, 0)
+  assert.equal(app.kept.length, 0)
 })
 
-test('one timer, for the soonest; due, the prompt runs in the folder it was made in, its answer one item, its notice kept with it', async () => {
+test('one timer, for the soonest; due, the prompt runs in the folder it was made in, its delivery kept with its run removal', async () => {
   const { store, asked, kept, delivered, timers, fire, make, settle, go, changes } = setup()
   store.create({ title: '报销', prompt: '提醒我交报销单', cwd: '/work/a', rule: { kind: 'at', at: '2026-11-06T16:00:00+08:00' } })
   make().arm()
@@ -139,14 +140,18 @@ test('one timer, for the soonest; due, the prompt runs in the folder it was made
   fire()
   await settle()
   assert.deepEqual(asked, [{ prompt: '提醒我交报销单', cwd: '/work/a' }], 'its own folder, whatever the window is on')
-  assert.deepEqual(kept.map((item) => [item.source, item.key, item.title, item.body]), [['schedule', 's1@2026-11-06T08:00:00.000Z', '报销', '答：提醒我交报销单']])
+  assert.deepEqual(kept.map((item) => [item.scheduleId, item.key, item.title, item.status, item.body, item.cwd]), [['s1', 's1@2026-11-06T08:00:00.000Z', '报销', 'done', '答：提醒我交报销单', '/work/a']])
+  const note = noteFor([{ taskId: `schedule:${kept[0].scheduleId}`, title: kept[0].title, status: kept[0].status, host: null, output: kept[0].body, request: kept[0].prompt, by: 'schedule' }])
+  assert.match(note, /定时任务的结果/)
+  assert.doesNotMatch(note, /get_background_task/)
+  assert.deepEqual(reportRecordOf(note), { tasks: [{ title: '报销', taskId: 'schedule:s1' }], inTurn: false })
   assert.equal(delivered(), 1)
   assert.equal(changes(), 1, 'the one that runs once has ended')
   assert.deepEqual([store.list(), timers()], [[], []], 'nothing left to wait for')
 })
 
-test('dsh not there: the run is kept with what was taken, runs once it is, and makes one item however often woken', async () => {
-  const { store, feed, asked, kept, make, settle, go, runs } = setup([UNAVAILABLE])
+test('dsh not there: the run is kept with what was taken, runs once it is, and delivers once however often woken', async () => {
+  const { store, asked, kept, make, settle, go, runs } = setup([UNAVAILABLE])
   store.create({ title: '日报', prompt: '写今天的日报', cwd: '/work', rule: { kind: 'daily', daily: { time: '18:00:00', time_zone: 'Asia/Shanghai' } } })
   go('2026-11-06T18:00:01+08:00')
   make().wake()
@@ -159,7 +164,7 @@ test('dsh not there: the run is kept with what was taken, runs once it is, and m
   assert.deepEqual(kept.map((item) => item.key), ['s1@2026-11-06T10:00:00.000Z'])
   make().wake()
   await settle()
-  assert.deepEqual([asked.length, feed.list().length], [2, 1], 'one item for the occurrence')
+  assert.deepEqual([asked.length, kept.length], [2, 1], 'one delivery for the occurrence')
 })
 
 test('paused or deleted after it was taken, before it ran: that occurrence is let go, not run', async () => {
@@ -285,4 +290,47 @@ test('dsh away: the run waits to be woken, not on the timer (no spinning); woken
   runs.wake()
   await settle()
   assert.equal(asked.length, 2)
+})
+
+test('long schedule outputs preserve middle conclusions beyond 2,400 chars in both model notes and persisted report records', () => {
+  const medium = `${'头'.repeat(REPORT_OUTPUT_MAX_CHARS)}\n【中段唯一结论：Q4 预算下调 12%】\n${'尾'.repeat(REPORT_OUTPUT_MAX_CHARS)}`
+  const mediumPayload: ReportPayload = {
+    taskId: 'schedule:s-weekly',
+    runId: 's-weekly@2026-11-06T08:00:00.000Z',
+    title: '周五周报',
+    status: 'done',
+    host: null,
+    output: medium,
+    request: '汇总本周结论',
+    by: 'schedule',
+  }
+  const modelNote = noteFor([{
+    taskId: mediumPayload.taskId,
+    title: mediumPayload.title,
+    status: mediumPayload.status,
+    host: null,
+    output: mediumPayload.output,
+    request: mediumPayload.request,
+    by: 'schedule',
+  }])
+  assert.match(modelNote, /【中段唯一结论：Q4 预算下调 12%】/, 'model prompt keeps full medium-long schedule output')
+  assert.match(recordedNote(mediumPayload), /【中段唯一结论：Q4 预算下调 12%】/, 'recorded note keeps full medium-long schedule output')
+
+  const huge = `${'甲'.repeat(SCHEDULE_REPORT_MAX_CHARS)}\n【超长周报核心结论：保留全文】\n${'乙'.repeat(SCHEDULE_REPORT_MAX_CHARS)}`
+  const hugePayload: ReportPayload = { ...mediumPayload, output: huge }
+  const boundedModelNote = noteFor([{
+    taskId: hugePayload.taskId,
+    title: hugePayload.title,
+    status: hugePayload.status,
+    host: null,
+    output: hugePayload.output,
+    by: 'schedule',
+  }])
+  assert.doesNotMatch(boundedModelNote, /【超长周报核心结论：保留全文】/, 'model prompt stays bounded when output exceeds context budget')
+  assert.match(boundedModelNote, /完整正文已保存在本条对话的回报记录中/)
+  const fullRecordText = recordedNote(hugePayload)
+  assert.match(fullRecordText, /【超长周报核心结论：保留全文】/, 'persisted report record keeps complete text')
+  const decoded = recordsFrom([{ reportId: 'schedule:s-weekly:s-weekly@2026-11-06T08:00:00.000Z', at: 1_000, after: 0, text: fullRecordText }])
+  assert.equal(decoded.length, 1, 'renderer report-state accepts the full schedule record after reload')
+  assert.match(decoded[0]!.text, /【超长周报核心结论：保留全文】/)
 })
